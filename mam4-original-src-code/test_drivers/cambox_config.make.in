@@ -1,0 +1,19 @@
+#for ifort Compiler
+FC = gfortran	
+#FC = ifort	
+LDFLAGS = -L${NETCDF_LIB} -lnetcdff -lnetcdf 
+LDLIBS = 
+#  really strict
+#   FCFLAGS = -g  -traceback  -O0  -fpe0  -ftrapuv  -check all  -check noarg_temp_created
+# gcc
+   FCFLAGS = -O2 -fno-range-check -ffree-line-length-none \
+	     -I${NETCDF_INCLUDE}
+# intel
+#   FCFLAGS = -g  -traceback  -O0  -fpe0  -ftrapuv  -check all  \
+#	     -check noarg_temp_created -I${NETCDF_INCLUDE}
+#  less   strict
+#  FCFLAGS = -g  -traceback  -O0  -fpe0  -ftrapuv  -check bounds
+#  FCFLAGS = -g  -traceback  -O0         -ftrapuv  -check bounds
+#  FCFLAGS = -g  -traceback  -O0  -fpe0  -ftrapuv
+CPP = cpp
+EXE = mam_box_test.exe
