@@ -10,46 +10,53 @@ Status legend: **planned**, **in progress**, **ported (validated)**, **deferred*
 
 | Process | Fortran module | JAX status |
 | --- | --- | --- |
-| Size redistribution (`calcsize`) | `box_model_utils/modal_aero_calcsize.F90` | planned (`PLANS.md` M3) |
-| Water uptake (`wateruptake`) | `e3sm_src_modified/modal_aero_wateruptake.F90` | planned (`PLANS.md` M3) |
-| Gas–aerosol exchange (condensation) | `e3sm_src/modal_aero_gasaerexch.F90` | planned (`PLANS.md` M3) |
-| New-particle nucleation (binary H2SO4–H2O) | `e3sm_src/modal_aero_newnuc.F90` | planned (`PLANS.md` M3) |
-| Coagulation (Brownian, intra/inter-modal) | `e3sm_src/modal_aero_coag.F90` | planned (`PLANS.md` M3) |
-| Rename (Aitken → accumulation) | `e3sm_src/modal_aero_rename.F90` | planned (`PLANS.md` M3) |
-| Umbrella orchestrator (`amicphys`) | `e3sm_src_modified/modal_aero_amicphys.F90` | planned (`PLANS.md` M4) |
+| Size redistribution (`calcsize`) | `box_model_utils/modal_aero_calcsize.F90` | stub in `mam4_jax/processes/calcsize.py`; physics port planned (M3) |
+| Water uptake (`wateruptake`) | `e3sm_src_modified/modal_aero_wateruptake.F90` | stub in `mam4_jax/processes/wateruptake.py`; physics port planned (M3) |
+| Gas–aerosol exchange (condensation) | `e3sm_src/modal_aero_gasaerexch.F90` | stub in `mam4_jax/processes/gasaerexch.py`; physics port planned (M3) |
+| New-particle nucleation (binary H2SO4–H2O) | `e3sm_src/modal_aero_newnuc.F90` | stub in `mam4_jax/processes/newnuc.py`; physics port planned (M3) |
+| Coagulation (Brownian, intra/inter-modal) | `e3sm_src/modal_aero_coag.F90` | stub in `mam4_jax/processes/coag.py`; physics port planned (M3) |
+| Rename (Aitken → accumulation) | `e3sm_src/modal_aero_rename.F90` | stub in `mam4_jax/processes/rename.py`; physics port planned (M3) |
+| Umbrella orchestrator (`amicphys`) | `e3sm_src_modified/modal_aero_amicphys.F90` | stub in `mam4_jax/processes/amicphys.py`; orchestration planned (M4) |
 
 ## Supporting physics
 
 | Capability | Fortran module | JAX status |
 | --- | --- | --- |
-| Saturation vapor pressure | `box_model_utils/wv_saturation.F90` (Goff-Gratch / Flatau) | planned (`PLANS.md` M3 candidate first port) |
-| Constants and species table | `e3sm_src/modal_aero_data.F90`, `e3sm_src/shr_const_mod.F90` | planned (`PLANS.md` M1 — transcribe into `mam4_jax/data.py`) |
+| Saturation vapor pressure | `box_model_utils/wv_saturation.F90` (Goff-Gratch / Flatau) | planned (`PLANS.md` M3 — recommended first port: `polysvp`) |
+| Constants and species table | `e3sm_src/modal_aero_data.F90`, `e3sm_src/shr_const_mod.F90` | compile-time constants transcribed into `mam4_jax/data.py`; runtime indices pending M2 |
 | Error function / special functions | `box_model_utils/error_function.F90`, `e3sm_src/shr_spfn_mod.F90` | use `jax.scipy.special` if available; otherwise port closed-form |
 
 ## Modes and species
 
-| Mode | Species in MAM4-MOM (reference config) |
-| --- | --- |
-| Aitken (mode 1) | so4, soa, ncl, (mom) |
-| Accumulation (mode 2) | so4, soa, ncl, (mom), pom, bc, dst |
-| Coarse (mode 3) | so4, soa, ncl, dst, (mom), pom, bc |
-| Primary carbon (mode 4) | pom, bc, (mom) |
+The MAM4-MOM (with `RAIN_EVAP_TO_COARSE_AERO`) reference configuration has four modes in this Fortran order (from `modal_aero_data.F90:104-109, 121-123`):
 
-Counts and the exact species per mode are authoritative in `modal_aero_data.F90` — the table above is a navigation aid, not a substitute. Reference build uses `-DMODAL_AERO_4MODE_MOM -DPCNST=35 -DNBC=1 -DNPOA=1 -DNSOA=1`.
+| Mode index | Mode name | `nspec_amode` |
+| --- | --- | --- |
+| 1 | `accum` | 7 |
+| 2 | `aitken` | 4 |
+| 3 | `coarse` | 7 |
+| 4 | `primary_carbon` | 3 |
+
+The nine aerosol species *types* available across modes (`specname_amode`, `modal_aero_data.F90:49-52`):
+`sulfate`, `ammonium`, `nitrate`, `p-organic`, `s-organic`, `black-c`, `seasalt`, `dust`, `m-organic`.
+
+The exact species-to-mode assignment is set at initialization in `modal_aero_initialize_data.F90:250-309` and will be captured authoritatively when M2 lands the instrumented reference. Until then, `mam4_jax/data.py` keeps `IndexTables` sentinel-filled (-1).
+
+Reference build flags: `-DMODAL_AERO_4MODE_MOM -DRAIN_EVAP_TO_COARSE_AERO -DPCNST=35 -DPCOLS=1 -DPVER=1 -DNBC=1 -DNPOA=1 -DNSOA=1` (see `mam4-original-src-code/test_drivers/cambox_config.cpp.in`).
 
 ## I/O
 
 | Capability | Fortran | JAX status |
 | --- | --- | --- |
-| Input via namelist | `driver.F90` (`&time_input`, `&cntl_input`, `&met_input`, `&chem_input`) | TBD — see `ARCHITECTURE.md` open questions (dataclass / dict / YAML) |
+| Input via namelist | `driver.F90` (`&time_input`, `&cntl_input`, `&met_input`, `&chem_input`) | scaffolded — `mam4_jax/config.py` exposes `TimeConfig` / `ControlConfig` / `MetConfig` / `ChemConfig` + `load_yaml` (ADR-010) |
 | Output as NetCDF | `driver.F90` writes `mam_output.nc` | planned — match Fortran NetCDF layout for diffability |
-| Per-process input/output capture (for validation) | not in Fortran natively — must instrument | planned (`PLANS.md` M2) |
+| Per-process input/output capture (for validation) | not in Fortran natively — must instrument | planned (`PLANS.md` M2, instrumentation overlay) |
 
 ## Validation features
 
 | Capability | Status |
 | --- | --- |
-| Element-wise `1e-6` rel-err assertion (ADR-003) | planned (`PLANS.md` M1 test harness) |
+| Element-wise `1e-6` rel-err assertion (ADR-003) | scaffolding test (`tests/test_scaffolding.py`) live; rel-err assertion harness planned for first M3 port |
 | 12-point convergence sweep matching `run_test.csh` | planned (`PLANS.md` M5) |
 | Residual / convergence diagnostic plots | planned (rule #6 — figures are first-class deliverables) |
 

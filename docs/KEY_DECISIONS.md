@@ -60,7 +60,7 @@ Status values: **Accepted**, **Proposed**, **Superseded by ADR-NNN**.
 
 ## ADR-006 — Direct commits to `main` during pre-launch scaffolding
 
-- **Status:** Accepted (2026-05-18)
+- **Status:** Superseded by ADR-011 (2026-05-18)
 - **Context:** Rule #2 in `CLAUDE.md` calls for PR-per-task. At pre-launch with one contributor, that overhead delivers little.
 - **Decision:** Allow direct commits to `main` for scaffolding/documentation work only, while the project has no external readers. Process and feature changes still go through PRs. Revisit (and supersede this ADR) when contributors join or the first JAX code lands.
 - **Consequences:**
@@ -78,6 +78,49 @@ Status values: **Accepted**, **Proposed**, **Superseded by ADR-NNN**.
   - Plans referenced from `docs/PROGRESS.md` and `docs/PLANS.md` link to their `docs/plans/NNN-...` archive.
   - Plan numbering is independent of ADR numbering.
 - **Alternatives considered:** keep plans only in the transient location (rejected: no project-visible history); rewrite plans after approval to keep them "current" (rejected: dilutes the historical record).
+
+## ADR-008 — Tracer representation: flat `pcnst` array with named accessors
+
+- **Status:** Accepted (2026-05-18). Approved as ADR-007 in `docs/plans/001-scaffold-and-reference-capture.md`; renumbered here to 008 because ADR-007 was claimed by the docs/plans/ convention before this PR landed.
+- **Context:** The Fortran reference passes a flat `q(:,:,pcnst)` tracer array everywhere, with `modal_aero_data` integer index tables (`numptr_amode`, `lmassptr_amode`, …) mapping (mode, species_slot) → `pcnst` index. A JAX port could either mirror this flat layout or restructure as a per-(mode, species) pytree.
+- **Decision:** Mirror the Fortran flat layout. Primary state is a JAX array of shape `(pcols, pver, pcnst)`. Index tables and accessor helpers (`get_number`, `get_mass`) live in `mam4_jax/data.py` and are the only place that resolves a (mode, species_slot) to a `pcnst` index.
+- **Consequences:**
+  - Byte-for-byte diffing against the Fortran reference is straightforward; no per-axis translation is needed.
+  - The index bookkeeping is concentrated in one module, surfacing what would otherwise be the single largest source of porting bugs.
+  - JAX code looks less "JAX-native" than a pytree-of-arrays approach would.
+- **Alternatives considered:** Per-(mode, species) pytree (rejected: obscures Fortran correspondence during validation, harder to diff at the 1e-6 tolerance set in ADR-003).
+
+## ADR-009 — Process signature convention: pure-functional
+
+- **Status:** Accepted (2026-05-18). Approved as ADR-008 in `docs/plans/001`; renumbered to 009 here.
+- **Context:** Fortran microphysics subroutines (e.g., `modal_aero_wateruptake_dr` at `modal_aero_wateruptake.F90:130-150`) mutate state via pointer arguments and side effects. That convention is the opposite of how JAX wants to see code: `jit`, `vmap`, `scan`, and the autodiff system require pure functions.
+- **Decision:** Every microphysics function in `mam4_jax/processes/` has the signature `process_fn(state, params, config) -> new_state`. No in-place mutation. No pointer-output args. Configuration enters as a dataclass (ADR-010), not module-level globals.
+- **Consequences:**
+  - JAX code is structurally different from the Fortran. That is expected and tolerable; correctness via numerical diff (ADR-003) is the constraint, not structural fidelity.
+  - The Phase B optimization pass (ADR-004: `jit`/`vmap`/`scan`) becomes mechanical because the inputs are already pure.
+  - Per-process testing is simplified: each function is fully determined by its inputs.
+- **Alternatives considered:** Mutable-state convention via dataclass-with-setters or `numpy` in-place ops (rejected: incompatible with `jit`/autodiff; would force a rewrite in Phase B).
+
+## ADR-010 — Configuration: Python `dataclass`es with optional YAML loader
+
+- **Status:** Accepted (2026-05-18). Approved as ADR-009 in `docs/plans/001`; renumbered to 010 here.
+- **Context:** The Fortran reference takes input through four namelist groups (`&time_input`, `&cntl_input`, `&met_input`, `&chem_input`) of scalar parameters. The JAX port needs an equivalent input surface for reproducibility tests and for sweeping over inputs.
+- **Decision:** Four frozen `@dataclass` types (`TimeConfig`, `ControlConfig`, `MetConfig`, `ChemConfig`) mirror the namelist groups one-to-one, with field names taken verbatim from the namelist symbols. A `RunConfig` composite groups all four. `load_yaml(path)` returns a `RunConfig` from a YAML file; defaults reflect `run_test.csh`'s canonical inputs.
+- **Consequences:**
+  - Configuration is type-safe and immutable.
+  - YAML config files diff cleanly against the namelist blocks in `driver.F90`, supporting reproducible experiment archives.
+  - Field name fidelity to Fortran symbols (e.g., `mdo_gasaerexch`, `mfso41`) preserves provenance at the cost of un-Pythonic field names. Accepted.
+- **Alternatives considered:** Free-form dict (rejected: no type checking, lossy), TOML (rejected: less common in the scientific-Python ecosystem and we already depend on YAML elsewhere), `pyrallis`/`hydra` (rejected: heavyweight for a 4-namelist input surface).
+
+## ADR-011 — All changes via pull request; ADR-006 superseded
+
+- **Status:** Accepted (2026-05-18). **Supersedes ADR-006.**
+- **Context:** ADR-006 carved out "direct commits to `main`" for scaffolding/docs work during pre-launch. In practice this turned out to be ambiguous (where exactly does scaffolding end and feature work begin?) and the local auto-classifier correctly refused direct pushes against rule #2. Rather than relax the rule, tighten it: rule #2 applies uniformly.
+- **Decision:** All changes to `main` go through a PR. No carve-out for "scaffolding" or "docs only." For solo work the PR overhead is small (`gh pr create`, self-review, merge); the win is uniform process and a clean reviewable history.
+- **Consequences:**
+  - Local `main` should never carry unpushed commits. If a one-off direct commit is unavoidable (e.g., a `.gitignore` typo), it still gets a branch and a PR.
+  - Pre-existing `main` history (commits `22f212d`, `a82e42d` from initial setup) stays as-is — this ADR is forward-looking, not retroactive.
+- **Alternatives considered:** Keep ADR-006 and clarify the carve-out (rejected: ambiguity itself is the problem); add a manual override flag (rejected: no value).
 
 ---
 
