@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mam4-jax"
+version = "0.0.1"
+description = "JAX port of the MAM4 aerosol-microphysics box model"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "jax>=0.4.20",
+    "jaxlib>=0.4.20",
+    "numpy>=1.24",
+    "netCDF4>=1.6",
+    "pyyaml>=6",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mam4_jax*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
