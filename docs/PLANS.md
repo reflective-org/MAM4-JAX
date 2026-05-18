@@ -8,26 +8,26 @@ When a milestone is in progress, its subtasks become the working task list. As s
 
 ## Milestone 0 — Repo + documentation scaffold
 
-**Status:** in progress.
+**Status:** done.
 
 - [x] Vendor Fortran reference, write `README.md` + initial `CLAUDE.md`. (`22f212d`)
-- [x] Extract architecture and decisions out of `CLAUDE.md` into `docs/`; create `PROGRESS.md`, `PLANS.md`, `KEY_DECISIONS.md`, `DEFERRED.md`, `FEATURES.md`. *(current PR)*
-- [ ] **Open with owner:** confirm Milestone 1 scope and order below.
+- [x] Extract architecture and decisions out of `CLAUDE.md` into `docs/`; create `PROGRESS.md`, `PLANS.md`, `KEY_DECISIONS.md`, `DEFERRED.md`, `FEATURES.md`. (`a82e42d`)
+- [x] Establish `docs/plans/` convention (ADR-007) and archive plan 001. (PR [#1](https://github.com/reflective-org/MAM4-JAX/pull/1))
 
 ---
 
-## Milestone 1 — JAX package scaffolding (proposed, not started)
+## Milestone 1 — JAX package scaffolding
 
-**Status:** proposed. Awaiting owner approval on the open architectural questions in `ARCHITECTURE.md` ("JAX port: proposed layout").
+**Status:** done. See `docs/plans/001-scaffold-and-reference-capture.md` and ADRs 008–011.
 
-Proposed subtasks (each ≈ one commit):
-
-- [ ] Decide tracer representation (flat array vs. structured pytree). → `KEY_DECISIONS.md` ADR-007.
-- [ ] Decide process signature convention (pure-functional vs. delta-returning). → ADR-008.
-- [ ] Decide configuration mechanism (dataclass / dict / YAML). → ADR-009.
-- [ ] Create empty `mam4_jax/` package with `config.py` (enables `jax_enable_x64`), `data.py` (mode/species index tables, transcribed from `modal_aero_data.F90`), and empty stubs for each process module.
-- [ ] Add `pyproject.toml`, dev dependencies (`jax`, `jaxlib`, `numpy`, `pytest`, `netCDF4`).
-- [ ] Add `tests/` skeleton with one trivial sanity test that imports the package and asserts `float64` is enabled.
+- [x] Resolve open architectural ADRs: tracer representation (ADR-008), pure-functional signatures (ADR-009), dataclass+YAML config (ADR-010).
+- [x] Tighten process discipline: all changes via PR, supersede ADR-006 (ADR-011).
+- [x] `pyproject.toml` with top-level `mam4_jax/` layout and pinned floors for jax, jaxlib, numpy, netCDF4, pyyaml, matplotlib, pytest.
+- [x] `mam4_jax/__init__.py` enables `jax_enable_x64` at import.
+- [x] `mam4_jax/config.py`: four namelist-equivalent dataclasses + `RunConfig` + `load_yaml`.
+- [x] `mam4_jax/data.py`: MAM4-MOM compile-time constants + sentinel-filled `IndexTables` + accessor helpers.
+- [x] Seven `NotImplementedError`-raising stubs under `mam4_jax/processes/`.
+- [x] `tests/test_scaffolding.py` with 12 assertions (all pass against jax 0.9.2 / pytest 9.0.2).
 
 ---
 
@@ -35,26 +35,28 @@ Proposed subtasks (each ≈ one commit):
 
 **Status:** proposed.
 
-- [ ] Get the Fortran reference building locally (verify `NETCDF_LIB` / `NETCDF_INCLUDE` env, fix the hard-coded `outpath` in `run_test.csh`).
-- [ ] Run the existing 12-point timestep sweep; archive `mam_output.nc` outputs under `tests/reference/`.
-- [ ] Instrument selected Fortran subroutines to dump per-process inputs + outputs (likely `modal_aero_calcsize` and `modal_aero_wateruptake` first). → ADR-010 on instrumentation approach.
-- [ ] Capture reference data for the first process to be ported.
+- [ ] Get the Fortran reference building locally (verify `NETCDF_LIB` / `NETCDF_INCLUDE` env, fix the hard-coded `outpath` in `run_test.csh`). Document in `docs/REFERENCE_BUILD.md`.
+- [ ] Run the existing 12-point timestep sweep; archive NetCDF outputs under `tests/reference/sweep/`.
+- [ ] Add patch-overlay instrumentation (new ADR) hooking `driver.F90:1118`, `:1208`, `:1283` to dump per-process I/O without modifying the vendored Fortran tree.
+- [ ] `scripts/capture_reference.py` driving the build + instrumented run + `.npz` dump under `tests/reference/per_process/`.
+- [ ] `tests/reference/SCHEMA.md` documenting the capture artifact contract.
 
 ---
 
-## Milestone 3 — First process port (proposed)
+## Milestone 3 — First process ports (proposed)
 
-**Status:** proposed. Owner to pick which process to port first. Candidates (in suggested order of increasing complexity):
+**Status:** proposed. Recommended ordering (from `docs/plans/001` plan recommendation):
 
-1. **`wv_saturation`** — pure thermodynamics, no aerosol state. Smallest scope, but exercises `float64` precision and closed-form porting style.
-2. **`modal_aero_wateruptake`** — equilibrium, no time integration. Single-mode physics, well-suited for diff-vs-Fortran.
-3. **`modal_aero_calcsize`** — size redistribution, more state coupling.
-4. **`modal_aero_newnuc`** — nucleation (Vehkamäki).
-5. **`modal_aero_coag`** — coagulation kernels.
-6. **`modal_aero_gasaerexch`** — condensation.
-7. **`modal_aero_rename`** — Aitken→accumulation transfer.
+1. **`polysvp`** (within `wv_saturation.F90:699-736`) — pure scalar Goff-Gratch saturation vapor pressure. ~40 lines, no module state, no aerosol coupling. Exercises the whole validation pipeline (capture, JAX port, `float64`, 1e-6 diff, residual plot) at minimum complexity. Reference data: tabulated `polysvp(T, type)` for a sweep of T values, generated in Python (no need to instrument Fortran).
+2. **Other `wv_saturation` leaf functions** as needed (e.g., `qsat_water`, `qsat_ice`) — same shape as `polysvp`, may share the saturation-vapor-pressure helpers.
+3. **`modal_aero_wateruptake_dr`** (`modal_aero_wateruptake.F90:130-150`) — equilibrium water uptake. First aerosol-state-aware port. Reference data: instrumented dump at `driver.F90:1208`.
+4. **`modal_aero_calcsize_sub`** (`modal_aero_calcsize.F90`) — size redistribution. Heaviest of the per-process ports (~1500 lines). Reference data: instrumented dump at `driver.F90:1118`.
+5. **`modal_aero_newnuc`** — binary H2SO4–H2O nucleation (Vehkamäki).
+6. **`modal_aero_coag`** — Brownian coagulation kernels.
+7. **`modal_aero_gasaerexch`** — condensation onto modes.
+8. **`modal_aero_rename`** — Aitken → accumulation transfer.
 
-Each first-port follows the validation workflow in `CLAUDE.md` (capture reference, port, diff to `1e-6`, plot residuals, log in `PROGRESS.md`).
+Each port lands as its own PR following the validation workflow in `CLAUDE.md` (capture reference, port, diff to `1e-6`, plot residuals, log in `PROGRESS.md`).
 
 ---
 
