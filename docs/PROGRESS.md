@@ -6,6 +6,13 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-18 — Plans archive convention + first plan archived
+
+- Commit: pending
+- Established the convention to archive approved plans under `docs/plans/NNN-<slug>.md` (ADR-007).
+- Archived the first plan as `docs/plans/001-scaffold-and-reference-capture.md`, which covers Milestones 1 (JAX package scaffold) and 2 (Fortran reference output capture) and recommends `polysvp` as the M3 first-port warm-up.
+- Plan also pre-decides the technical ADRs that will land in M1's PR (tracer representation, pure-functional signatures, dataclass config) — those will be recorded as ADR-008..010 when M1 commits.
+
 ## 2026-05-18 — Documentation scaffold
 
 - Commit: pending

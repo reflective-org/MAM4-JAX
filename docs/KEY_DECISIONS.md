@@ -68,6 +68,17 @@ Status values: **Accepted**, **Proposed**, **Superseded by ADR-NNN**.
   - Lower historical traceability for the scaffolding phase; mitigated by detailed `PROGRESS.md` entries.
 - **Alternatives considered:** Strict PR-per-commit (rejected: friction not justified yet).
 
+## ADR-007 — Plans are archived under `docs/plans/NNN-<slug>.md`
+
+- **Status:** Accepted (2026-05-18)
+- **Context:** Planning sessions produce a single canonical plan file at a transient location (`~/.claude/plans/...`). When the plan is approved, the project loses access to that record unless it's checked in. We need the planning history to live alongside the project docs so contributors can read what was decided and why.
+- **Decision:** When a plan is approved, copy it verbatim to `docs/plans/NNN-<slug>.md` (zero-padded sequential numbering, kebab-case slug derived from the plan title). The copy is part of the same PR/commit that begins executing the plan. If post-approval edits to the plan are necessary (e.g., ADR numbering shifts), add an editorial note at the top of the archived plan rather than rewriting the body.
+- **Consequences:**
+  - The `docs/plans/` directory is an append-only log of approved plans.
+  - Plans referenced from `docs/PROGRESS.md` and `docs/PLANS.md` link to their `docs/plans/NNN-...` archive.
+  - Plan numbering is independent of ADR numbering.
+- **Alternatives considered:** keep plans only in the transient location (rejected: no project-visible history); rewrite plans after approval to keep them "current" (rejected: dilutes the historical record).
+
 ---
 
 *Add new ADRs below this line. Number sequentially; never reuse numbers; never edit an Accepted ADR.*
