@@ -16,13 +16,13 @@ These override default Claude Code behavior. Re-read them before starting any ta
 2. **Each meaningful unit of progress becomes its own PR** so the owner can review before the next step.
 3. **No silent assumptions.** Before making any modeling, numerical, or API choice (even small ones — tolerances, dtype, function signatures, file layout), ask. When in doubt, ask.
 4. **Do not mention Claude, AI, or auto-generation in commit messages or PR descriptions.** Write them as if a human engineer authored them.
-5. **Maintain living docs in `docs/`**: `README.md`, `ARCHITECTURE.md`, `PROGRESS.md`, `PLANS.md`, `KEY_DECISIONS.md`, `DEFERRED.md`, `FEATURES.md`. Update them as part of the same PR that introduces the change they describe.
+5. **Maintain living docs.** `README.md` at the root; `ARCHITECTURE.md`, `PROGRESS.md`, `PLANS.md`, `KEY_DECISIONS.md`, `DEFERRED.md`, `FEATURES.md` under `docs/`. Update them as part of the same PR that introduces the change they describe.
 6. **Scientific integrity comes first.** Every ported component must be validated against the Fortran reference. Add plots whenever a visualization clarifies a discrepancy, convergence behavior, or process result — diagnostic figures are first-class deliverables, not decoration.
-7. **Target relative error: `1e-6`.** This threshold may be relaxed *only* with explicit owner approval, documented in `KEY_DECISIONS.md` with a justification.
-8. **Port properly, in two phases.**
+7. **Target relative error: `1e-6`** (rationale: `docs/KEY_DECISIONS.md` ADR-003). This threshold may be relaxed *only* with explicit owner approval, documented as a new ADR.
+8. **Port properly, in two phases** (rationale: `docs/KEY_DECISIONS.md` ADR-004).
    - Phase A — **scaffold** the JAX package structure end-to-end (modules, signatures, data flow, tests) before filling in physics.
    - Phase B — fill in physics, validate, then perform a **code audit + JAX-idiom optimization pass** (vectorization, `jit`, `vmap`, `scan`, sharding decisions) after correctness is established. Do **not** prematurely optimize during initial porting.
-9. **Default precision is `float64`** everywhere. Aerosol microphysics is stiff and quantity ratios span many orders of magnitude; do not silently downcast. If JAX requires `jax.config.update("jax_enable_x64", True)`, set it at package import.
+9. **Default precision is `float64`** everywhere (rationale: `docs/KEY_DECISIONS.md` ADR-002). Aerosol microphysics is stiff and quantity ratios span many orders of magnitude; do not silently downcast. Call `jax.config.update("jax_enable_x64", True)` at package import.
 10. **Ask, ask, ask.** Even for small tweaks. Better to ask one extra question than to commit a wrong assumption.
 11. **Project values:** scientific integrity, modern language idioms, thorough documentation, collaborative review, reproducibility, transparency. Trade off against these explicitly when forced to.
 
@@ -82,12 +82,30 @@ Strong, checkable criteria let you iterate without re-asking. Weak ones ("make i
 
 **These guardrails are working when:** diffs contain fewer drive-by changes, fewer rewrites are needed due to overcomplication, and clarifying questions arrive **before** implementation rather than after mistakes ship.
 
+## Documentation map
+
+Deeper detail lives under `docs/`. This file holds binding rules, guardrails, and the validation workflow; the docs hold reference material and project state.
+
+| Doc | What's in it |
+| --- | --- |
+| `README.md` | Project blurb + Fortran-reference provenance. |
+| `docs/ARCHITECTURE.md` | MAM4 model architecture; proposed JAX package layout; open architectural questions. |
+| `docs/PROGRESS.md` | Append-only log of milestones and PRs. |
+| `docs/PLANS.md` | Forward-looking roadmap, milestones, subtasks. Nothing moves from "proposed" to "in progress" without owner approval. |
+| `docs/KEY_DECISIONS.md` | ADRs (Architecture Decision Records) — the *why* behind load-bearing choices. |
+| `docs/DEFERRED.md` | Things explicitly punted, with the condition that brings them back. |
+| `docs/FEATURES.md` | Catalog of Fortran-reference features vs. JAX-port status. |
+
+Update the relevant doc in the **same PR** as the change it describes (rule #5).
+
 ## Repository layout
 
 ```
 mam4-jax/                              # repo root (this directory)
-  CLAUDE.md                            # this file
-  mam4-original-src-code/              # READ-ONLY Fortran reference (upstream snapshot)
+  CLAUDE.md                            # this file — rules, guardrails, validation workflow
+  README.md                            # project blurb + Fortran-reference provenance
+  docs/                                # ARCHITECTURE / PROGRESS / PLANS / KEY_DECISIONS / DEFERRED / FEATURES
+  mam4-original-src-code/              # READ-ONLY Fortran reference (vendored snapshot)
     e3sm_src/                          # MAM4 modules identical to E3SMv1
     e3sm_src_modified/                 # E3SMv1 MAM4 modules with box-model edits
     box_model_utils/                   # Box-model shims for E3SM infrastructure (ppgrid, physconst, wv_saturation, ...)
@@ -96,7 +114,7 @@ mam4-jax/                              # repo root (this directory)
     Makefile, run_test.csh             # Fortran build + convergence test harness
 ```
 
-The JAX package, test harness, validation data, and docs do not exist yet — propose their layout in `PLANS.md` and confirm with the owner before scaffolding.
+The JAX package and test harness do not exist yet — they will live under `mam4_jax/` and `tests/` when `docs/PLANS.md` Milestone 1 is approved.
 
 ## How to build & run the Fortran reference (for validation)
 
@@ -115,32 +133,9 @@ Notes before running:
 
 Namelist (built inline by `run_test.csh`) controls process toggles (`mdo_gaschem`, `mdo_gasaerexch`, `mdo_rename`, `mdo_newnuc`, `mdo_coag`), meteorology (`temp`, `press`, `RH_CLEA`), and initial aerosol/gas mixing ratios. Use the same namelist values when generating reference data for any given JAX test.
 
-## MAM4 architecture in one screen
+## MAM4 architecture
 
-Understanding this before touching code saves hours.
-
-**Domain.** Aerosols are represented as four log-normal **modes** (Aitken, accumulation, coarse, primary-carbon), each carrying a number concentration and per-species mass concentrations. The 4-mode-with-marine-organics (`MOM`) variant is the configured reference. There are also **cloud-borne** counterparts (`qqcw`) that mirror the interstitial tracers.
-
-**Time-stepping pattern.** The driver applies **sequential operator splitting** over each `mam_dt` step. The microphysical processes, in order, are:
-
-1. `modal_aero_calcsize` — recompute dry diameters from number + mass; enforce mode size bounds, transfer particles between modes when violated.
-2. `modal_aero_wateruptake` — equilibrium water uptake (Köhler-ish), gives wet diameter & wet density.
-3. `modal_aero_amicphys` — the umbrella "amicphys" call that internally runs:
-   - `modal_aero_gasaerexch` (H2SO4 / SOAG condensation onto modes)
-   - `modal_aero_newnuc` (binary H2SO4–H2O nucleation, Vehkamäki-style)
-   - `modal_aero_coag` (intra- and inter-modal Brownian coagulation)
-   - `modal_aero_rename` (transfer aged Aitken → accumulation when size criteria met)
-4. Simple gas/cloud chemistry (`gaschem_simple`, `cloudchem_simple`) — placeholders in the box model.
-
-Each sub-process is called as a Fortran subroutine that mutates the `q(:,:,pcnst)` tracer array in place. The mapping from `pcnst` indices to (mode, species) is held in `modal_aero_data` (`lmassptr_amode`, `numptr_amode`, etc.) — **this index bookkeeping is the single largest source of porting bugs**; surface it explicitly in the JAX data model rather than hiding it behind integer indirections.
-
-**Heaviest reference modules** (line counts, useful for scoping):
-- `box_model_utils/physics_buffer.F90` (~6500) — E3SM physics-buffer infrastructure; mostly stub-able in JAX.
-- `test_drivers/driver.F90` (~1600) — namelist parsing, I/O, time loop.
-- `box_model_utils/modal_aero_calcsize.F90` (~1500) — non-trivial physics, port carefully.
-- `box_model_utils/wv_saturation.F90` (~1400) — Goff-Gratch / Flatau saturation vapor pressure; consider replacing with a direct closed-form port.
-
-**E3SM infrastructure to short-circuit in JAX.** `ppgrid`, `pmgrid`, `spmd_utils`, `ref_pres`, `units`, `time_manager`, `cam_history`, `cam_logfile`, `cam_abortutils`, `dyn_grid`, `seasalt_model`, `modal_aero_convproc`, `modal_aero_deposition`, `aerodep_flx`, `phys_control` are mostly empty shims in the box model — re-implement only what `driver.F90` and the active microphysics actually call.
+The model architecture (modes, operator splitting, tracer layout, module roles) is documented in `docs/ARCHITECTURE.md`. **Read it before touching any porting code** — the tracer index bookkeeping in `modal_aero_data` is the single largest source of porting bugs.
 
 ## Validation workflow (apply to every port PR)
 
@@ -149,12 +144,12 @@ Each sub-process is called as a Fortran subroutine that mutates the `q(:,:,pcnst
 3. Port to JAX, `float64`, no `jit` yet.
 4. Diff against reference; require `max relative error < 1e-6` element-wise.
 5. Produce a plot (when meaningful: time series, scatter of JAX-vs-Fortran, residual histogram). Save under `docs/figures/`.
-6. Record the result in `PROGRESS.md` with the PR number.
-7. Only after correctness lands: open a follow-up PR for `jit`/`vmap` and update `PROGRESS.md`.
+6. Record the result in `docs/PROGRESS.md` with the PR number.
+7. Only after correctness lands: open a follow-up PR for `jit`/`vmap` and update `docs/PROGRESS.md`.
 
 ## Git, commits, PRs
 
 - `mam4-original-src-code/` is a **vendored** frozen snapshot — no nested `.git/`, no submodule. Provenance (upstream URL, commit SHA, date) is recorded in `README.md`. Do not modify files under that directory; to refresh the snapshot, replace it wholesale and update the provenance table in the same PR.
-- Branch per task; PR per logical task as defined in `PLANS.md`.
+- Branch per task; PR per logical task as defined in `docs/PLANS.md`.
 - Commit messages: imperative mood, scope-prefixed (`scaffold:`, `port:`, `docs:`, `test:`, `fix:`). No Claude/AI attribution. No emojis unless the owner requests them.
-- Open PRs against `main` and tag with the matching `PLANS.md` task ID.
+- Open PRs against `main` and tag with the matching `docs/PLANS.md` task ID.
