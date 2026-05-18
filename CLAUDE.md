@@ -95,6 +95,7 @@ Deeper detail lives under `docs/`. This file holds binding rules, guardrails, an
 | `docs/KEY_DECISIONS.md` | ADRs (Architecture Decision Records) — the *why* behind load-bearing choices. |
 | `docs/DEFERRED.md` | Things explicitly punted, with the condition that brings them back. |
 | `docs/FEATURES.md` | Catalog of Fortran-reference features vs. JAX-port status. |
+| `docs/plans/NNN-<slug>.md` | Archived approved plans (append-only). See ADR-007 in `KEY_DECISIONS.md`. |
 
 Update the relevant doc in the **same PR** as the change it describes (rule #5).
 
