@@ -27,11 +27,19 @@ Three modes:
   called to populate ``wv_saturation``'s module-level state — driver
   calls it with canonical box-model constants.
 
+* ``--mode makoh``: applies ``scripts/patches/expose_makoh.patch`` to
+  make ``makoh_cubic`` and ``makoh_quartic`` public, builds the makoh
+  driver (``scripts/reference_drivers/makoh_driver.F90``), runs it on a
+  small batch of test polynomial coefficients, and archives complex
+  roots to ``tests/reference/makoh/reference.npz`` with arrays
+  ``cubic_inputs``, ``cubic_roots``, ``quartic_inputs``, ``quartic_roots``.
+
 Usage:
     python scripts/capture_reference.py
     python scripts/capture_reference.py --mode instrumented [--nstep 1]
     python scripts/capture_reference.py --mode polysvp
     python scripts/capture_reference.py --mode qsat
+    python scripts/capture_reference.py --mode makoh
 """
 from __future__ import annotations
 
@@ -57,6 +65,8 @@ POLYSVP_OUT_DIR = REPO_ROOT / "tests" / "reference" / "polysvp"
 POLYSVP_EXE = RUN_DIR / "polysvp_driver.exe"
 QSAT_OUT_DIR = REPO_ROOT / "tests" / "reference" / "qsat"
 QSAT_EXE = RUN_DIR / "qsat_driver.exe"
+MAKOH_OUT_DIR = REPO_ROOT / "tests" / "reference" / "makoh"
+MAKOH_EXE = RUN_DIR / "makoh_driver.exe"
 INDICES_OUT_DIR = REPO_ROOT / "tests" / "reference" / "indices"
 
 TOTAL_DURATION_S = 1800
@@ -102,17 +112,19 @@ NAMELIST_TEMPLATE = dedent("""\
 
 
 def ensure_built(instrumented: bool = False, polysvp: bool = False,
-                 qsat: bool = False) -> None:
+                 qsat: bool = False, makoh: bool = False) -> None:
     """Build the executable. Always rebuilds — the build flag determines
     whether the previous binary is the right flavour."""
     cmd = [str(BUILD_SCRIPT)]
     if instrumented: cmd.append("--instrumented")
     if polysvp:      cmd.append("--polysvp")
     if qsat:         cmd.append("--qsat")
+    if makoh:        cmd.append("--makoh")
     flavours = []
     if instrumented: flavours.append("instrumented")
     if polysvp:      flavours.append("polysvp")
     if qsat:         flavours.append("qsat")
+    if makoh:        flavours.append("makoh")
     flavours = flavours or ["baseline"]
     print(f"[capture_reference] building {'+'.join(flavours)} executable(s) ...")
     subprocess.run(cmd, check=True)
@@ -335,11 +347,61 @@ def run_qsat() -> list[Path]:
     return [out]
 
 
+def _read_makoh(path: Path) -> dict[str, np.ndarray]:
+    """Parse makoh_reference.txt into a dict of numpy arrays.
+
+    The text format is a section-marked dump produced by makoh_driver.F90.
+    Each section starts with '%' followed by all-numeric rows.
+    """
+    sections: dict[str, list[list[float]]] = {}
+    current: str | None = None
+    for line in path.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith("%"):
+            current = s.lstrip("%").strip().split()[0]
+            sections[current] = []
+            continue
+        if current is not None:
+            sections[current].append([float(t) for t in s.split()])
+
+    def arr(name: str) -> np.ndarray:
+        return np.asarray(sections[name], dtype=np.float64)
+
+    # cubic_roots is laid out as ncub*3 rows of (real, imag); reassemble
+    # into a complex (ncub, 3) array.
+    def complex_roots(name: str, n_roots: int) -> np.ndarray:
+        ri = arr(name)  # shape (n_cases * n_roots, 2)
+        cmplx = ri[:, 0] + 1j * ri[:, 1]
+        return cmplx.reshape(-1, n_roots)
+
+    return {
+        "cubic_inputs":   arr("cubic_inputs"),
+        "cubic_roots":    complex_roots("cubic_roots", 3),
+        "quartic_inputs": arr("quartic_inputs"),
+        "quartic_roots":  complex_roots("quartic_roots", 4),
+    }
+
+
+def run_makoh() -> list[Path]:
+    MAKOH_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    print("[capture_reference] running makoh driver ...", flush=True)
+    subprocess.run(["./makoh_driver.exe"], cwd=RUN_DIR, check=True,
+                   stdout=subprocess.DEVNULL)
+
+    arrays = _read_makoh(RUN_DIR / "makoh_reference.txt")
+    out = MAKOH_OUT_DIR / "reference.npz"
+    np.savez(out, **arrays)
+    return [out]
+
+
 # ----- entry point ----------------------------------------------------------
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--mode", choices=("sweep", "instrumented", "polysvp", "qsat"),
+    ap.add_argument("--mode",
+                    choices=("sweep", "instrumented", "polysvp", "qsat", "makoh"),
                     default="sweep")
     ap.add_argument("--nstep", type=int, default=1,
                     help="instrumented mode: number of timesteps over 1800 s (default 1)")
@@ -361,10 +423,14 @@ def main() -> int:
         ensure_built(polysvp=True)
         written = run_polysvp()
         out_root = POLYSVP_OUT_DIR
-    else:  # qsat
+    elif args.mode == "qsat":
         ensure_built(qsat=True)
         written = run_qsat()
         out_root = QSAT_OUT_DIR
+    else:  # makoh
+        ensure_built(makoh=True)
+        written = run_makoh()
+        out_root = MAKOH_OUT_DIR
 
     print(f"\n[capture_reference] {len(written)} file(s) written under {out_root}")
     for p in written:
