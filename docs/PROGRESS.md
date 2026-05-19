@@ -6,6 +6,18 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-19 — Milestone 3.4 (PR-B) — Port `modal_aero_kohler`
+
+- PR: pending (`m3/kohler-solver`)
+- Second bottom-up step of the wateruptake chain: the Köhler-equilibrium wet-radius solver itself, consuming the `makoh_cubic` / `makoh_quartic` polynomial root finders that landed in PR-A.
+- Renamed `scripts/patches/expose_makoh.patch` → `scripts/patches/expose_internals.patch` and extended it to also expose `modal_aero_kohler` (single consolidated patch is cleaner than two competing ones touching the same source region).
+- `scripts/reference_drivers/kohler_driver.F90`: sweeps a `(rdry, hygro, s)` grid of 7 × 4 × 6 = 168 points designed to exercise all four branches of the solver — insoluble particle (vol ≤ 1e-12 microns³), small-p approximation, generic quartic, near-saturation interpolation. `build_reference.sh --kohler` and `capture_reference.py --mode kohler` produce `tests/reference/kohler/reference.npz` (~6 KB).
+- `mam4_jax/kohler.py`: added `modal_aero_kohler(rdry_in, hygro, s)` plus an internal `_pick_smallest_valid_real_root` helper. Vectorised over the batch axis; both polynomial families are solved unconditionally then masked to the appropriate branch via `jnp.where`. Skips the `verify_wateruptake` bisection branch (macro is off in the reference build).
+- Constants embedded as literals (Fortran lines 533-539): `mw=18`, `surften=76`, `ugascon=8.3e7`, `tair=273`, `rhow=1` — these are the in-routine values the Fortran uses (the physically-derived alternatives are commented out at lines 525-531).
+- Validation (`tests/test_kohler.py`, 4 tests): max relative error against Fortran is **9.77e-14** across all 168 grid points — 8 orders below ADR-003's tolerance. The worst-case is at small rdry near saturation, where root selection is fiddly.
+- Residual figure: `docs/figures/kohler_residuals.png` shows Köhler growth-factor curves per hygroscopicity panel (JAX dashed over Fortran solid) plus a per-point rel-err panel.
+- Full suite: **33/33 green** (was 29).
+
 ## 2026-05-19 — Milestone 3.4 (PR-A) — Port `makoh_cubic` and `makoh_quartic`
 
 - PR: pending (`m3/makoh-polynomial-solvers`)
