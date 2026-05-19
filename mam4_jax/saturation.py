@@ -1,17 +1,31 @@
-"""Saturation vapor pressure — JAX port of Fortran `wv_saturation::polysvp`.
+"""Saturation vapor pressure and specific humidity — JAX port of `wv_saturation`.
 
-Goff–Gratch (1946) closed-form polynomials. Direct line-by-line port of
-`mam4-original-src-code/box_model_utils/wv_saturation.F90:699-736` so that
-each line of JAX code traces 1:1 to the Fortran reference. Validated
-against the standalone Fortran driver
-(`scripts/reference_drivers/polysvp_driver.F90`) over 170 K – 320 K to
-ADR-003's `1e-6` relative-error bound; see `tests/test_polysvp.py`.
+Direct line-by-line ports of the public table-free entry points of
+``mam4-original-src-code/box_model_utils/wv_saturation.F90``:
 
-Both branches accept and return float64.
+* :func:`polysvp_water`, :func:`polysvp_ice`, :func:`polysvp` — Goff–Gratch
+  (1946) closed-form vapor pressure, ported from lines 699–736.
+
+* :func:`qsat_water`, :func:`qsat_ice` — saturation specific humidity given
+  (T, p), ported from lines 758–862. **Note the Fortran inconsistency**:
+  ``qsat_water`` computes ``es`` via the Goff–Gratch formula (matching
+  ``polysvp(T, 0)``); ``qsat_ice`` uses a Clausius–Clapeyron approximation
+  ``es = 611 · exp((hlatv+hlatf)/rgasv · (1/273 − 1/T))`` instead of
+  ``polysvp(T, 1)``. The JAX port preserves both formulas verbatim so it
+  matches the Fortran exactly; callers that want a consistent Goff–Gratch
+  treatment for ice should call ``qs_from_es(polysvp_ice(T), p)``.
+
+Validated to ADR-003's ``1e-6`` element-wise relative-error bound against
+standalone Fortran drivers under ``scripts/reference_drivers/``; see
+``tests/test_polysvp.py`` and ``tests/test_qsat.py``.
+
+All functions accept and return float64.
 """
 from __future__ import annotations
 
 import jax.numpy as jnp
+
+from mam4_jax.constants import EPSQS, HLATF, HLATV, RGASV
 
 
 def polysvp_water(T):
@@ -74,3 +88,45 @@ def polysvp(T, type_: int):
     if type_ == 1:
         return polysvp_ice(T)
     raise ValueError(f"polysvp: type must be 0 (water) or 1 (ice); got {type_!r}")
+
+
+# ---------------------------------------------------------------------------
+# Saturation specific humidity
+# ---------------------------------------------------------------------------
+
+def qs_from_es(es, p):
+    """Saturation specific humidity from saturation vapor pressure and pressure.
+
+    Returns ``qs = epsqs · es / (p − (1 − epsqs) · es)`` with the same
+    ``qs < 0 → qs = 1`` fallback the Fortran applies when ``p`` is
+    too close to ``es`` (which would otherwise yield a negative
+    denominator). Matches the inline formulas in
+    ``wv_saturation.F90:791`` and ``:859``.
+    """
+    qs = EPSQS * es / (p - (1.0 - EPSQS) * es)
+    return jnp.where(qs < 0.0, 1.0, qs)
+
+
+def qsat_water(T, p):
+    """Saturation specific humidity over liquid water given ``T`` (K) and ``p`` (Pa).
+
+    Goff–Gratch via :func:`polysvp_water`. Ported from
+    ``wv_saturation.F90:758-799``.
+    """
+    es = polysvp_water(T)
+    return qs_from_es(es, p)
+
+
+def qsat_ice(T, p):
+    """Saturation specific humidity over ice given ``T`` (K) and ``p`` (Pa).
+
+    Clausius–Clapeyron with the combined latent heat of sublimation
+    (``hlatv + hlatf``), matching the Fortran ``qsat_ice`` scalar
+    function at ``wv_saturation.F90:852-862``. **This does not call
+    :func:`polysvp_ice`** — see the module docstring. Callers wanting a
+    Goff–Gratch ice treatment can do
+    ``qs_from_es(polysvp_ice(T), p)`` instead.
+    """
+    T0_INV = 1.0 / 273.0
+    es = 611.0 * jnp.exp((HLATV + HLATF) / RGASV * (T0_INV - 1.0 / T))
+    return qs_from_es(es, p)
