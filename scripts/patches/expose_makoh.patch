@@ -1,0 +1,11 @@
+--- a/modal_aero_wateruptake.F90
++++ b/modal_aero_wateruptake.F90
+@@ -27,6 +27,8 @@
+    modal_aero_wateruptake_sub
+
+ public :: modal_aero_wateruptake_reg
++
++public :: makoh_cubic, makoh_quartic
+
+ real(r8), parameter :: third  = 1._r8/3._r8
+ real(r8), parameter :: pi43   = pi*4.0_r8/3.0_r8

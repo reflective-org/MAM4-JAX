@@ -10,14 +10,19 @@
 #   scripts/build_reference.sh --instrumented  # adds per-process I/O dump hooks
 #   scripts/build_reference.sh --polysvp       # also builds the polysvp reference driver
 #   scripts/build_reference.sh --qsat          # also builds the qsat reference driver
+#   scripts/build_reference.sh --makoh         # also builds the makoh reference driver
 #
 # Instrumented build overlays scripts/patches/mam4_dump_state.F90 and applies
 # scripts/patches/driver_instrumentation.patch to the build/ copy of
 # driver.F90. The committed vendored tree is never modified in either mode.
 #
-# --polysvp / --qsat can combine with the baseline build to also produce
-# run/<name>_driver.exe, standalone harnesses that drive specific public
-# entry points in wv_saturation (see scripts/reference_drivers/).
+# --makoh additionally applies scripts/patches/expose_makoh.patch to the
+# build copy of modal_aero_wateruptake.F90, which makes makoh_cubic and
+# makoh_quartic public so the standalone driver can call them.
+#
+# --polysvp / --qsat / --makoh can combine with the baseline build to
+# also produce run/<name>_driver.exe, standalone harnesses that drive
+# specific entry points (see scripts/reference_drivers/).
 #
 # Prereqs (macOS):
 #   brew install gcc netcdf netcdf-fortran
@@ -27,11 +32,13 @@ set -euo pipefail
 INSTRUMENTED=0
 BUILD_POLYSVP=0
 BUILD_QSAT=0
+BUILD_MAKOH=0
 for arg in "$@"; do
   case "$arg" in
     --instrumented) INSTRUMENTED=1 ;;
     --polysvp)      BUILD_POLYSVP=1 ;;
     --qsat)         BUILD_QSAT=1 ;;
+    --makoh)        BUILD_MAKOH=1 ;;
     *) echo "Unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -96,6 +103,12 @@ if [[ "$INSTRUMENTED" == "1" ]]; then
   ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/driver_instrumentation.patch" )
 fi
 
+if [[ "$BUILD_MAKOH" == "1" ]]; then
+  echo ""
+  echo "Applying expose_makoh overlay..."
+  ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/expose_makoh.patch" )
+fi
+
 # --- Build ------------------------------------------------------------------
 
 if [[ "$INSTRUMENTED" == "1" ]]; then
@@ -139,4 +152,8 @@ fi
 
 if [[ "$BUILD_QSAT" == "1" ]]; then
   build_ref_driver qsat
+fi
+
+if [[ "$BUILD_MAKOH" == "1" ]]; then
+  build_ref_driver makoh
 fi
