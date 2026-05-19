@@ -6,6 +6,18 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-19 — Milestone 3.4 (PR-A) — Port `makoh_cubic` and `makoh_quartic`
+
+- PR: pending (`m3/makoh-polynomial-solvers`)
+- First bottom-up step of the wateruptake port chain: the two analytical polynomial root finders that the Köhler solver consumes.
+- `scripts/patches/expose_makoh.patch`: small overlay that adds `public :: makoh_cubic, makoh_quartic` to `modal_aero_wateruptake.F90` (the routines are otherwise private). Applied by `build_reference.sh --makoh` onto the transient build copy; vendored tree pristine.
+- `scripts/reference_drivers/makoh_driver.F90`: standalone harness that feeds the makoh routines six representative cubic and six representative quartic test cases (well-conditioned plus the "insoluble particle" edge), writes complex roots to text. `scripts/capture_reference.py --mode makoh` parses to `tests/reference/makoh/reference.npz` (~2 KB).
+- `mam4_jax/kohler.py` (new module): `makoh_cubic(p0, p1, p2)` and `makoh_quartic(p0, p1, p2, p3)` returning `complex128` roots. Line-by-line port of `modal_aero_wateruptake.F90:684-793`. NaN propagation faithfully matches Fortran (no `safe_cy` guards) so the algorithm's degenerate cases produce the same NaN they do in the reference. Naming rationale: this module will grow with the kohler solver in PR-B; the process-level entry point (the M1 stub at `mam4_jax/processes/wateruptake.py`) gets filled in by PR-C and will call into this module.
+- Documented Fortran quirk preserved: `makoh_cubic` accepts `p2` but ignores it (Cardano's method on the depressed cubic). The JAX port exposes `p2` for signature parity with `del p2` and a docstring note.
+- Validation (`tests/test_makoh.py`, 4 tests): max relative error **1.49e-14 (cubic)** and **3.47e-15 (quartic)** across all 6 + 6 test cases. Both ~8 orders below ADR-003's 1e-6 tolerance.
+- Residual figure: `docs/figures/makoh_residuals.png` (4 panels — absolute and relative error per case for each root branch of cubic + quartic).
+- Full suite: **29/29 green** (was 25).
+
 ## 2026-05-19 — Milestone 3.3 — Populate `IndexTables` from instrumented Fortran capture
 
 - PR: pending (`m3/populate-index-tables`)
