@@ -9,14 +9,15 @@
 #   scripts/build_reference.sh                 # baseline build
 #   scripts/build_reference.sh --instrumented  # adds per-process I/O dump hooks
 #   scripts/build_reference.sh --polysvp       # also builds the polysvp reference driver
+#   scripts/build_reference.sh --qsat          # also builds the qsat reference driver
 #
 # Instrumented build overlays scripts/patches/mam4_dump_state.F90 and applies
 # scripts/patches/driver_instrumentation.patch to the build/ copy of
 # driver.F90. The committed vendored tree is never modified in either mode.
 #
-# --polysvp can combine with the baseline build to also produce
-# run/polysvp_driver.exe, a standalone harness that calls wv_saturation::polysvp
-# over a temperature sweep (see scripts/reference_drivers/polysvp_driver.F90).
+# --polysvp / --qsat can combine with the baseline build to also produce
+# run/<name>_driver.exe, standalone harnesses that drive specific public
+# entry points in wv_saturation (see scripts/reference_drivers/).
 #
 # Prereqs (macOS):
 #   brew install gcc netcdf netcdf-fortran
@@ -25,10 +26,12 @@ set -euo pipefail
 
 INSTRUMENTED=0
 BUILD_POLYSVP=0
+BUILD_QSAT=0
 for arg in "$@"; do
   case "$arg" in
     --instrumented) INSTRUMENTED=1 ;;
     --polysvp)      BUILD_POLYSVP=1 ;;
+    --qsat)         BUILD_QSAT=1 ;;
     *) echo "Unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -114,16 +117,26 @@ echo "Built: $EXE"
 
 # --- Optional: polysvp standalone driver ------------------------------------
 
-if [[ "$BUILD_POLYSVP" == "1" ]]; then
-  POLYSVP_EXE="$RUN_DIR/polysvp_driver.exe"
-  POLYSVP_SRC="$REPO_ROOT/scripts/reference_drivers/polysvp_driver.F90"
+build_ref_driver() {
+  local name="$1"
+  local exe="$RUN_DIR/${name}_driver.exe"
+  local src="$REPO_ROOT/scripts/reference_drivers/${name}_driver.F90"
   # Link against every object the main build produced except the box-model
   # entry points (main, driver) so we get a single program with our own main.
-  POLYSVP_OBJS=$(ls "$RUN_DIR"/*.o | grep -Ev "/(main|driver|mam4_dump_state)\.o$" | tr '\n' ' ')
-  ( cd "$RUN_DIR" && gfortran $FCFLAGS -o "$POLYSVP_EXE" "$POLYSVP_SRC" $POLYSVP_OBJS $LDFLAGS )
-  if [[ ! -x "$POLYSVP_EXE" ]]; then
-    echo "Error: polysvp driver link failed." >&2
+  local objs
+  objs=$(ls "$RUN_DIR"/*.o | grep -Ev "/(main|driver|mam4_dump_state)\.o$" | tr '\n' ' ')
+  ( cd "$RUN_DIR" && gfortran $FCFLAGS -o "$exe" "$src" $objs $LDFLAGS )
+  if [[ ! -x "$exe" ]]; then
+    echo "Error: $name driver link failed." >&2
     exit 1
   fi
-  echo "Built: $POLYSVP_EXE"
+  echo "Built: $exe"
+}
+
+if [[ "$BUILD_POLYSVP" == "1" ]]; then
+  build_ref_driver polysvp
+fi
+
+if [[ "$BUILD_QSAT" == "1" ]]; then
+  build_ref_driver qsat
 fi
