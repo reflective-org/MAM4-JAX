@@ -6,6 +6,16 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-19 — Milestone 3.3 — Populate `IndexTables` from instrumented Fortran capture
+
+- PR: pending (`m3/populate-index-tables`)
+- Extended `scripts/patches/mam4_dump_state.F90` with a `dump_indices()` subroutine that writes `modal_aero_data`'s integer index tables (`numptr_amode`, `numptrcw_amode`, `lspectype_amode`, `lmassptr_amode`, `lmassptrcw_amode`, `nspec_amode`, `modename_amode`, `specname_amode`) to `mam4_indices.txt` once at init, right before `cambox_do_run`'s `main_time_loop`. The unified-diff patch (`driver_instrumentation.patch`) gains the corresponding `call dump_indices()` line via the existing `_generate_driver_patch.py` regenerator.
+- `scripts/capture_reference.py --mode instrumented` now also parses `mam4_indices.txt` and writes `tests/reference/indices/reference.npz` (~4 KB, 11 arrays + 3 scalar dims, all 0-based with `-1` sentinels for unused slots).
+- `mam4_jax/data.py`: replaced sentinel-filled `IndexTables` with hard-coded MAM4-MOM constants (`NUMPTR_AMODE`, `LMASSPTR_AMODE`, `LMASSPTRCW_AMODE`, `LSPECTYPE_AMODE` — all 0-based) and a module-level `INDEX_TABLES` instance. Accessors `get_number`, `get_mass`, and new `get_mass_by_species_name` now return actual `pcnst`-axis slices instead of raising. `make_sentinel_tables()` kept for tests of the sentinel-raise path.
+- Reference-axis ordering: Python uses `(mode, slot)`. Fortran is `(slot, mode)` (column-major); the parser swaps. Documented in `tests/reference/SCHEMA.md`.
+- Tests: scaffolding suite grew from 12 to 18 (+`test_index_tables_populated`, `test_index_tables_match_npz_reference`, `test_get_number_returns_slice`, `test_get_mass_returns_slice`, `test_get_mass_raises_on_unused_slot`, `test_get_mass_by_species_name`). Full suite: **25/25 green**.
+- The `.npz` is committed as provenance; the Python constants are the source of truth. `tests/test_scaffolding.py::test_index_tables_match_npz_reference` fails loudly if they ever drift.
+
 ## 2026-05-18 — Milestone 3.2 — Ports: `qsat_water` and `qsat_ice` + physical constants
 
 - PR: pending (`m3/qsat-functions`)
