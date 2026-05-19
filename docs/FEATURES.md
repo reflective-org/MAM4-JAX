@@ -49,15 +49,16 @@ Reference build flags: `-DMODAL_AERO_4MODE_MOM -DRAIN_EVAP_TO_COARSE_AERO -DPCNS
 | Capability | Fortran | JAX status |
 | --- | --- | --- |
 | Input via namelist | `driver.F90` (`&time_input`, `&cntl_input`, `&met_input`, `&chem_input`) | scaffolded — `mam4_jax/config.py` exposes `TimeConfig` / `ControlConfig` / `MetConfig` / `ChemConfig` + `load_yaml` (ADR-010) |
-| Output as NetCDF | `driver.F90` writes `mam_output.nc` | planned — match Fortran NetCDF layout for diffability |
-| Per-process input/output capture (for validation) | not in Fortran natively — must instrument | planned (`PLANS.md` M2, instrumentation overlay) |
+| Output as NetCDF | `driver.F90` writes `mam_output.nc` | reference captures committed under `tests/reference/sweep/`; JAX-side NetCDF output still planned |
+| Per-process input/output capture (for validation) | not in Fortran natively — instrumented via the ADR-012 overlay | `scripts/patches/` + `scripts/capture_reference.py --mode instrumented`; outputs under `tests/reference/per_process/*.npz` |
 
 ## Validation features
 
 | Capability | Status |
 | --- | --- |
 | Element-wise `1e-6` rel-err assertion (ADR-003) | scaffolding test (`tests/test_scaffolding.py`) live; rel-err assertion harness planned for first M3 port |
-| 12-point convergence sweep matching `run_test.csh` | planned (`PLANS.md` M5) |
+| 12-point convergence sweep matching `run_test.csh` | captured (`tests/reference/sweep/*.nc`); JAX reproduction planned for M5 |
+| Per-process reference data for M3 port validation | captured (`tests/reference/per_process/*.npz`); schema in `tests/reference/SCHEMA.md` |
 | Residual / convergence diagnostic plots | planned (rule #6 — figures are first-class deliverables) |
 
 ## Out of scope (deferred or not planned)

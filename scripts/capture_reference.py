@@ -1,17 +1,21 @@
-"""Capture Fortran reference outputs by running the 12-point convergence sweep.
+"""Capture Fortran reference outputs.
 
-For each (dt, nstep) in the canonical sweep, writes a namelist matching
-the Fortran driver's expectations, runs the executable, and copies
-mam_output.nc into ``tests/reference/sweep/mam_dt<DT>_ndt<N>.nc``.
+Two modes:
 
-The executable is rebuilt automatically (via ``scripts/build_reference.sh``)
-if it is not present.
+* ``--mode sweep`` (default): build the baseline (non-instrumented) executable
+  and run the 12-point convergence sweep. Each (dt, nstep) writes a NetCDF
+  to ``tests/reference/sweep/mam_dt<DT>_ndt<N>.nc``.
+
+* ``--mode instrumented``: build the executable with the
+  ``scripts/patches/`` overlay applied, run the executable for ``--nstep``
+  timesteps, then convert the six ``mam4_dump_*.bin`` files into
+  ``tests/reference/per_process/<process>_<phase>.npz``. Each ``.npz``
+  bundles arrays ``istep``, ``q``, ``qqcw``, ``dgncur_a``, ``dgncur_awet``,
+  ``qaerwat``, ``wetdens``. Schema: ``tests/reference/SCHEMA.md``.
 
 Usage:
     python scripts/capture_reference.py
-
-Per-process instrumented capture (M2 phase 3) will be added behind a
-``--mode instrumented`` flag in a follow-up commit.
+    python scripts/capture_reference.py --mode instrumented [--nstep 1]
 """
 from __future__ import annotations
 
@@ -23,21 +27,27 @@ import sys
 from pathlib import Path
 from textwrap import dedent
 
+import numpy as np
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_DIR = REPO_ROOT / "mam4-original-src-code"
 RUN_DIR = SRC_DIR / "run"
 EXE = RUN_DIR / "mam_box_test.exe"
 BUILD_SCRIPT = REPO_ROOT / "scripts" / "build_reference.sh"
-OUT_DIR = REPO_ROOT / "tests" / "reference" / "sweep"
 
-# Canonical 1800 s convergence sweep from the upstream run_test.csh.
+SWEEP_OUT_DIR = REPO_ROOT / "tests" / "reference" / "sweep"
+PER_PROCESS_OUT_DIR = REPO_ROOT / "tests" / "reference" / "per_process"
+
 TOTAL_DURATION_S = 1800
 NSTEP_SWEEP: tuple[int, ...] = (1, 2, 4, 9, 18, 30, 60, 120, 180, 360, 900, 1800)
 
-# Namelist matches the Fortran driver's expectations
-# (test_drivers/driver.F90 + box_model_utils/rad_constituents.F90 :211).
-# Values mirror run_test.csh and the rad_constituents MAM4-MOM defaults
-# (dgnum/sigmag in metres).
+DUMP_TAGS: tuple[str, ...] = (
+    "calcsize_before", "calcsize_after",
+    "wateruptake_before", "wateruptake_after",
+    "amicphys_before", "amicphys_after",
+)
+
+
 NAMELIST_TEMPLATE = dedent("""\
     &time_input
     mam_dt    = {dt},
@@ -70,36 +80,137 @@ NAMELIST_TEMPLATE = dedent("""\
 """)
 
 
-def ensure_built() -> None:
-    if EXE.is_file() and os.access(EXE, os.X_OK):
-        return
-    print(f"[capture_reference] {EXE.name} missing; building via {BUILD_SCRIPT.name} ...")
-    subprocess.run([str(BUILD_SCRIPT)], check=True)
+def ensure_built(instrumented: bool) -> None:
+    """Build the executable. Always rebuilds — the build flag determines
+    whether the previous binary is the right flavour."""
+    cmd = [str(BUILD_SCRIPT)]
+    if instrumented:
+        cmd.append("--instrumented")
+    flavour = "instrumented" if instrumented else "baseline"
+    print(f"[capture_reference] building {flavour} executable ...")
+    subprocess.run(cmd, check=True)
 
 
-def run_one(nstep: int) -> Path:
-    dt = TOTAL_DURATION_S // nstep
+def write_namelist(dt: int, nstep: int) -> None:
     (RUN_DIR / "namelist").write_text(NAMELIST_TEMPLATE.format(dt=dt, nstep=nstep))
-    print(f"[capture_reference] dt={dt:>4}s nstep={nstep:<5} ...", flush=True)
+
+
+def run_one_baseline(nstep: int) -> Path:
+    dt = TOTAL_DURATION_S // nstep
+    write_namelist(dt, nstep)
+    print(f"[capture_reference] sweep dt={dt:>4}s nstep={nstep:<5} ...", flush=True)
     subprocess.run(["./mam_box_test.exe"], cwd=RUN_DIR, check=True,
                    stdout=subprocess.DEVNULL)
-    dest = OUT_DIR / f"mam_dt{dt}_ndt{nstep}.nc"
+    dest = SWEEP_OUT_DIR / f"mam_dt{dt}_ndt{nstep}.nc"
     shutil.copy2(RUN_DIR / "mam_output.nc", dest)
     return dest
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.parse_args()
+# ----- instrumented mode ----------------------------------------------------
 
-    ensure_built()
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+# Binary record layout written by scripts/patches/mam4_dump_state.F90:
+#   int32  : istep
+#   int32  : ncol, pver, pcnst, ntot_amode      (4 values)
+#   float64: q          (ncol*pver*pcnst)
+#   float64: qqcw       (ncol*pver*pcnst)
+#   float64: dgncur_a   (ncol*pver*ntot_amode)
+#   float64: dgncur_awet(ncol*pver*ntot_amode)
+#   float64: qaerwat    (ncol*pver*ntot_amode)
+#   float64: wetdens    (ncol*pver*ntot_amode)
+
+
+def _read_dump(path: Path) -> dict[str, np.ndarray]:
+    """Parse one mam4_dump_<tag>.bin into per-array stacks across timesteps."""
+    raw = path.read_bytes()
+    pos = 0
+    istep_list: list[int] = []
+    q_list: list[np.ndarray] = []
+    qqcw_list: list[np.ndarray] = []
+    dgncur_a_list: list[np.ndarray] = []
+    dgncur_awet_list: list[np.ndarray] = []
+    qaerwat_list: list[np.ndarray] = []
+    wetdens_list: list[np.ndarray] = []
+
+    while pos < len(raw):
+        istep = int(np.frombuffer(raw, dtype=np.int32, count=1, offset=pos)[0]); pos += 4
+        hdr = np.frombuffer(raw, dtype=np.int32, count=4, offset=pos); pos += 16
+        ncol, pver, pcnst, ntot_amode = (int(x) for x in hdr)
+
+        n_tracer = ncol * pver * pcnst
+        n_mode   = ncol * pver * ntot_amode
+
+        def take(n: int, shape: tuple[int, ...]) -> np.ndarray:
+            nonlocal pos
+            arr = np.frombuffer(raw, dtype=np.float64, count=n, offset=pos).reshape(shape).copy()
+            pos += n * 8
+            return arr
+
+        q_list.append(take(n_tracer, (ncol, pver, pcnst)))
+        qqcw_list.append(take(n_tracer, (ncol, pver, pcnst)))
+        dgncur_a_list.append(take(n_mode, (ncol, pver, ntot_amode)))
+        dgncur_awet_list.append(take(n_mode, (ncol, pver, ntot_amode)))
+        qaerwat_list.append(take(n_mode, (ncol, pver, ntot_amode)))
+        wetdens_list.append(take(n_mode, (ncol, pver, ntot_amode)))
+        istep_list.append(istep)
+
+    return {
+        "istep":       np.asarray(istep_list, dtype=np.int32),
+        "q":           np.stack(q_list),
+        "qqcw":        np.stack(qqcw_list),
+        "dgncur_a":    np.stack(dgncur_a_list),
+        "dgncur_awet": np.stack(dgncur_awet_list),
+        "qaerwat":     np.stack(qaerwat_list),
+        "wetdens":     np.stack(wetdens_list),
+    }
+
+
+def run_instrumented(nstep: int) -> list[Path]:
+    dt = TOTAL_DURATION_S // nstep
+    PER_PROCESS_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    # Wipe any prior dumps so we never mix runs.
+    for stale in RUN_DIR.glob("mam4_dump_*.bin"):
+        stale.unlink()
+
+    write_namelist(dt, nstep)
+    print(f"[capture_reference] instrumented dt={dt}s nstep={nstep} ...", flush=True)
+    subprocess.run(["./mam_box_test.exe"], cwd=RUN_DIR, check=True,
+                   stdout=subprocess.DEVNULL)
 
     written: list[Path] = []
-    for n in NSTEP_SWEEP:
-        written.append(run_one(n))
+    for tag in DUMP_TAGS:
+        bin_path = RUN_DIR / f"mam4_dump_{tag}.bin"
+        if not bin_path.is_file():
+            raise RuntimeError(f"expected dump missing: {bin_path}")
+        arrays = _read_dump(bin_path)
+        npz_path = PER_PROCESS_OUT_DIR / f"{tag}.npz"
+        np.savez(npz_path, **arrays)
+        written.append(npz_path)
+    return written
 
-    print(f"\n[capture_reference] {len(written)} file(s) written under {OUT_DIR}")
+
+# ----- entry point ----------------------------------------------------------
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--mode", choices=("sweep", "instrumented"), default="sweep")
+    ap.add_argument("--nstep", type=int, default=1,
+                    help="instrumented mode: number of timesteps over 1800 s (default 1)")
+    args = ap.parse_args()
+
+    ensure_built(instrumented=(args.mode == "instrumented"))
+
+    if args.mode == "sweep":
+        SWEEP_OUT_DIR.mkdir(parents=True, exist_ok=True)
+        written = [run_one_baseline(n) for n in NSTEP_SWEEP]
+        out_root = SWEEP_OUT_DIR
+    else:
+        if args.nstep not in NSTEP_SWEEP:
+            print(f"[capture_reference] warning: --nstep={args.nstep} is outside the canonical sweep "
+                  f"{NSTEP_SWEEP}", file=sys.stderr)
+        written = run_instrumented(args.nstep)
+        out_root = PER_PROCESS_OUT_DIR
+
+    print(f"\n[capture_reference] {len(written)} file(s) written under {out_root}")
     for p in written:
         print(f"  {p.relative_to(REPO_ROOT)}  ({p.stat().st_size} bytes)")
     return 0

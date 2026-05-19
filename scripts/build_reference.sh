@@ -6,15 +6,29 @@
 # which are gitignored — the committed vendored source is never modified.
 #
 # Usage:
-#   scripts/build_reference.sh
+#   scripts/build_reference.sh                 # baseline build
+#   scripts/build_reference.sh --instrumented  # adds per-process I/O dump hooks
+#
+# Instrumented build overlays scripts/patches/mam4_dump_state.F90 and applies
+# scripts/patches/driver_instrumentation.patch to the build/ copy of
+# driver.F90. The committed vendored tree is never modified in either mode.
 #
 # Prereqs (macOS):
 #   brew install gcc netcdf netcdf-fortran
 
 set -euo pipefail
 
+INSTRUMENTED=0
+for arg in "$@"; do
+  case "$arg" in
+    --instrumented) INSTRUMENTED=1 ;;
+    *) echo "Unknown argument: $arg" >&2; exit 2 ;;
+  esac
+done
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC_DIR="$REPO_ROOT/mam4-original-src-code"
+PATCH_DIR="$REPO_ROOT/scripts/patches"
 BUILD_DIR="$SRC_DIR/build"
 RUN_DIR="$SRC_DIR/run"
 EXE="$RUN_DIR/mam_box_test.exe"
@@ -63,9 +77,25 @@ cp "$SRC_DIR/e3sm_src_modified/"* "$BUILD_DIR/"
 cp "$SRC_DIR/test_drivers/"* "$BUILD_DIR/"
 cp "$SRC_DIR/Makefile" "$BUILD_DIR/"
 
+# --- Apply instrumentation overlay (if requested) ---------------------------
+
+if [[ "$INSTRUMENTED" == "1" ]]; then
+  echo ""
+  echo "Applying instrumentation overlay..."
+  cp "$PATCH_DIR/mam4_dump_state.F90" "$BUILD_DIR/"
+  ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/driver_instrumentation.patch" )
+fi
+
 # --- Build ------------------------------------------------------------------
 
-( cd "$BUILD_DIR" && make FCFLAGS="$FCFLAGS" LDFLAGS="$LDFLAGS" )
+if [[ "$INSTRUMENTED" == "1" ]]; then
+  # mam4_dump_state.o must be built before driver.o so its .mod file is
+  # available when driver.F90 references the module.
+  OBJ9_OVERRIDE="mam4_dump_state.o gaschem_simple.o cloudchem_simple.o driver.o main.o"
+  ( cd "$BUILD_DIR" && make FCFLAGS="$FCFLAGS" LDFLAGS="$LDFLAGS" OBJ9="$OBJ9_OVERRIDE" )
+else
+  ( cd "$BUILD_DIR" && make FCFLAGS="$FCFLAGS" LDFLAGS="$LDFLAGS" )
+fi
 
 if [[ ! -x "$EXE" ]]; then
   echo "Error: make exited cleanly but $EXE is missing." >&2

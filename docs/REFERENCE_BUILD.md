@@ -29,11 +29,16 @@ Use your distribution's `gfortran`, `libnetcdf-dev`, and `libnetcdff-dev` (Debia
 ## Quick start
 
 ```bash
-# Build the executable and run the 12-point convergence sweep:
+# Baseline: build + 12-point convergence sweep → tests/reference/sweep/*.nc
 python scripts/capture_reference.py
+
+# Instrumented: build with the ADR-012 overlay, capture per-process I/O
+# at the three microphysics call sites → tests/reference/per_process/*.npz
+python scripts/capture_reference.py --mode instrumented
+python scripts/capture_reference.py --mode instrumented --nstep 60   # longer
 ```
 
-This writes 12 NetCDF files under `tests/reference/sweep/`, one per timestep count `(1, 2, 4, 9, 18, 30, 60, 120, 180, 360, 900, 1800)` over a fixed 1800 s integration window.
+Sweep mode writes 12 NetCDF files (~1.7 MB total) under `tests/reference/sweep/`, one per timestep count `(1, 2, 4, 9, 18, 30, 60, 120, 180, 360, 900, 1800)` over a fixed 1800 s integration window. Instrumented mode writes six `.npz` archives under `tests/reference/per_process/`, one per (process, before|after) hook point. See `tests/reference/SCHEMA.md` for the exact data contracts.
 
 ## What the scripts do
 
@@ -59,7 +64,12 @@ Runs the executable across the 12-point sweep.
 3. Runs `./mam_box_test.exe` from `run/`.
 4. Copies the produced `mam_output.nc` to `tests/reference/sweep/mam_dt<DT>_ndt<N>.nc`.
 
-Future flag (`--mode instrumented`) will drive per-process I/O capture once the instrumentation overlay lands (M2 phase 3).
+With `--mode instrumented`:
+
+1. Invokes `build_reference.sh --instrumented` (overlay applied; mam4_dump_state.o built before driver.o).
+2. Wipes any prior `mam4_dump_*.bin` from the run directory.
+3. Runs the executable once for the requested `--nstep`.
+4. Parses the six `mam4_dump_*.bin` files (binary record layout in `scripts/patches/mam4_dump_state.F90`'s header) into `tests/reference/per_process/<tag>.npz`, with arrays `istep`, `q`, `qqcw`, `dgncur_a`, `dgncur_awet`, `qaerwat`, `wetdens`. Schema: `tests/reference/SCHEMA.md`.
 
 ## Build flag tweaks
 
@@ -96,4 +106,4 @@ The script committed under `mam4-original-src-code/run_test.csh` is **not used b
 
 ## Reproducibility
 
-The reference outputs under `tests/reference/sweep/` are committed to the repo. To regenerate them on a fresh checkout, run `python scripts/capture_reference.py` and verify `git diff tests/reference/sweep/` is empty. Bit-exact reproducibility depends on `gfortran` version and `netcdf-fortran` ABI; small differences are expected across compiler versions. A SCHEMA / contract for the captured data is forthcoming (`tests/reference/SCHEMA.md`, M2 phase 2).
+The reference outputs under `tests/reference/sweep/` and `tests/reference/per_process/` are committed to the repo. To regenerate them on a fresh checkout, run `python scripts/capture_reference.py` and `python scripts/capture_reference.py --mode instrumented` and verify `git diff tests/reference/` is empty. Bit-exact reproducibility depends on `gfortran` version and `netcdf-fortran` ABI; small differences are expected across compiler versions. The exact data contracts are in `tests/reference/SCHEMA.md`.
