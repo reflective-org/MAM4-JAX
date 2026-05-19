@@ -11,18 +11,20 @@
 #   scripts/build_reference.sh --polysvp       # also builds the polysvp reference driver
 #   scripts/build_reference.sh --qsat          # also builds the qsat reference driver
 #   scripts/build_reference.sh --makoh         # also builds the makoh reference driver
+#   scripts/build_reference.sh --kohler        # also builds the kohler reference driver
 #
 # Instrumented build overlays scripts/patches/mam4_dump_state.F90 and applies
 # scripts/patches/driver_instrumentation.patch to the build/ copy of
 # driver.F90. The committed vendored tree is never modified in either mode.
 #
-# --makoh additionally applies scripts/patches/expose_makoh.patch to the
-# build copy of modal_aero_wateruptake.F90, which makes makoh_cubic and
-# makoh_quartic public so the standalone driver can call them.
+# --makoh and --kohler additionally apply scripts/patches/expose_internals.patch
+# to the build copy of modal_aero_wateruptake.F90, which makes makoh_cubic,
+# makoh_quartic, and modal_aero_kohler public so the standalone driver(s)
+# can call them.
 #
-# --polysvp / --qsat / --makoh can combine with the baseline build to
-# also produce run/<name>_driver.exe, standalone harnesses that drive
-# specific entry points (see scripts/reference_drivers/).
+# --polysvp / --qsat / --makoh / --kohler can combine with the baseline
+# build to also produce run/<name>_driver.exe, standalone harnesses that
+# drive specific entry points (see scripts/reference_drivers/).
 #
 # Prereqs (macOS):
 #   brew install gcc netcdf netcdf-fortran
@@ -33,12 +35,14 @@ INSTRUMENTED=0
 BUILD_POLYSVP=0
 BUILD_QSAT=0
 BUILD_MAKOH=0
+BUILD_KOHLER=0
 for arg in "$@"; do
   case "$arg" in
     --instrumented) INSTRUMENTED=1 ;;
     --polysvp)      BUILD_POLYSVP=1 ;;
     --qsat)         BUILD_QSAT=1 ;;
     --makoh)        BUILD_MAKOH=1 ;;
+    --kohler)       BUILD_KOHLER=1 ;;
     *) echo "Unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -103,10 +107,10 @@ if [[ "$INSTRUMENTED" == "1" ]]; then
   ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/driver_instrumentation.patch" )
 fi
 
-if [[ "$BUILD_MAKOH" == "1" ]]; then
+if [[ "$BUILD_MAKOH" == "1" || "$BUILD_KOHLER" == "1" ]]; then
   echo ""
-  echo "Applying expose_makoh overlay..."
-  ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/expose_makoh.patch" )
+  echo "Applying expose_internals overlay..."
+  ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/expose_internals.patch" )
 fi
 
 # --- Build ------------------------------------------------------------------
@@ -156,4 +160,8 @@ fi
 
 if [[ "$BUILD_MAKOH" == "1" ]]; then
   build_ref_driver makoh
+fi
+
+if [[ "$BUILD_KOHLER" == "1" ]]; then
+  build_ref_driver kohler
 fi

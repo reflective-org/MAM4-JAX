@@ -27,12 +27,19 @@ Three modes:
   called to populate ``wv_saturation``'s module-level state — driver
   calls it with canonical box-model constants.
 
-* ``--mode makoh``: applies ``scripts/patches/expose_makoh.patch`` to
+* ``--mode makoh``: applies ``scripts/patches/expose_internals.patch`` to
   make ``makoh_cubic`` and ``makoh_quartic`` public, builds the makoh
   driver (``scripts/reference_drivers/makoh_driver.F90``), runs it on a
   small batch of test polynomial coefficients, and archives complex
   roots to ``tests/reference/makoh/reference.npz`` with arrays
   ``cubic_inputs``, ``cubic_roots``, ``quartic_inputs``, ``quartic_roots``.
+
+* ``--mode kohler``: applies the same overlay (which also exposes
+  ``modal_aero_kohler``), builds the kohler driver
+  (``scripts/reference_drivers/kohler_driver.F90``), sweeps a
+  ``(rdry, hygro, s)`` grid (7 × 4 × 6 = 168 points covering all four
+  branches), and archives to ``tests/reference/kohler/reference.npz``
+  with arrays ``rdry_in``, ``hygro``, ``s``, ``rwet``.
 
 Usage:
     python scripts/capture_reference.py
@@ -40,6 +47,7 @@ Usage:
     python scripts/capture_reference.py --mode polysvp
     python scripts/capture_reference.py --mode qsat
     python scripts/capture_reference.py --mode makoh
+    python scripts/capture_reference.py --mode kohler
 """
 from __future__ import annotations
 
@@ -67,6 +75,8 @@ QSAT_OUT_DIR = REPO_ROOT / "tests" / "reference" / "qsat"
 QSAT_EXE = RUN_DIR / "qsat_driver.exe"
 MAKOH_OUT_DIR = REPO_ROOT / "tests" / "reference" / "makoh"
 MAKOH_EXE = RUN_DIR / "makoh_driver.exe"
+KOHLER_OUT_DIR = REPO_ROOT / "tests" / "reference" / "kohler"
+KOHLER_EXE = RUN_DIR / "kohler_driver.exe"
 INDICES_OUT_DIR = REPO_ROOT / "tests" / "reference" / "indices"
 
 TOTAL_DURATION_S = 1800
@@ -112,7 +122,8 @@ NAMELIST_TEMPLATE = dedent("""\
 
 
 def ensure_built(instrumented: bool = False, polysvp: bool = False,
-                 qsat: bool = False, makoh: bool = False) -> None:
+                 qsat: bool = False, makoh: bool = False,
+                 kohler: bool = False) -> None:
     """Build the executable. Always rebuilds — the build flag determines
     whether the previous binary is the right flavour."""
     cmd = [str(BUILD_SCRIPT)]
@@ -120,11 +131,13 @@ def ensure_built(instrumented: bool = False, polysvp: bool = False,
     if polysvp:      cmd.append("--polysvp")
     if qsat:         cmd.append("--qsat")
     if makoh:        cmd.append("--makoh")
+    if kohler:       cmd.append("--kohler")
     flavours = []
     if instrumented: flavours.append("instrumented")
     if polysvp:      flavours.append("polysvp")
     if qsat:         flavours.append("qsat")
     if makoh:        flavours.append("makoh")
+    if kohler:       flavours.append("kohler")
     flavours = flavours or ["baseline"]
     print(f"[capture_reference] building {'+'.join(flavours)} executable(s) ...")
     subprocess.run(cmd, check=True)
@@ -312,11 +325,12 @@ def run_instrumented(nstep: int) -> list[Path]:
 
 def _read_text_table(path: Path, n_cols: int) -> np.ndarray:
     text = path.read_text()
-    rows = [
-        [float(x) for x in line.split()]
-        for line in text.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
+    rows = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or s.startswith("%"):
+            continue
+        rows.append([float(x) for x in s.split()])
     arr = np.asarray(rows, dtype=np.float64)
     if arr.shape[1] != n_cols:
         raise RuntimeError(f"unexpected table shape at {path}: {arr.shape}")
@@ -396,13 +410,28 @@ def run_makoh() -> list[Path]:
     return [out]
 
 
+def run_kohler() -> list[Path]:
+    KOHLER_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    print("[capture_reference] running kohler driver ...", flush=True)
+    subprocess.run(["./kohler_driver.exe"], cwd=RUN_DIR, check=True,
+                   stdout=subprocess.DEVNULL)
+
+    arr = _read_text_table(RUN_DIR / "kohler_reference.txt", n_cols=4)
+    out = KOHLER_OUT_DIR / "reference.npz"
+    np.savez(out,
+             rdry_in=arr[:, 0], hygro=arr[:, 1], s=arr[:, 2], rwet=arr[:, 3])
+    return [out]
+
+
 # ----- entry point ----------------------------------------------------------
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--mode",
-                    choices=("sweep", "instrumented", "polysvp", "qsat", "makoh"),
-                    default="sweep")
+    ap.add_argument(
+        "--mode",
+        choices=("sweep", "instrumented", "polysvp", "qsat", "makoh", "kohler"),
+        default="sweep",
+    )
     ap.add_argument("--nstep", type=int, default=1,
                     help="instrumented mode: number of timesteps over 1800 s (default 1)")
     args = ap.parse_args()
@@ -427,10 +456,14 @@ def main() -> int:
         ensure_built(qsat=True)
         written = run_qsat()
         out_root = QSAT_OUT_DIR
-    else:  # makoh
+    elif args.mode == "makoh":
         ensure_built(makoh=True)
         written = run_makoh()
         out_root = MAKOH_OUT_DIR
+    else:  # kohler
+        ensure_built(kohler=True)
+        written = run_kohler()
+        out_root = KOHLER_OUT_DIR
 
     print(f"\n[capture_reference] {len(written)} file(s) written under {out_root}")
     for p in written:

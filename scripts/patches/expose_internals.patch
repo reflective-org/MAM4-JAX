@@ -5,7 +5,7 @@
 
  public :: modal_aero_wateruptake_reg
 +
-+public :: makoh_cubic, makoh_quartic
++public :: makoh_cubic, makoh_quartic, modal_aero_kohler
 
  real(r8), parameter :: third  = 1._r8/3._r8
  real(r8), parameter :: pi43   = pi*4.0_r8/3.0_r8
