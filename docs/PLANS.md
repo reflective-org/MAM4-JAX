@@ -49,7 +49,7 @@ When a milestone is in progress, its subtasks become the working task list. As s
 **Status:** in progress.
 
 1. [x] **`polysvp`** (within `wv_saturation.F90:699-736`) — Goff–Gratch saturation vapor pressure. Ported to `mam4_jax/saturation.py`; validated at max rel-err ~4e-15 (water and ice), eleven orders below ADR-003's 1e-6 tolerance. Reference: standalone Fortran driver (`scripts/reference_drivers/polysvp_driver.F90`) + `tests/reference/polysvp/reference.npz`. Plot: `docs/figures/polysvp_residuals.png`.
-2. [ ] **Other `wv_saturation` leaf functions** as needed (e.g., `qsat_water`, `qsat_ice`) — same shape as `polysvp`, can reuse the saturation infrastructure.
+2. [x] **`qsat_water` and `qsat_ice`** — saturation specific humidity (`wv_saturation.F90:758-862`). Ported to `mam4_jax/saturation.py` alongside `qs_from_es` helper and `mam4_jax/constants.py` (physical constants from `shr_const_mod.F90`). Max rel-err 9.4e-14 / 7.8e-15. Reference: `scripts/reference_drivers/qsat_driver.F90` + `tests/reference/qsat/reference.npz`. Plot: `docs/figures/qsat_residuals.png`. **Note**: `qsat_ice` uses Clausius–Clapeyron (Fortran convention), not `polysvp_ice` — documented in the saturation module.
 3. [ ] **`modal_aero_wateruptake_dr`** (`modal_aero_wateruptake.F90:130-150`) — equilibrium water uptake. First aerosol-state-aware port. Reference data: instrumented dump at `driver.F90:1208` (already captured into `tests/reference/per_process/wateruptake_{before,after}.npz`).
 4. [ ] **`modal_aero_calcsize_sub`** (`modal_aero_calcsize.F90`) — size redistribution. Heaviest of the per-process ports (~1500 lines). Reference data: `tests/reference/per_process/calcsize_{before,after}.npz`.
 5. [ ] **`modal_aero_newnuc`** — binary H2SO4–H2O nucleation (Vehkamäki).
