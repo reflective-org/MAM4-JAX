@@ -1,6 +1,6 @@
 """Capture Fortran reference outputs.
 
-Two modes:
+Three modes:
 
 * ``--mode sweep`` (default): build the baseline (non-instrumented) executable
   and run the 12-point convergence sweep. Each (dt, nstep) writes a NetCDF
@@ -13,9 +13,16 @@ Two modes:
   bundles arrays ``istep``, ``q``, ``qqcw``, ``dgncur_a``, ``dgncur_awet``,
   ``qaerwat``, ``wetdens``. Schema: ``tests/reference/SCHEMA.md``.
 
+* ``--mode polysvp``: build the standalone polysvp driver
+  (``scripts/reference_drivers/polysvp_driver.F90``), run it across a
+  170 K – 320 K temperature sweep (1501 points), parse the text output, and
+  archive as ``tests/reference/polysvp/reference.npz`` with arrays
+  ``T``, ``esat_water``, ``esat_ice`` (all float64).
+
 Usage:
     python scripts/capture_reference.py
     python scripts/capture_reference.py --mode instrumented [--nstep 1]
+    python scripts/capture_reference.py --mode polysvp
 """
 from __future__ import annotations
 
@@ -37,6 +44,8 @@ BUILD_SCRIPT = REPO_ROOT / "scripts" / "build_reference.sh"
 
 SWEEP_OUT_DIR = REPO_ROOT / "tests" / "reference" / "sweep"
 PER_PROCESS_OUT_DIR = REPO_ROOT / "tests" / "reference" / "per_process"
+POLYSVP_OUT_DIR = REPO_ROOT / "tests" / "reference" / "polysvp"
+POLYSVP_EXE = RUN_DIR / "polysvp_driver.exe"
 
 TOTAL_DURATION_S = 1800
 NSTEP_SWEEP: tuple[int, ...] = (1, 2, 4, 9, 18, 30, 60, 120, 180, 360, 900, 1800)
@@ -80,14 +89,19 @@ NAMELIST_TEMPLATE = dedent("""\
 """)
 
 
-def ensure_built(instrumented: bool) -> None:
+def ensure_built(instrumented: bool = False, polysvp: bool = False) -> None:
     """Build the executable. Always rebuilds — the build flag determines
     whether the previous binary is the right flavour."""
     cmd = [str(BUILD_SCRIPT)]
     if instrumented:
         cmd.append("--instrumented")
-    flavour = "instrumented" if instrumented else "baseline"
-    print(f"[capture_reference] building {flavour} executable ...")
+    if polysvp:
+        cmd.append("--polysvp")
+    flavours = []
+    if instrumented: flavours.append("instrumented")
+    if polysvp:      flavours.append("polysvp")
+    flavours = flavours or ["baseline"]
+    print(f"[capture_reference] building {'+'.join(flavours)} executable(s) ...")
     subprocess.run(cmd, check=True)
 
 
@@ -188,27 +202,56 @@ def run_instrumented(nstep: int) -> list[Path]:
     return written
 
 
+# ----- polysvp mode ---------------------------------------------------------
+
+def run_polysvp() -> list[Path]:
+    POLYSVP_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    print("[capture_reference] running polysvp driver ...", flush=True)
+    subprocess.run(["./polysvp_driver.exe"], cwd=RUN_DIR, check=True,
+                   stdout=subprocess.DEVNULL)
+
+    text = (RUN_DIR / "polysvp_reference.txt").read_text()
+    # Skip comment lines (start with '#') and parse the three-column table.
+    rows = [
+        [float(x) for x in line.split()]
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    arr = np.asarray(rows, dtype=np.float64)
+    if arr.shape[1] != 3:
+        raise RuntimeError(f"unexpected polysvp_reference.txt shape: {arr.shape}")
+
+    out = POLYSVP_OUT_DIR / "reference.npz"
+    np.savez(out, T=arr[:, 0], esat_water=arr[:, 1], esat_ice=arr[:, 2])
+    return [out]
+
+
 # ----- entry point ----------------------------------------------------------
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--mode", choices=("sweep", "instrumented"), default="sweep")
+    ap.add_argument("--mode", choices=("sweep", "instrumented", "polysvp"),
+                    default="sweep")
     ap.add_argument("--nstep", type=int, default=1,
                     help="instrumented mode: number of timesteps over 1800 s (default 1)")
     args = ap.parse_args()
 
-    ensure_built(instrumented=(args.mode == "instrumented"))
-
     if args.mode == "sweep":
+        ensure_built()
         SWEEP_OUT_DIR.mkdir(parents=True, exist_ok=True)
         written = [run_one_baseline(n) for n in NSTEP_SWEEP]
         out_root = SWEEP_OUT_DIR
-    else:
+    elif args.mode == "instrumented":
+        ensure_built(instrumented=True)
         if args.nstep not in NSTEP_SWEEP:
             print(f"[capture_reference] warning: --nstep={args.nstep} is outside the canonical sweep "
                   f"{NSTEP_SWEEP}", file=sys.stderr)
         written = run_instrumented(args.nstep)
         out_root = PER_PROCESS_OUT_DIR
+    else:  # polysvp
+        ensure_built(polysvp=True)
+        written = run_polysvp()
+        out_root = POLYSVP_OUT_DIR
 
     print(f"\n[capture_reference] {len(written)} file(s) written under {out_root}")
     for p in written:

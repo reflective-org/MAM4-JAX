@@ -22,7 +22,7 @@ Status legend: **planned**, **in progress**, **ported (validated)**, **deferred*
 
 | Capability | Fortran module | JAX status |
 | --- | --- | --- |
-| Saturation vapor pressure | `box_model_utils/wv_saturation.F90` (Goff-Gratch / Flatau) | planned (`PLANS.md` M3 — recommended first port: `polysvp`) |
+| Saturation vapor pressure | `box_model_utils/wv_saturation.F90` (Goff-Gratch / Flatau) | `polysvp` **ported (validated)** in `mam4_jax/saturation.py`; max rel-err 4e-15 vs Fortran across 170 K – 320 K. Other leaf functions planned. |
 | Constants and species table | `e3sm_src/modal_aero_data.F90`, `e3sm_src/shr_const_mod.F90` | compile-time constants transcribed into `mam4_jax/data.py`; runtime indices pending M2 |
 | Error function / special functions | `box_model_utils/error_function.F90`, `e3sm_src/shr_spfn_mod.F90` | use `jax.scipy.special` if available; otherwise port closed-form |
 

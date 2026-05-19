@@ -44,18 +44,18 @@ When a milestone is in progress, its subtasks become the working task list. As s
 
 ---
 
-## Milestone 3 — First process ports (proposed)
+## Milestone 3 — First process ports (in progress)
 
-**Status:** proposed. Recommended ordering (from `docs/plans/001` plan recommendation):
+**Status:** in progress.
 
-1. **`polysvp`** (within `wv_saturation.F90:699-736`) — pure scalar Goff-Gratch saturation vapor pressure. ~40 lines, no module state, no aerosol coupling. Exercises the whole validation pipeline (capture, JAX port, `float64`, 1e-6 diff, residual plot) at minimum complexity. Reference data: tabulated `polysvp(T, type)` for a sweep of T values, generated in Python (no need to instrument Fortran).
-2. **Other `wv_saturation` leaf functions** as needed (e.g., `qsat_water`, `qsat_ice`) — same shape as `polysvp`, may share the saturation-vapor-pressure helpers.
-3. **`modal_aero_wateruptake_dr`** (`modal_aero_wateruptake.F90:130-150`) — equilibrium water uptake. First aerosol-state-aware port. Reference data: instrumented dump at `driver.F90:1208`.
-4. **`modal_aero_calcsize_sub`** (`modal_aero_calcsize.F90`) — size redistribution. Heaviest of the per-process ports (~1500 lines). Reference data: instrumented dump at `driver.F90:1118`.
-5. **`modal_aero_newnuc`** — binary H2SO4–H2O nucleation (Vehkamäki).
-6. **`modal_aero_coag`** — Brownian coagulation kernels.
-7. **`modal_aero_gasaerexch`** — condensation onto modes.
-8. **`modal_aero_rename`** — Aitken → accumulation transfer.
+1. [x] **`polysvp`** (within `wv_saturation.F90:699-736`) — Goff–Gratch saturation vapor pressure. Ported to `mam4_jax/saturation.py`; validated at max rel-err ~4e-15 (water and ice), eleven orders below ADR-003's 1e-6 tolerance. Reference: standalone Fortran driver (`scripts/reference_drivers/polysvp_driver.F90`) + `tests/reference/polysvp/reference.npz`. Plot: `docs/figures/polysvp_residuals.png`.
+2. [ ] **Other `wv_saturation` leaf functions** as needed (e.g., `qsat_water`, `qsat_ice`) — same shape as `polysvp`, can reuse the saturation infrastructure.
+3. [ ] **`modal_aero_wateruptake_dr`** (`modal_aero_wateruptake.F90:130-150`) — equilibrium water uptake. First aerosol-state-aware port. Reference data: instrumented dump at `driver.F90:1208` (already captured into `tests/reference/per_process/wateruptake_{before,after}.npz`).
+4. [ ] **`modal_aero_calcsize_sub`** (`modal_aero_calcsize.F90`) — size redistribution. Heaviest of the per-process ports (~1500 lines). Reference data: `tests/reference/per_process/calcsize_{before,after}.npz`.
+5. [ ] **`modal_aero_newnuc`** — binary H2SO4–H2O nucleation (Vehkamäki).
+6. [ ] **`modal_aero_coag`** — Brownian coagulation kernels.
+7. [ ] **`modal_aero_gasaerexch`** — condensation onto modes.
+8. [ ] **`modal_aero_rename`** — Aitken → accumulation transfer.
 
 Each port lands as its own PR following the validation workflow in `CLAUDE.md` (capture reference, port, diff to `1e-6`, plot residuals, log in `PROGRESS.md`).
 
