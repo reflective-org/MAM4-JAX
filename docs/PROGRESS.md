@@ -6,6 +6,15 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-18 — Milestone 3.2 — Ports: `qsat_water` and `qsat_ice` + physical constants
+
+- PR: pending (`m3/qsat-functions`)
+- Added `mam4_jax/constants.py` with the canonical physical constants (BOLTZ, AVOGAD, RGAS, MWDAIR, MWWV, LATICE, LATVAP, derived RDAIR/RH2O/EPSQS, plus `wv_saturation`-name aliases HLATV/HLATF/RGASV/EPSQS). Values transcribed verbatim from `mam4-original-src-code/e3sm_src/shr_const_mod.F90:33-61` so the JAX port uses the same numbers the Fortran sets through `gestbl()`.
+- Built a reference driver (`scripts/reference_drivers/qsat_driver.F90`) that calls `gestbl` with box-model constants then sweeps `qsat_water` (Goff–Gratch via inline polysvp formula) and `qsat_ice` (Clausius–Clapeyron with combined latent heat of sublimation) over a 301-T × 5-p grid. New `--qsat` flag in `build_reference.sh`, `--mode qsat` in `capture_reference.py`. Output: `tests/reference/qsat/reference.npz` (~48 KB).
+- Ported `qsat_water(T, p)` and `qsat_ice(T, p)` to `mam4_jax/saturation.py`, plus a `qs_from_es(es, p)` helper that captures the shared `qs = epsqs · es / (p − (1 − epsqs) · es)` formula and the Fortran's `qs < 0 → qs = 1` clamp. **Preserved the Fortran inconsistency**: `qsat_ice` uses Clausius–Clapeyron, not `polysvp_ice`. Documented in the saturation module docstring; callers wanting consistency can `qs_from_es(polysvp_ice(T), p)`.
+- Validation (`tests/test_qsat.py`): max relative error against Fortran is **9.36e-14 (water)** and **7.81e-15 (ice)**. Both ~8+ orders below ADR-003's 1e-6 tolerance. Test suite total: 19/19 green.
+- Residual figure: `docs/figures/qsat_residuals.png` (four panels — qs(T) per pressure level for water + ice, with rel-err vs T below).
+
 ## 2026-05-18 — Milestone 3.1 — First port: `polysvp` (saturation vapor pressure)
 
 - PR: pending (`m3/polysvp-port`)
