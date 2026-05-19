@@ -30,9 +30,77 @@
 
       implicit none
       private
-      public :: dump_snapshot
+      public :: dump_snapshot, dump_indices
 
       contains
+
+      subroutine dump_indices()
+         !
+         ! Write modal_aero_data's integer index tables to mam4_indices.txt
+         ! once at init. Called by the patched driver.F90 before the istep
+         ! loop. Output is plain text with '%' section markers; parsed by
+         ! scripts/capture_reference.py --mode instrumented into
+         ! tests/reference/indices/reference.npz.
+         !
+         use modal_aero_data, only: ntot_amode, ntot_aspectype, maxd_aspectype, &
+                                     numptr_amode, numptrcw_amode, &
+                                     lspectype_amode, lmassptr_amode, lmassptrcw_amode, &
+                                     nspec_amode, specname_amode, modename_amode
+
+         integer :: unit, i, j
+
+         open(newunit=unit, file='mam4_indices.txt', status='replace', action='write')
+
+         write(unit,'(a)') '# MAM4 index tables, captured by mam4_dump_state::dump_indices.'
+         write(unit,'(a)') "# Section markers begin with '%'. 2D arrays are written"
+         write(unit,'(a)') '# column-major (Fortran memory order).'
+
+         write(unit,'(/a)')   '% ntot_amode'
+         write(unit,'(i0)')   ntot_amode
+
+         write(unit,'(/a)')   '% ntot_aspectype'
+         write(unit,'(i0)')   ntot_aspectype
+
+         write(unit,'(/a)')   '% maxd_aspectype'
+         write(unit,'(i0)')   maxd_aspectype
+
+         write(unit,'(/a)')   '% numptr_amode (shape: ntot_amode)'
+         write(unit,'(*(i0,1x))') (numptr_amode(i), i=1, ntot_amode)
+
+         write(unit,'(/a)')   '% numptrcw_amode (shape: ntot_amode)'
+         write(unit,'(*(i0,1x))') (numptrcw_amode(i), i=1, ntot_amode)
+
+         write(unit,'(/a)')   '% nspec_amode (shape: ntot_amode)'
+         write(unit,'(*(i0,1x))') (nspec_amode(i), i=1, ntot_amode)
+
+         write(unit,'(/a)')   '% lspectype_amode (shape: maxd_aspectype, ntot_amode)'
+         do j = 1, ntot_amode
+            write(unit,'(*(i0,1x))') (lspectype_amode(i, j), i=1, maxd_aspectype)
+         end do
+
+         write(unit,'(/a)')   '% lmassptr_amode (shape: maxd_aspectype, ntot_amode)'
+         do j = 1, ntot_amode
+            write(unit,'(*(i0,1x))') (lmassptr_amode(i, j), i=1, maxd_aspectype)
+         end do
+
+         write(unit,'(/a)')   '% lmassptrcw_amode (shape: maxd_aspectype, ntot_amode)'
+         do j = 1, ntot_amode
+            write(unit,'(*(i0,1x))') (lmassptrcw_amode(i, j), i=1, maxd_aspectype)
+         end do
+
+         write(unit,'(/a)')   '% modename_amode (shape: ntot_amode, strings)'
+         do i = 1, ntot_amode
+            write(unit,'(a)') trim(modename_amode(i))
+         end do
+
+         write(unit,'(/a)')   '% specname_amode (shape: ntot_aspectype, strings)'
+         do i = 1, ntot_aspectype
+            write(unit,'(a)') trim(specname_amode(i))
+         end do
+
+         close(unit)
+
+      end subroutine dump_indices
 
       subroutine dump_snapshot(tag, istep, ncol, pver, pcnst, ntot_amode, &
                                q, qqcw, dgncur_a, dgncur_awet, qaerwat, wetdens)

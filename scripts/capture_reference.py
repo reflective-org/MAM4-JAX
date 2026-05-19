@@ -57,6 +57,7 @@ POLYSVP_OUT_DIR = REPO_ROOT / "tests" / "reference" / "polysvp"
 POLYSVP_EXE = RUN_DIR / "polysvp_driver.exe"
 QSAT_OUT_DIR = REPO_ROOT / "tests" / "reference" / "qsat"
 QSAT_EXE = RUN_DIR / "qsat_driver.exe"
+INDICES_OUT_DIR = REPO_ROOT / "tests" / "reference" / "indices"
 
 TOTAL_DURATION_S = 1800
 NSTEP_SWEEP: tuple[int, ...] = (1, 2, 4, 9, 18, 30, 60, 120, 180, 360, 900, 1800)
@@ -190,12 +191,83 @@ def _read_dump(path: Path) -> dict[str, np.ndarray]:
     }
 
 
+def _read_indices(path: Path) -> dict[str, np.ndarray]:
+    """Parse mam4_indices.txt into a dict of numpy arrays.
+
+    The text format is human-readable section-marked output written by
+    mam4_dump_state::dump_indices. 2D arrays appear as one line per mode
+    with slots listed within the line, so Python sees them as
+    (ntot_amode, maxd_aspectype) (mode-first), which is the transpose of
+    the Fortran declaration (slot, mode).
+
+    Integer index values are converted to 0-based here; Fortran writes
+    them 1-based. The sentinel value 0 (empty slot) becomes -1 in 0-based
+    form, matching the existing IndexTables sentinel.
+    """
+    sections: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in path.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith("%"):
+            current = s.lstrip("%").strip().split()[0]
+            sections[current] = []
+            continue
+        if current is not None:
+            sections[current].append(s)
+
+    def ints(name: str) -> np.ndarray:
+        toks = [int(t) for ln in sections[name] for t in ln.split()]
+        return np.asarray(toks, dtype=np.int32)
+
+    def ints_2d(name: str, nrows: int, ncols: int) -> np.ndarray:
+        # One row per line; modes are rows, slots are columns.
+        rows = sections[name]
+        assert len(rows) == nrows, f"{name}: expected {nrows} rows, got {len(rows)}"
+        out = np.full((nrows, ncols), 0, dtype=np.int32)
+        for r, line in enumerate(rows):
+            vals = [int(t) for t in line.split()]
+            out[r, :len(vals)] = vals
+        return out
+
+    def strings(name: str) -> list[str]:
+        return list(sections[name])
+
+    ntot_amode     = ints("ntot_amode").item()
+    ntot_aspectype = ints("ntot_aspectype").item()
+    maxd_aspectype = ints("maxd_aspectype").item()
+
+    # Convert 1-based pcnst indices to 0-based; preserve 0 (empty) → -1.
+    def to_0based(arr: np.ndarray) -> np.ndarray:
+        return np.where(arr == 0, -1, arr - 1).astype(np.int32)
+
+    return {
+        "ntot_amode":     np.int32(ntot_amode),
+        "ntot_aspectype": np.int32(ntot_aspectype),
+        "maxd_aspectype": np.int32(maxd_aspectype),
+        "numptr_amode":     to_0based(ints("numptr_amode")),
+        "numptrcw_amode":   to_0based(ints("numptrcw_amode")),
+        "nspec_amode":      ints("nspec_amode"),
+        "lspectype_amode":  to_0based(ints_2d("lspectype_amode",
+                                              ntot_amode, maxd_aspectype)),
+        "lmassptr_amode":   to_0based(ints_2d("lmassptr_amode",
+                                              ntot_amode, maxd_aspectype)),
+        "lmassptrcw_amode": to_0based(ints_2d("lmassptrcw_amode",
+                                              ntot_amode, maxd_aspectype)),
+        "modename_amode":   np.asarray(strings("modename_amode")),
+        "specname_amode":   np.asarray(strings("specname_amode")),
+    }
+
+
 def run_instrumented(nstep: int) -> list[Path]:
     dt = TOTAL_DURATION_S // nstep
     PER_PROCESS_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    INDICES_OUT_DIR.mkdir(parents=True, exist_ok=True)
     # Wipe any prior dumps so we never mix runs.
-    for stale in RUN_DIR.glob("mam4_dump_*.bin"):
-        stale.unlink()
+    for stale in list(RUN_DIR.glob("mam4_dump_*.bin")) + [RUN_DIR / "mam4_indices.txt"]:
+        if stale.exists():
+            stale.unlink()
 
     write_namelist(dt, nstep)
     print(f"[capture_reference] instrumented dt={dt}s nstep={nstep} ...", flush=True)
@@ -203,6 +275,16 @@ def run_instrumented(nstep: int) -> list[Path]:
                    stdout=subprocess.DEVNULL)
 
     written: list[Path] = []
+
+    # Index tables (written once at init, before the time loop).
+    indices_txt = RUN_DIR / "mam4_indices.txt"
+    if not indices_txt.is_file():
+        raise RuntimeError(f"expected indices dump missing: {indices_txt}")
+    indices_npz = INDICES_OUT_DIR / "reference.npz"
+    np.savez(indices_npz, **_read_indices(indices_txt))
+    written.append(indices_npz)
+
+    # Per-process tracer snapshots (one record per istep, across the loop).
     for tag in DUMP_TAGS:
         bin_path = RUN_DIR / f"mam4_dump_{tag}.bin"
         if not bin_path.is_file():

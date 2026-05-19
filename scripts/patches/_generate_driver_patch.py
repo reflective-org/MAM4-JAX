@@ -36,7 +36,8 @@ def dump_call(tag: str) -> str:
     )
 
 
-USE_LINE = "      use mam4_dump_state, only: dump_snapshot\n"
+USE_LINE = "      use mam4_dump_state, only: dump_snapshot, dump_indices\n"
+DUMP_INDICES_LINE = "      call dump_indices()\n\n"
 
 
 # Anchors: (description, exact source line, where_to_insert, payload).
@@ -51,6 +52,15 @@ ANCHORS = [
         "      use modal_aero_wateruptake, only: modal_aero_wateruptake_dr\n",
         "after",
         USE_LINE,
+    ),
+    # One-time index dump before the istep loop. main_time_loop is the
+    # Fortran label that prefixes `do nstep = 1, nstop`; inserting before
+    # the label runs dump_indices() exactly once per executable run.
+    (
+        "dump_indices",
+        "main_time_loop: &\n",
+        "before",
+        DUMP_INDICES_LINE,
     ),
     # Before each of the three microphysics calls + after the call settles
     (
