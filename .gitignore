@@ -23,3 +23,9 @@ env/
 *.o
 *.mod
 *.exe
+
+# Transient build/run directories created when building the vendored Fortran
+# reference in place. The committed source under mam4-original-src-code/ stays
+# pristine; build artifacts live next to it but are not tracked.
+mam4-original-src-code/build/
+mam4-original-src-code/run/

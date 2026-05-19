@@ -1,0 +1,71 @@
+--- a/driver.F90
++++ b/driver.F90
+@@ -756,6 +756,7 @@
+       use modal_aero_amicphys, only: modal_aero_amicphys_intr, &
+           gaexch_h2so4_uptake_optaa, newnuc_h2so4_conc_optaa, mosaic
+       use modal_aero_wateruptake, only: modal_aero_wateruptake_dr
++      use mam4_dump_state, only: dump_snapshot
+       use gaschem_simple, only: gaschem_simple_sub
+       use cloudchem_simple, only: cloudchem_simple_sub
+ 
+@@ -1114,6 +1115,9 @@
+       call load_pbuf( pbuf, lchnk, ncol, &
+          cld, qqcw, dgncur_a, dgncur_awet, qaerwat, wetdens )
+ 
++      call dump_snapshot('calcsize_before', istep, ncol, pver, pcnst, ntot_amode, &
++         q, qqcw, dgncur_a, dgncur_awet, qaerwat, wetdens)
++
+ ! call calcsize
+       call modal_aero_calcsize_sub( state, ptend, deltat, pbuf, &
+          do_adjust_in=.true., do_aitacc_transfer_in=.true. )
+@@ -1153,7 +1157,10 @@
+       else
+          write(lun,'(a,i7)') 'calcsize tend = 0 for all species'
+       end if
++      call dump_snapshot('calcsize_after', istep, ncol, pver, pcnst, ntot_amode, &
++         q, qqcw, dgncur_a, dgncur_awet, qaerwat, wetdens)
+ 
++
+       do i = 1, ncol
+       lun = 29 + i
+       write(lun,'(/a,i8)') 'cambox_do_run doing calcsize, istep=', istep
+@@ -1204,12 +1211,18 @@
+       call load_pbuf( pbuf, lchnk, ncol, &
+          cld, qqcw, dgncur_a, dgncur_awet, qaerwat, wetdens )
+ 
++      call dump_snapshot('wateruptake_before', istep, ncol, pver, pcnst, ntot_amode, &
++         q, qqcw, dgncur_a, dgncur_awet, qaerwat, wetdens)
++
+ ! call wateruptake
+       call modal_aero_wateruptake_dr( state, pbuf )
+ 
+ ! unload pbuf
+       call unload_pbuf( pbuf, lchnk, ncol, &
+          cld, qqcw, dgncur_a, dgncur_awet, qaerwat, wetdens )
++      call dump_snapshot('wateruptake_after', istep, ncol, pver, pcnst, ntot_amode, &
++         q, qqcw, dgncur_a, dgncur_awet, qaerwat, wetdens)
++
+       
+ !
+ ! switch from q & qqcw to vmr and vmrcw
+@@ -1280,6 +1293,9 @@
+ 
+       dvmrdt_bb = 0.0_r8 ; dvmrcwdt_bb = 0.0_r8
+ 
++      call dump_snapshot('amicphys_before', istep, ncol, pver, pcnst, ntot_amode, &
++         q, qqcw, dgncur_a, dgncur_awet, qaerwat, wetdens)
++
+       call modal_aero_amicphys_intr(              &
+          mdo_gasaerexch,     mdo_rename,          &
+          mdo_newnuc,         mdo_coag,            &
+@@ -1296,7 +1312,10 @@
+          dvmrdt_bb,          dvmrcwdt_bb,         &
+          dgncur_a,           dgncur_awet,         &
+          wetdens,            qaerwat              )
++      call dump_snapshot('amicphys_after', istep, ncol, pver, pcnst, ntot_amode, &
++         q, qqcw, dgncur_a, dgncur_awet, qaerwat, wetdens)
+ 
++
+       dvmrdt_cond(  :,:,:) = dvmrdt_bb(  :,:,:,iqtend_cond)
+       dvmrdt_rnam(  :,:,:) = dvmrdt_bb(  :,:,:,iqtend_rnam)
+       dvmrdt_nnuc(  :,:,:) = dvmrdt_bb(  :,:,:,iqtend_nnuc)

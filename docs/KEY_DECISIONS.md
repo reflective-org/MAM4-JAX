@@ -122,6 +122,21 @@ Status values: **Accepted**, **Proposed**, **Superseded by ADR-NNN**.
   - Pre-existing `main` history (commits `22f212d`, `a82e42d` from initial setup) stays as-is — this ADR is forward-looking, not retroactive.
 - **Alternatives considered:** Keep ADR-006 and clarify the carve-out (rejected: ambiguity itself is the problem); add a manual override flag (rejected: no value).
 
+## ADR-012 — Fortran instrumentation lives outside the vendored tree, applied as a build-time overlay
+
+- **Status:** Accepted (2026-05-18)
+- **Context:** Validating each ported microphysics process against the Fortran reference requires capturing per-process inputs and outputs from a run. The reference is silent — `driver.F90` writes some scalars to text but not the full state arrays we need. We have two ways to get them: (a) edit the vendored `.F90` files in place, or (b) overlay instrumentation onto a transient build copy.
+- **Decision:** Keep all instrumentation outside `mam4-original-src-code/`. The Fortran helper module (`scripts/patches/mam4_dump_state.F90`) and the unified-diff patch against `driver.F90` (`scripts/patches/driver_instrumentation.patch`) live under `scripts/patches/`. `scripts/build_reference.sh --instrumented` copies the helper into the transient `build/` directory and applies the patch there before invoking `make`, then overrides `OBJ9` so `mam4_dump_state.o` builds before `driver.o` and its `.mod` is in scope at link time. The committed `mam4-original-src-code/` tree is never modified.
+- **Consequences:**
+  - `git diff mam4-original-src-code/` is always empty, regardless of which build flavour was last run.
+  - The patch must be maintained when the snapshot is refreshed (which would also bump the provenance commit in `README.md`). If anchor lines in `driver.F90` drift, the patch fails fast with `patch`'s standard hunk-rejection output.
+  - One extra source file plus six `call dump_snapshot(...)` lines is enough overhead to capture full per-process I/O for all three top-level calls (`calcsize`, `wateruptake`, `amicphys`).
+  - The instrumented binary writes intermediate `mam4_dump_<tag>.bin` records via Fortran stream I/O. `scripts/capture_reference.py --mode instrumented` parses those into committed `tests/reference/per_process/*.npz` archives. The `.bin` format is an implementation detail; `.npz` is the contract (`tests/reference/SCHEMA.md`).
+- **Alternatives considered:**
+  - Edit the vendored `.F90` files directly (rejected: violates ADR-001 and forces a "wash out instrumentation before refresh" workflow).
+  - Use a separate driver that imports MAM4 modules and re-implements just enough of the time loop (rejected: duplicates 1600 lines of `driver.F90` orchestration logic that we'd then have to keep in sync).
+  - Run the unmodified executable and post-process its existing text output (rejected: text output is incomplete and not numerically precise enough for `1e-6` validation).
+
 ---
 
 *Add new ADRs below this line. Number sequentially; never reuse numbers; never edit an Accepted ADR.*

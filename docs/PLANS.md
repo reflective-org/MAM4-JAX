@@ -31,15 +31,16 @@ When a milestone is in progress, its subtasks become the working task list. As s
 
 ---
 
-## Milestone 2 — Reference output capture (proposed)
+## Milestone 2 — Reference output capture
 
-**Status:** proposed.
+**Status:** done. See `docs/plans/001-scaffold-and-reference-capture.md`, ADR-011 (now superseded — used during planning) and ADR-012.
 
-- [ ] Get the Fortran reference building locally (verify `NETCDF_LIB` / `NETCDF_INCLUDE` env, fix the hard-coded `outpath` in `run_test.csh`). Document in `docs/REFERENCE_BUILD.md`.
-- [ ] Run the existing 12-point timestep sweep; archive NetCDF outputs under `tests/reference/sweep/`.
-- [ ] Add patch-overlay instrumentation (new ADR) hooking `driver.F90:1118`, `:1208`, `:1283` to dump per-process I/O without modifying the vendored Fortran tree.
-- [ ] `scripts/capture_reference.py` driving the build + instrumented run + `.npz` dump under `tests/reference/per_process/`.
-- [ ] `tests/reference/SCHEMA.md` documenting the capture artifact contract.
+- [x] Build the Fortran reference locally via `scripts/build_reference.sh` (detects gfortran + NetCDF, applies `-fallow-invalid-boz` and the two-prefix `-L` paths).
+- [x] Run the canonical 12-point convergence sweep; archive NetCDFs under `tests/reference/sweep/` (~1.7 MB).
+- [x] Patch-overlay instrumentation (ADR-012): `scripts/patches/mam4_dump_state.F90` + `scripts/patches/driver_instrumentation.patch`, applied to the transient build copy of `driver.F90`. Hooks six points around `calcsize`, `wateruptake`, `amicphys`.
+- [x] `scripts/capture_reference.py --mode instrumented` builds with overlay, runs, parses `.bin` dumps into `tests/reference/per_process/*.npz`.
+- [x] `tests/reference/SCHEMA.md` documents both the NetCDF sweep contract and the `.npz` per-process contract.
+- [x] `docs/REFERENCE_BUILD.md` documents prerequisites, build flag rationale, the missing-from-upstream `&size_parameters` namelist, and why `run_test.csh` is bypassed.
 
 ---
 
