@@ -6,6 +6,24 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-19 — Milestone 3.4 (PR-C) — Wateruptake driver + completion of M3.4
+
+- PR: pending (`m3/wateruptake-driver`)
+- Final piece of the wateruptake bottom-up chain. Replaces the M1 `NotImplementedError` stub at `mam4_jax/processes/wateruptake.py` with the full port of `modal_aero_wateruptake_dr` + `modal_aero_wateruptake_sub` (~250 lines vectorized).
+- Added per-species and per-mode property tables to `mam4_jax/data.py`:
+  - `SPECDENS_AMODE`, `SPECHYGRO_AMODE` (9 species types, from `rad_constituents.F90:96-103`).
+  - `SIGMAG_AMODE`, `RHCRYSTAL_AMODE`, `RHDELIQUES_AMODE` (4 modes).
+  - Pre-computed `PER_SLOT_DENSITY` / `PER_SLOT_HYGRO` (4 × 14) lookup tables and a `SLOT_VALID` mask for vectorized per-(mode, slot) gather.
+  - `RHOH2O = 1000 kg/m³` added to `mam4_jax/constants.py`.
+- `wateruptake(state, params, config)` (ADR-009 signature) takes a state dict with `q`, `dgncur_a`, `t`, `pmid`, `cldn` and returns a new state with `dgncur_awet`, `qaerwat`, `wetdens` updated. Internally: gather per-mode dry mass / volume / hygroscopicity using `INDEX_TABLES`, compute v2ncur_a / naer / dryrad / drymass per mode, compute RH from `qsat_water(t, pmid)` and the clear-sky cloud adjustment, call `modal_aero_kohler` per (column, level, mode), apply the deliquescence/crystallization hysteresis branches.
+- Validation (`tests/test_wateruptake.py`, 4 tests): end-to-end against `tests/reference/per_process/wateruptake_{before,after}.npz`. Box-model meteorology (`t=273`, `pmid=1e5`, `cldn=0`) is pinned by the namelist + `driver.F90:591` so the test doesn't need additional instrumentation. Measured relative errors:
+  - `dgncur_awet`: max 4.53e-16 (machine ε)
+  - `qaerwat`: max 1.86e-7 — *but* at the 10⁻²⁰ absolute scale (primary-carbon mode where rwet ≈ rdry and qaerwat is essentially numerical noise). All other modes match at machine ε.
+  - `wetdens`: max 2.07e-16 (machine ε)
+- Test cleanup: `wateruptake` removed from the `PROCESS_MODULES` stub-raises tuple in `tests/test_scaffolding.py` — it's a real implementation now.
+- Residual figure: `docs/figures/wateruptake_residuals.png` (4-panel: dry vs wet diameters, aerosol water content, wet density, per-(mode, var) rel-err).
+- Full suite: **36/36 green** (was 33).
+
 ## 2026-05-19 — Milestone 3.4 (PR-B) — Port `modal_aero_kohler`
 
 - PR: pending (`m3/kohler-solver`)
