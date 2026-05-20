@@ -387,6 +387,108 @@ def _read_indices(path: Path) -> dict[str, np.ndarray]:
     }
 
 
+def _read_amicphys_init(path: Path) -> dict[str, np.ndarray]:
+    """Parse mam4_amicphys_init.txt (amicphys-internal tables) into a dict.
+
+    Written by the amicphys_init_dump.patch overlay from inside
+    modal_aero_amicphys_init, where the module-private lmap/fcvt/name
+    tables are in scope. Same '%'-section text layout as mam4_indices.txt.
+
+    Integer index conversion: lmap_* values from Fortran are
+    *gas_pcnst-relative* (i.e. inside chemistry's offset). The pcnst
+    absolute index is `lmap_X + loffset`. We dump both: the raw value
+    (`lmap_*`) and the loffset-adjusted, 0-based, -1-sentinel form
+    (`pcnst_lmap_*`) so consumers can pick the level they need.
+    """
+    sections: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in path.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith("%"):
+            # The fcvt_num / fcvt_wtr lines pack the value on the same
+            # line as the marker; handle that here.
+            head = s.lstrip("%").strip()
+            tokens = head.split()
+            current = tokens[0]
+            sections[current] = []
+            # Inline value (skip the first token = section name).
+            if len(tokens) > 1 and not tokens[1].startswith("("):
+                sections[current].append(" ".join(tokens[1:]))
+            continue
+        if current is not None:
+            sections[current].append(s)
+
+    def ints(name: str) -> np.ndarray:
+        toks = [int(t) for ln in sections[name] for t in ln.split()]
+        return np.asarray(toks, dtype=np.int32)
+
+    def floats(name: str) -> np.ndarray:
+        toks = [float(t) for ln in sections[name] for t in ln.split()]
+        return np.asarray(toks, dtype=np.float64)
+
+    def scalar_int(name: str) -> int:
+        return int(ints(name)[0])
+
+    def scalar_float(name: str) -> float:
+        return float(floats(name)[0])
+
+    def ints_2d(name: str, nrows: int, ncols: int) -> np.ndarray:
+        rows = sections[name]
+        assert len(rows) == nrows, f"{name}: expected {nrows} rows, got {len(rows)}"
+        out = np.zeros((nrows, ncols), dtype=np.int32)
+        for r, line in enumerate(rows):
+            vals = [int(t) for t in line.split()]
+            assert len(vals) == ncols, f"{name}[{r}]: expected {ncols} cols, got {len(vals)}"
+            out[r, :] = vals
+        return out
+
+    loffset  = scalar_int("loffset")
+    ngas     = scalar_int("ngas")
+    naer     = scalar_int("naer")
+    max_gas  = scalar_int("max_gas")
+    max_aer  = scalar_int("max_aer")
+    ntot_amode = 4   # fixed for MAM4-MOM; could be cross-checked against the other dump
+
+    lmap_gas    = ints("lmap_gas")
+    lmap_num    = ints("lmap_num")
+    lmap_numcw  = ints("lmap_numcw")
+    lmap_aer    = ints_2d("lmap_aer",    ntot_amode, naer)
+    lmap_aercw  = ints_2d("lmap_aercw",  ntot_amode, naer)
+    fcvt_gas    = floats("fcvt_gas")
+    fcvt_aer    = floats("fcvt_aer")
+    fcvt_num    = scalar_float("fcvt_num")
+    fcvt_wtr    = scalar_float("fcvt_wtr")
+
+    # Convert lmap_* from gas_pcnst-relative 1-based to pcnst-absolute 0-based.
+    # Empty slots (Fortran 0) become -1 sentinel.
+    def to_pcnst_0based(arr: np.ndarray) -> np.ndarray:
+        return np.where(arr == 0, -1, arr - 1 + loffset).astype(np.int32)
+
+    return {
+        "amicphys_loffset":     np.int32(loffset),
+        "amicphys_ngas":        np.int32(ngas),
+        "amicphys_naer":        np.int32(naer),
+        "amicphys_max_gas":     np.int32(max_gas),
+        "amicphys_max_aer":     np.int32(max_aer),
+        "lmap_gas":             lmap_gas,
+        "lmap_num":             lmap_num,
+        "lmap_numcw":           lmap_numcw,
+        "lmap_aer":             lmap_aer,
+        "lmap_aercw":           lmap_aercw,
+        "pcnst_lmap_gas":       to_pcnst_0based(lmap_gas),
+        "pcnst_lmap_num":       to_pcnst_0based(lmap_num),
+        "pcnst_lmap_numcw":     to_pcnst_0based(lmap_numcw),
+        "pcnst_lmap_aer":       to_pcnst_0based(lmap_aer),
+        "pcnst_lmap_aercw":     to_pcnst_0based(lmap_aercw),
+        "fcvt_gas":             fcvt_gas,
+        "fcvt_aer":             fcvt_aer,
+        "fcvt_num":             np.float64(fcvt_num),
+        "fcvt_wtr":             np.float64(fcvt_wtr),
+    }
+
+
 def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
                      amicphys_off: bool = False) -> list[Path]:
     dt = TOTAL_DURATION_S // nstep
@@ -425,8 +527,15 @@ def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
         indices_txt = RUN_DIR / "mam4_indices.txt"
         if not indices_txt.is_file():
             raise RuntimeError(f"expected indices dump missing: {indices_txt}")
+        contents = _read_indices(indices_txt)
+        # Merge amicphys-internal init tables (M3.6 PR-C). Same .npz so
+        # consumers can load both with one file.
+        amicphys_txt = RUN_DIR / "mam4_amicphys_init.txt"
+        if not amicphys_txt.is_file():
+            raise RuntimeError(f"expected amicphys init dump missing: {amicphys_txt}")
+        contents.update(_read_amicphys_init(amicphys_txt))
         indices_npz = INDICES_OUT_DIR / "reference.npz"
-        np.savez(indices_npz, **_read_indices(indices_txt))
+        np.savez(indices_npz, **contents)
         written.append(indices_npz)
 
     # Per-process tracer snapshots (one record per istep, across the loop).

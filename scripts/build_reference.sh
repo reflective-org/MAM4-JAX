@@ -116,6 +116,7 @@ if [[ "$INSTRUMENTED" == "1" ]]; then
   cp "$PATCH_DIR/mam4_dump_state.F90" "$BUILD_DIR/"
   ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/driver_instrumentation.patch" )
   ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/rename_hook.patch" )
+  ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/amicphys_init_dump.patch" )
 fi
 
 if [[ "$NO_AITACC_TRANSFER" == "1" ]]; then
