@@ -1,0 +1,12 @@
+--- a/driver.F90
++++ b/driver.F90
+@@ -1322,6 +1322,9 @@
+          q(    1:ncol,1:pver,l)  = mmr(  1:ncol,1:pver,l2)
+          qqcw( 1:ncol,1:pver,l)  = mmrcw(1:ncol,1:pver,l2)
+       end do
++
++      call dump_snapshot('amicphys_after_writeback', istep, ncol, pver, pcnst, ntot_amode, &
++         q, qqcw, dgncur_a, dgncur_awet, qaerwat, wetdens)
+ 
+ !
+ ! store the data of each time step for netcdf output

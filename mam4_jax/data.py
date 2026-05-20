@@ -415,10 +415,20 @@ assert ADV_MASS.shape == (30,), "ADV_MASS must match gas_pcnst=30"
 #: per-pcnst mmr → vmr factor. Length PCNST=35; entries before imozart-1
 #: (the chemistry offset) are 1.0 since those constituents aren't part of
 #: the chemistry vmr conversion.
+#:
+#: We store ``MMR_TO_VMR`` and ``VMR_TO_MMR`` as **two independently
+#: computed** arrays (``mwdry/adv_mass`` and ``adv_mass/mwdry``) rather
+#: than deriving ``VMR_TO_MMR = 1 / MMR_TO_VMR`` so the JAX round-trip
+#: drift matches the Fortran driver's (driver.F90:1224 vs :1321) at ULP
+#: level — important for bit-comparable tests on tracers amicphys
+#: doesn't touch.
 _LOFFSET = 5
 _MMR_TO_VMR = np.ones(PCNST, dtype=np.float64)
+_VMR_TO_MMR = np.ones(PCNST, dtype=np.float64)
 _MMR_TO_VMR[_LOFFSET:] = MWDRY / ADV_MASS
+_VMR_TO_MMR[_LOFFSET:] = ADV_MASS / MWDRY
 MMR_TO_VMR: np.ndarray = _MMR_TO_VMR
+VMR_TO_MMR: np.ndarray = _VMR_TO_MMR
 
 #: Mass→volume conversion per amicphys species (m³-AP / kmol-AP).
 #: Distinct from FCVT_AER (which is the kg/kg ↔ mol/mol unit conversion).

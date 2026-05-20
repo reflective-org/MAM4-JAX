@@ -40,6 +40,7 @@ BUILD_QSAT=0
 BUILD_MAKOH=0
 BUILD_KOHLER=0
 NO_AITACC_TRANSFER=0
+SKIP_SOAEXCH=0
 for arg in "$@"; do
   case "$arg" in
     --instrumented)         INSTRUMENTED=1 ;;
@@ -48,12 +49,18 @@ for arg in "$@"; do
     --makoh)                BUILD_MAKOH=1 ;;
     --kohler)               BUILD_KOHLER=1 ;;
     --no-aitacc-transfer)   NO_AITACC_TRANSFER=1 ;;
+    --skip-soaexch)         SKIP_SOAEXCH=1 ;;
     *) echo "Unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
 
 if [[ "$NO_AITACC_TRANSFER" == "1" && "$INSTRUMENTED" != "1" ]]; then
   echo "Error: --no-aitacc-transfer must be combined with --instrumented" >&2
+  exit 2
+fi
+
+if [[ "$SKIP_SOAEXCH" == "1" && "$INSTRUMENTED" != "1" ]]; then
+  echo "Error: --skip-soaexch must be combined with --instrumented" >&2
   exit 2
 fi
 
@@ -117,12 +124,21 @@ if [[ "$INSTRUMENTED" == "1" ]]; then
   ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/driver_instrumentation.patch" )
   ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/rename_hook.patch" )
   ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/amicphys_init_dump.patch" )
+  ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/amicphys_after_writeback.patch" )
 fi
 
 if [[ "$NO_AITACC_TRANSFER" == "1" ]]; then
   echo ""
   echo "Applying disable_aitacc_transfer overlay..."
   ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/disable_aitacc_transfer.patch" )
+fi
+
+if [[ "$SKIP_SOAEXCH" == "1" ]]; then
+  echo ""
+  echo "Applying gasaerexch_skip_soaexch overlay..."
+  ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/gasaerexch_skip_soaexch.patch" )
+  echo "Applying skip_pcarbon_aging overlay..."
+  ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/skip_pcarbon_aging.patch" )
 fi
 
 if [[ "$BUILD_MAKOH" == "1" || "$BUILD_KOHLER" == "1" ]]; then

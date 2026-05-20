@@ -88,6 +88,9 @@ PER_PROCESS_OUT_DIR = REPO_ROOT / "tests" / "reference" / "per_process"
 PER_PROCESS_NO_AITACC_OUT_DIR = REPO_ROOT / "tests" / "reference" / "per_process_no_aitacc"
 PER_PROCESS_AMICPHYS_OFF_OUT_DIR = REPO_ROOT / "tests" / "reference" / "per_process_amicphys_off"
 PER_PROCESS_RENAME_ONLY_OUT_DIR  = REPO_ROOT / "tests" / "reference" / "per_process_rename_only"
+PER_PROCESS_GASAEREXCH_ONLY_OUT_DIR = (
+    REPO_ROOT / "tests" / "reference" / "per_process_gasaerexch_only"
+)
 POLYSVP_OUT_DIR = REPO_ROOT / "tests" / "reference" / "polysvp"
 POLYSVP_EXE = RUN_DIR / "polysvp_driver.exe"
 QSAT_OUT_DIR = REPO_ROOT / "tests" / "reference" / "qsat"
@@ -105,6 +108,7 @@ DUMP_TAGS: tuple[str, ...] = (
     "calcsize_before", "calcsize_after",
     "wateruptake_before", "wateruptake_after",
     "amicphys_before", "amicphys_after",
+    "amicphys_after_writeback",
 )
 
 # Tags with the per-(col, level, subarea) rename schema (different from
@@ -147,7 +151,8 @@ NAMELIST_TEMPLATE = dedent("""\
 
 def ensure_built(instrumented: bool = False, polysvp: bool = False,
                  qsat: bool = False, makoh: bool = False,
-                 kohler: bool = False, no_aitacc_transfer: bool = False) -> None:
+                 kohler: bool = False, no_aitacc_transfer: bool = False,
+                 skip_soaexch: bool = False) -> None:
     """Build the executable. Always rebuilds — the build flag determines
     whether the previous binary is the right flavour."""
     cmd = [str(BUILD_SCRIPT)]
@@ -157,6 +162,7 @@ def ensure_built(instrumented: bool = False, polysvp: bool = False,
     if makoh:               cmd.append("--makoh")
     if kohler:              cmd.append("--kohler")
     if no_aitacc_transfer:  cmd.append("--no-aitacc-transfer")
+    if skip_soaexch:        cmd.append("--skip-soaexch")
     flavours = []
     if instrumented:        flavours.append("instrumented")
     if polysvp:             flavours.append("polysvp")
@@ -164,6 +170,7 @@ def ensure_built(instrumented: bool = False, polysvp: bool = False,
     if makoh:               flavours.append("makoh")
     if kohler:              flavours.append("kohler")
     if no_aitacc_transfer:  flavours.append("no-aitacc-transfer")
+    if skip_soaexch:        flavours.append("skip-soaexch")
     flavours = flavours or ["baseline"]
     print(f"[capture_reference] building {'+'.join(flavours)} executable(s) ...")
     subprocess.run(cmd, check=True)
@@ -504,9 +511,13 @@ def _read_amicphys_init(path: Path) -> dict[str, np.ndarray]:
 
 def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
                      amicphys_off: bool = False,
-                     rename_only: bool = False) -> list[Path]:
+                     rename_only: bool = False,
+                     gasaerexch_only: bool = False) -> list[Path]:
     dt = TOTAL_DURATION_S // nstep
-    if rename_only:
+    if gasaerexch_only:
+        out_dir = PER_PROCESS_GASAEREXCH_ONLY_OUT_DIR
+        flavour = "instrumented-gasaerexch-only"
+    elif rename_only:
         out_dir = PER_PROCESS_RENAME_ONLY_OUT_DIR
         flavour = "instrumented-rename-only"
     elif amicphys_off:
@@ -533,6 +544,10 @@ def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
         write_namelist(dt, nstep,
                        mdo_gasaerexch=0, mdo_rename=1,
                        mdo_newnuc=0, mdo_coag=0)
+    elif gasaerexch_only:
+        write_namelist(dt, nstep,
+                       mdo_gasaerexch=1, mdo_rename=0,
+                       mdo_newnuc=0, mdo_coag=0)
     else:
         write_namelist(dt, nstep)
     print(f"[capture_reference] {flavour} dt={dt}s nstep={nstep} ...", flush=True)
@@ -541,9 +556,10 @@ def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
 
     written: list[Path] = []
 
-    # Index tables (written once at init, before the time loop).
-    # Only the canonical full-physics run writes the canonical indices.
-    if not no_aitacc_transfer and not amicphys_off and not rename_only:
+    # Index tables (written once at init, before the time loop). Only the
+    # canonical full-physics run writes the canonical indices.
+    if (not no_aitacc_transfer and not amicphys_off
+            and not rename_only and not gasaerexch_only):
         indices_txt = RUN_DIR / "mam4_indices.txt"
         if not indices_txt.is_file():
             raise RuntimeError(f"expected indices dump missing: {indices_txt}")
@@ -692,6 +708,7 @@ def main() -> int:
         "--mode",
         choices=("sweep", "instrumented", "instrumented-no-aitacc",
                  "instrumented-amicphys-off", "instrumented-rename-only",
+                 "instrumented-gasaerexch-only",
                  "polysvp", "qsat", "makoh", "kohler"),
         default="sweep",
     )
@@ -747,6 +764,17 @@ def main() -> int:
                   f"{NSTEP_SWEEP}", file=sys.stderr)
         written = run_instrumented(nstep, rename_only=True)
         out_root = PER_PROCESS_RENAME_ONLY_OUT_DIR
+    elif args.mode == "instrumented-gasaerexch-only":
+        # Builds with the soaexch-skip overlay so that the JAX port
+        # (which doesn't implement soaexch yet — that's PR-E) matches
+        # the Fortran 1:1 with no SOA divergence.
+        ensure_built(instrumented=True, skip_soaexch=True)
+        nstep = args.nstep if args.nstep is not None else 60
+        if nstep not in NSTEP_SWEEP:
+            print(f"[capture_reference] warning: --nstep={nstep} is outside the canonical sweep "
+                  f"{NSTEP_SWEEP}", file=sys.stderr)
+        written = run_instrumented(nstep, gasaerexch_only=True)
+        out_root = PER_PROCESS_GASAEREXCH_ONLY_OUT_DIR
     elif args.mode == "polysvp":
         ensure_built(polysvp=True)
         written = run_polysvp()

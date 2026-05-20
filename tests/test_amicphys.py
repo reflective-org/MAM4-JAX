@@ -115,25 +115,60 @@ def test_orchestration_rename_only_matches_fortran(rename_only_captured) -> None
         )
 
 
-def test_orchestration_with_stubs_matches_rename_only_fortran(rename_only_captured) -> None:
-    """With default `mdo_*=1` but gasaerexch/newnuc/coag still stubs,
-    only rename can actually fire — so the JAX orchestration must match
-    the rename-only Fortran capture, not the full-physics one.
+GASAEREXCH_ONLY_REF_DIR = (
+    Path(__file__).resolve().parent / "reference" / "per_process_gasaerexch_only"
+)
 
-    This is the M3.6 PR-C tripwire. Will start *failing* once PR-D
-    wires up gasaerexch, at which point we'll switch to validating
-    against a different single-toggle capture (gasaerexch+rename only)
-    or the full bundle.
+
+@pytest.fixture(scope="module")
+def gasaerexch_only_captured() -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Single-toggle Fortran capture: `mdo_gasaerexch=1, others=0`
+    with the `mam_soaexch_1subarea` call also skipped (M3.6 PR-D).
+
+    Use `amicphys_after_writeback.npz` for `q`/`qqcw` because the
+    pre-writeback dump records `q` before the driver's vmr→mmr update —
+    those values are still pre-amicphys and don't reflect the changes
+    gasaerexch made in vmr space.
     """
-    before, after = rename_only_captured
+    before = {k: np.asarray(v)
+              for k, v in np.load(GASAEREXCH_ONLY_REF_DIR / "amicphys_before.npz").items()}
+    aw     = {k: np.asarray(v) for k, v in np.load(
+                GASAEREXCH_ONLY_REF_DIR / "amicphys_after_writeback.npz").items()}
+    return before, aw
+
+
+def test_orchestration_gasaerexch_only_matches_fortran(gasaerexch_only_captured) -> None:
+    """JAX `amicphys(state, mdo_gasaerexch=1, others=0)` reproduces the
+    Fortran single-toggle gasaerexch-only fixture (with SOA skipped).
+    """
+    before, aw = gasaerexch_only_captured
     state = _build_state(before)
-    new_state = amicphys(state)  # all mdo_* default to 1
-    for key in ("q", "qqcw", "dgncur_a", "dgncur_awet", "qaerwat", "wetdens"):
+    new_state = amicphys(state,
+                         mdo_gasaerexch=1, mdo_rename=0,
+                         mdo_newnuc=0, mdo_coag=0)
+
+    # Per-key check. atol is set generously enough to absorb ULP-level
+    # noise on near-zero tracers (e.g. species absent from a mode end up
+    # at ~1e-25 instead of exact 0). rtol=1e-6 per ADR-003.
+    for key in ("q", "qqcw"):
         np.testing.assert_allclose(
-            np.asarray(new_state[key]), after[key],
-            rtol=1e-12, atol=1e-30,
-            err_msg=f"all-mdo orchestration diverged on {key!r} "
-                    f"(stubs unexpectedly modified state)",
+            np.asarray(new_state[key]), aw[key],
+            rtol=1e-6, atol=1e-20,
+            err_msg=f"gasaerexch-only orchestration diverged on {key!r}",
+        )
+    for key in ("dgncur_a", "dgncur_awet", "qaerwat", "wetdens"):
+        # Fortran's `update_aerosol_props` (called inside the cond
+        # sub-stepping when `do_cond_wateruptake=.true.`) re-runs
+        # wateruptake after every gasaerexch substep, so dgn_awet /
+        # qaerwat / wetdens diverge slightly from the inputs. JAX
+        # doesn't implement that re-uptake yet (Phase A only ports the
+        # main sub-process), so we just confirm these fields are still
+        # in the right ballpark — they are not part of gasaerexch's
+        # validation surface for PR-D.
+        np.testing.assert_allclose(
+            np.asarray(new_state[key]), aw[key],
+            rtol=1e-3, atol=1e-15,
+            err_msg=f"gasaerexch-only orchestration drifted on {key!r}",
         )
 
 
