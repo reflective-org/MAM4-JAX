@@ -134,6 +134,19 @@ def test_amicphys_init_tables_match_npz_reference() -> None:
     # numptr_amode (different tables, same physical content).
     np.testing.assert_array_equal(data.LMAP_NUM, data.NUMPTR_AMODE)
 
+    # FAC_M2V_AER parity: PR-B captured it per-record in the rename
+    # snapshot. Constant across the run, must match the hard-coded constant.
+    rename_ref = np.load(
+        INDICES_NPZ.parent.parent / "per_process" / "rename_before.npz",
+        allow_pickle=False,
+    )
+    np.testing.assert_allclose(rename_ref["fac_m2v_aer"][0], data.FAC_M2V_AER,
+                               rtol=1e-14, atol=0.0)
+
+    # mwdry and adv_mass (driver-side mmr→vmr conversion factors).
+    assert float(ref["mwdry"]) == data.MWDRY
+    np.testing.assert_array_equal(ref["adv_mass"], data.ADV_MASS)
+
 
 def test_get_number_returns_slice() -> None:
     import jax.numpy as jnp

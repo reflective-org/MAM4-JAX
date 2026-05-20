@@ -1,6 +1,6 @@
 --- a/modal_aero_amicphys.F90
 +++ b/modal_aero_amicphys.F90
-@@ -6098,4 +6098,51 @@
+@@ -6098,4 +6098,54 @@
        end if ! ( masterproc )
  
  
@@ -46,6 +46,9 @@
 +         write(unit_aa,'(*(1pe23.15,1x))') (fcvt_aer(ia), ia=1, naer)
 +         write(unit_aa,'(/a,1x,1pe23.15)') '% fcvt_num', fcvt_num
 +         write(unit_aa,'(/a,1x,1pe23.15)') '% fcvt_wtr', fcvt_wtr
++         write(unit_aa,'(/a,1x,1pe23.15)') '% mwdry', mwdry
++         write(unit_aa,'(/a)') '% adv_mass (shape: gas_pcnst; driver mmr->vmr factor = mwdry/adv_mass)'
++         write(unit_aa,'(*(1pe23.15,1x))') (adv_mass(ia), ia=1, gas_pcnst)
 +         close(unit_aa)
 +      end block
 +!==> MAM4-JAX end

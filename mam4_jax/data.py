@@ -372,6 +372,56 @@ FCVT_AER: np.ndarray = np.asarray(
 FCVT_NUM: float = 1.0
 FCVT_WTR: float = 1.607793072824157
 
+# ---------------------------------------------------------------------------
+# Driver-level mmr ↔ vmr conversion (driver.F90:1217-1228).
+#
+# Before calling ``modal_aero_amicphys_intr``, the Fortran driver converts
+# each constituent from mass mixing ratio to volume mixing ratio via
+# ``vmr(l2) = mmr(l2) * mwdry / adv_mass(l2)``. The amicphys-internal
+# ``fcvt_*`` factors are then applied to the *vmr* values inside
+# ``mam_amicphys_1gridcell``. For consistency with the captured
+# amicphys-local reference data, the JAX unpacking must apply both
+# stages.
+#
+# imozart = 6 (1-based) in this build → loffset = 5, gas_pcnst = 30.
+# adv_mass[i] is the molecular weight of pcnst tracer (i + loffset + 1, 1-based).
+# Number tracers have adv_mass ≈ 1.0074 (a convention that makes the
+# mwdry/adv_mass factor ≈ 28.75 — converts particles/kmol-air to
+# something proportional to a volume mixing ratio).
+# ---------------------------------------------------------------------------
+
+MWDRY: float = 28.966
+ADV_MASS: np.ndarray = np.asarray([
+    34.0136, 98.0784, 64.0648, 62.1324, 12.011,                # 0-4: O, H2SO4, SO2, DMS, C
+    115.10734, 12.011, 12.011, 12.011, 135.064039, 58.442468,  # 5-10: soa, ...
+    250092.672, 1.0074, 115.10734, 12.011, 58.442468,          # 11-15
+    250092.672, 1.0074, 135.064039, 58.442468, 115.10734,      # 16-20
+    12.011, 12.011, 12.011, 250092.672, 1.0074,                # 21-25
+    12.011, 12.011, 250092.672, 1.0074,                        # 26-29
+], dtype=np.float64)
+assert ADV_MASS.shape == (30,), "ADV_MASS must match gas_pcnst=30"
+
+#: per-pcnst mmr → vmr factor. Length PCNST=35; entries before imozart-1
+#: (the chemistry offset) are 1.0 since those constituents aren't part of
+#: the chemistry vmr conversion.
+_LOFFSET = 5
+_MMR_TO_VMR = np.ones(PCNST, dtype=np.float64)
+_MMR_TO_VMR[_LOFFSET:] = MWDRY / ADV_MASS
+MMR_TO_VMR: np.ndarray = _MMR_TO_VMR
+
+#: Mass→volume conversion per amicphys species (m³-AP / kmol-AP).
+#: Distinct from FCVT_AER (which is the kg/kg ↔ mol/mol unit conversion).
+#: ``fac_m2v_aer = mw_aer / dens_aer`` in the Fortran amicphys init code.
+#: Consumed by rename's dryvol summation (and by gasaerexch/coag/newnuc
+#: when they land). Values match the per-record capture in
+#: ``tests/reference/per_process/rename_{before,after}.npz``; parity test
+#: in ``tests/test_scaffolding.py``.
+FAC_M2V_AER: np.ndarray = np.asarray(
+    [0.15, 0.06497175141242938, 0.15, 0.007058823529411765,
+     0.030789473684210526, 0.051923076923076926, 156.20986883198],
+    dtype=np.float64,
+)
+
 
 @dataclass(frozen=True)
 class IndexTables:

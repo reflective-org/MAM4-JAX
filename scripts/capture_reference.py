@@ -87,6 +87,7 @@ SWEEP_OUT_DIR = REPO_ROOT / "tests" / "reference" / "sweep"
 PER_PROCESS_OUT_DIR = REPO_ROOT / "tests" / "reference" / "per_process"
 PER_PROCESS_NO_AITACC_OUT_DIR = REPO_ROOT / "tests" / "reference" / "per_process_no_aitacc"
 PER_PROCESS_AMICPHYS_OFF_OUT_DIR = REPO_ROOT / "tests" / "reference" / "per_process_amicphys_off"
+PER_PROCESS_RENAME_ONLY_OUT_DIR  = REPO_ROOT / "tests" / "reference" / "per_process_rename_only"
 POLYSVP_OUT_DIR = REPO_ROOT / "tests" / "reference" / "polysvp"
 POLYSVP_EXE = RUN_DIR / "polysvp_driver.exe"
 QSAT_OUT_DIR = REPO_ROOT / "tests" / "reference" / "qsat"
@@ -460,6 +461,8 @@ def _read_amicphys_init(path: Path) -> dict[str, np.ndarray]:
     fcvt_aer    = floats("fcvt_aer")
     fcvt_num    = scalar_float("fcvt_num")
     fcvt_wtr    = scalar_float("fcvt_wtr")
+    mwdry       = scalar_float("mwdry")
+    adv_mass    = floats("adv_mass")     # shape (gas_pcnst,)
 
     # Convert lmap_* from gas_pcnst-relative 1-based to pcnst-absolute 0-based.
     # Empty slots (Fortran 0) become -1 sentinel.
@@ -486,13 +489,19 @@ def _read_amicphys_init(path: Path) -> dict[str, np.ndarray]:
         "fcvt_aer":             fcvt_aer,
         "fcvt_num":             np.float64(fcvt_num),
         "fcvt_wtr":             np.float64(fcvt_wtr),
+        "mwdry":                np.float64(mwdry),
+        "adv_mass":             adv_mass,
     }
 
 
 def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
-                     amicphys_off: bool = False) -> list[Path]:
+                     amicphys_off: bool = False,
+                     rename_only: bool = False) -> list[Path]:
     dt = TOTAL_DURATION_S // nstep
-    if amicphys_off:
+    if rename_only:
+        out_dir = PER_PROCESS_RENAME_ONLY_OUT_DIR
+        flavour = "instrumented-rename-only"
+    elif amicphys_off:
         out_dir = PER_PROCESS_AMICPHYS_OFF_OUT_DIR
         flavour = "instrumented-amicphys-off"
     elif no_aitacc_transfer:
@@ -512,6 +521,10 @@ def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
         write_namelist(dt, nstep,
                        mdo_gasaerexch=0, mdo_rename=0,
                        mdo_newnuc=0, mdo_coag=0)
+    elif rename_only:
+        write_namelist(dt, nstep,
+                       mdo_gasaerexch=0, mdo_rename=1,
+                       mdo_newnuc=0, mdo_coag=0)
     else:
         write_namelist(dt, nstep)
     print(f"[capture_reference] {flavour} dt={dt}s nstep={nstep} ...", flush=True)
@@ -521,9 +534,8 @@ def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
     written: list[Path] = []
 
     # Index tables (written once at init, before the time loop).
-    # Only the default (non-no-aitacc, non-amicphys-off) run writes the
-    # canonical indices.
-    if not no_aitacc_transfer and not amicphys_off:
+    # Only the canonical full-physics run writes the canonical indices.
+    if not no_aitacc_transfer and not amicphys_off and not rename_only:
         indices_txt = RUN_DIR / "mam4_indices.txt"
         if not indices_txt.is_file():
             raise RuntimeError(f"expected indices dump missing: {indices_txt}")
@@ -671,7 +683,7 @@ def main() -> int:
     ap.add_argument(
         "--mode",
         choices=("sweep", "instrumented", "instrumented-no-aitacc",
-                 "instrumented-amicphys-off",
+                 "instrumented-amicphys-off", "instrumented-rename-only",
                  "polysvp", "qsat", "makoh", "kohler"),
         default="sweep",
     )
@@ -716,6 +728,17 @@ def main() -> int:
                   f"{NSTEP_SWEEP}", file=sys.stderr)
         written = run_instrumented(nstep, amicphys_off=True)
         out_root = PER_PROCESS_AMICPHYS_OFF_OUT_DIR
+    elif args.mode == "instrumented-rename-only":
+        # Uses the default instrumented build (rename hook captures the
+        # local view); single-toggle namelist isolates the rename
+        # contribution from gasaerexch/newnuc/coag.
+        ensure_built(instrumented=True)
+        nstep = args.nstep if args.nstep is not None else 60
+        if nstep not in NSTEP_SWEEP:
+            print(f"[capture_reference] warning: --nstep={nstep} is outside the canonical sweep "
+                  f"{NSTEP_SWEEP}", file=sys.stderr)
+        written = run_instrumented(nstep, rename_only=True)
+        out_root = PER_PROCESS_RENAME_ONLY_OUT_DIR
     elif args.mode == "polysvp":
         ensure_built(polysvp=True)
         written = run_polysvp()

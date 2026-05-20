@@ -72,22 +72,68 @@ def test_amicphys_all_off_is_passthrough(captured) -> None:
         )
 
 
-def test_amicphys_all_on_with_stubs_is_passthrough(captured) -> None:
-    """With the default mdo_*=1 the sub-process stubs are still no-ops
-    (PR-A scope), so the function should still pass state through.
+RENAME_ONLY_REF_DIR = (
+    Path(__file__).resolve().parent / "reference" / "per_process_rename_only"
+)
 
-    This test will start *failing* once PR-B/C/D/E fill in physics — at
-    which point we'll switch to validating against
-    ``tests/reference/per_process/amicphys_{before,after}.npz``. Until
-    then it acts as a tripwire confirming PR-A really hasn't introduced
-    any state modification."""
-    before, after = captured
+
+@pytest.fixture(scope="module")
+def rename_only_captured() -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Single-toggle Fortran capture: `mdo_rename=1, others=0`.
+
+    With gasaerexch off, `qaer_delsub_grow4rnam` is identically zero at
+    the rename call site. In the canonical box-model fixture, the
+    Aitken-mode `dgn_t_old` stays well below `dp_belowcut` because
+    nothing else is growing the mode — so rename's optaa=40 guard at
+    Fortran line 4141 trips and rename is a no-op. The JAX orchestration
+    with `mdo_rename=1, others=0` must reproduce this passthrough.
+    """
+    before = {k: np.asarray(v)
+              for k, v in np.load(RENAME_ONLY_REF_DIR / "amicphys_before.npz").items()}
+    after  = {k: np.asarray(v)
+              for k, v in np.load(RENAME_ONLY_REF_DIR / "amicphys_after.npz").items()}
+    return before, after
+
+
+def test_orchestration_rename_only_matches_fortran(rename_only_captured) -> None:
+    """JAX `amicphys(state, mdo_rename=1, others=0)` reproduces the
+    single-toggle Fortran capture's `amicphys_after` at machine epsilon.
+
+    Validates the state-dict ↔ amicphys-local-view round-trip
+    (unpack → rename → repack) plus the mmr↔vmr conversion (M3.6 PR-C).
+    """
+    before, after = rename_only_captured
+    state = _build_state(before)
+    new_state = amicphys(state,
+                         mdo_gasaerexch=0, mdo_rename=1,
+                         mdo_newnuc=0, mdo_coag=0)
+    for key in ("q", "qqcw", "dgncur_a", "dgncur_awet", "qaerwat", "wetdens"):
+        np.testing.assert_allclose(
+            np.asarray(new_state[key]), after[key],
+            rtol=1e-12, atol=1e-30,
+            err_msg=f"rename-only orchestration diverged on {key!r}",
+        )
+
+
+def test_orchestration_with_stubs_matches_rename_only_fortran(rename_only_captured) -> None:
+    """With default `mdo_*=1` but gasaerexch/newnuc/coag still stubs,
+    only rename can actually fire — so the JAX orchestration must match
+    the rename-only Fortran capture, not the full-physics one.
+
+    This is the M3.6 PR-C tripwire. Will start *failing* once PR-D
+    wires up gasaerexch, at which point we'll switch to validating
+    against a different single-toggle capture (gasaerexch+rename only)
+    or the full bundle.
+    """
+    before, after = rename_only_captured
     state = _build_state(before)
     new_state = amicphys(state)  # all mdo_* default to 1
     for key in ("q", "qqcw", "dgncur_a", "dgncur_awet", "qaerwat", "wetdens"):
-        np.testing.assert_array_equal(
+        np.testing.assert_allclose(
             np.asarray(new_state[key]), after[key],
-            err_msg=f"default-mdo amicphys disturbed {key!r} (stubs are not no-ops)",
+            rtol=1e-12, atol=1e-30,
+            err_msg=f"all-mdo orchestration diverged on {key!r} "
+                    f"(stubs unexpectedly modified state)",
         )
 
 
