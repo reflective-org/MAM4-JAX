@@ -23,6 +23,13 @@ tests/reference/
 │   ├── wateruptake_after.npz
 │   ├── amicphys_before.npz
 │   └── amicphys_after.npz
+├── per_process_amicphys_off/       # same hooks, with all four amicphys sub-processes off
+│   ├── calcsize_before.npz
+│   ├── calcsize_after.npz
+│   ├── wateruptake_before.npz
+│   ├── wateruptake_after.npz
+│   ├── amicphys_before.npz
+│   └── amicphys_after.npz
 ├── polysvp/                        # standalone polysvp T-sweep
 │   └── reference.npz
 ├── qsat/                           # standalone qsat (T, p)-grid
@@ -108,6 +115,12 @@ Same six tags and same per-record arrays as `per_process/`, captured from a buil
 Captured at `--nstep 60`. Used by M3.5 PR-A's calcsize test (`tests/test_calcsize.py`) to validate the per-mode bounds-adjustment + `dgncur_a` recomputation in isolation, before PR-B re-enabled the transfer block.
 
 The fixture's transfer block is a structural no-op even with the full transfer enabled (see "What the captured references actually exercise" above), so the structural test `test_aitacc_transfer_is_no_op_on_this_fixture` in `tests/test_calcsize.py` cross-checks the two captures against each other.
+
+### `per_process_amicphys_off/` — variant with the amicphys sub-processes disabled
+
+Same six tags and same per-record arrays as `per_process/`, captured from a build that wrote the namelist with `mdo_gasaerexch=mdo_rename=mdo_newnuc=mdo_coag=0`. Under these toggles `modal_aero_amicphys_intr` is a true bit-exact passthrough: `amicphys_after` matches `amicphys_before` for every captured array across all 60 timesteps.
+
+Captured at `--nstep 60`. Used by M3.6 PR-A's `tests/test_amicphys.py::test_amicphys_all_off_is_passthrough` to validate the JAX orchestration shell in isolation from the four physics sub-routines, which are still no-op stubs awaiting PR-B–E.
 
 ### Note on `amicphys_*` and VMR conversion
 

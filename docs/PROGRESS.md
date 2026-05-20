@@ -6,6 +6,23 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-19 — Milestone 3.6 (PR-A) — Amicphys orchestration shell
+
+- PR: [#13](https://github.com/reflective-org/MAM4-JAX/pull/13) (merged at [`dff389d`](https://github.com/reflective-org/MAM4-JAX/commit/dff389d)).
+- First of five PRs to port `modal_aero_amicphys_intr`. PR-A wires up the orchestration skeleton with all four physics sub-routines as no-op stubs; PR-B–PR-E will replace one stub at a time.
+- **Capture infrastructure**: `scripts/capture_reference.py` now supports `--mode instrumented-amicphys-off`, which writes a namelist with `mdo_gasaerexch=mdo_rename=mdo_newnuc=mdo_coag=0` and saves the dump to `tests/reference/per_process_amicphys_off/`. The Fortran `modal_aero_amicphys_intr` is a true bit-exact passthrough under these toggles (every captured array's `after` matches `before` exactly across 60 timesteps).
+- **JAX shell** at `mam4_jax/processes/amicphys.py` (replaces M1 NotImplementedError stub):
+  - `amicphys(state, params, config, *, mdo_*)` is the ADR-009 entry. Calls into `_mam_amicphys_1gridcell` → `_mam_amicphys_1subarea_clear`.
+  - The clear-sky handler invokes four private helpers in the Fortran order (`gasaerexch → rename → newnuc → coag`), each gated by its `mdo_*` toggle.
+  - `_mam_gasaerexch_1subarea`, `_mam_rename_1subarea`, `_mam_newnuc_1subarea`, `_mam_coag_1subarea` are no-op stubs returning the input state unchanged. PR-B–E will replace them.
+  - Cloudy path (`_mam_amicphys_1subarea_cloudy`) is **not implemented** — unreachable from the box-model driver (`cldn=0`). Documented in the module docstring.
+- **Validation** (`tests/test_amicphys.py`, 3 tests):
+  - `test_amicphys_all_off_is_passthrough`: with explicit `mdo_*=0`, JAX output bit-exact matches the Fortran `amicphys_off` reference for all six aerosol-state arrays.
+  - `test_amicphys_all_on_with_stubs_is_passthrough`: tripwire — confirms PR-A stubs are no-ops; will start failing as PR-B+ fill in physics.
+  - `test_amicphys_returns_all_state_keys`: checks that meteorology / deltat pass through.
+- `tests/test_scaffolding.py`: dropped `amicphys` from `PROCESS_MODULES` (it's a real implementation now); kept `gasaerexch`, `newnuc`, `coag`, `rename` since those standalone process modules are dead code in the box-model build per the M3.6-prep finding.
+- Full suite: **45/45 green** (was 43).
+
 ## 2026-05-19 — M3.6 prep — Documented that amicphys is self-contained
 
 - PR: [#12](https://github.com/reflective-org/MAM4-JAX/pull/12) (merged at [`2975c3d`](https://github.com/reflective-org/MAM4-JAX/commit/2975c3d)).
