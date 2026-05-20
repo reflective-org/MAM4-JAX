@@ -49,6 +49,13 @@ Three modes:
   because calcsize is essentially trivial at ``nstep=1`` (per-mode
   evolution needs multiple steps to be meaningful).
 
+* ``--mode instrumented-amicphys-off``: same as ``instrumented`` but
+  writes the namelist with ``mdo_gasaerexch=0, mdo_rename=0,
+  mdo_newnuc=0, mdo_coag=0`` (all four amicphys sub-processes disabled).
+  Writes to ``tests/reference/per_process_amicphys_off/``. Defaults to
+  ``--nstep 60``. Used to validate the M3.6 PR-A amicphys orchestration
+  shell (state passthrough when no physics runs).
+
 Usage:
     python scripts/capture_reference.py
     python scripts/capture_reference.py --mode instrumented [--nstep 1]
@@ -79,6 +86,7 @@ BUILD_SCRIPT = REPO_ROOT / "scripts" / "build_reference.sh"
 SWEEP_OUT_DIR = REPO_ROOT / "tests" / "reference" / "sweep"
 PER_PROCESS_OUT_DIR = REPO_ROOT / "tests" / "reference" / "per_process"
 PER_PROCESS_NO_AITACC_OUT_DIR = REPO_ROOT / "tests" / "reference" / "per_process_no_aitacc"
+PER_PROCESS_AMICPHYS_OFF_OUT_DIR = REPO_ROOT / "tests" / "reference" / "per_process_amicphys_off"
 POLYSVP_OUT_DIR = REPO_ROOT / "tests" / "reference" / "polysvp"
 POLYSVP_EXE = RUN_DIR / "polysvp_driver.exe"
 QSAT_OUT_DIR = REPO_ROOT / "tests" / "reference" / "qsat"
@@ -106,10 +114,10 @@ NAMELIST_TEMPLATE = dedent("""\
     /
     &cntl_input
     mdo_gaschem    = 0,
-    mdo_gasaerexch = 1,
-    mdo_rename     = 1,
-    mdo_newnuc     = 1,
-    mdo_coag       = 1,
+    mdo_gasaerexch = {mdo_gasaerexch},
+    mdo_rename     = {mdo_rename},
+    mdo_newnuc     = {mdo_newnuc},
+    mdo_coag       = {mdo_coag},
     /
     &met_input
     temp    = 273.,
@@ -155,8 +163,21 @@ def ensure_built(instrumented: bool = False, polysvp: bool = False,
     subprocess.run(cmd, check=True)
 
 
-def write_namelist(dt: int, nstep: int) -> None:
-    (RUN_DIR / "namelist").write_text(NAMELIST_TEMPLATE.format(dt=dt, nstep=nstep))
+def write_namelist(dt: int, nstep: int, *,
+                   mdo_gasaerexch: int = 1, mdo_rename: int = 1,
+                   mdo_newnuc: int = 1, mdo_coag: int = 1) -> None:
+    """Write the run/namelist file.
+
+    The four ``mdo_*`` knobs default to the canonical all-on values from
+    the upstream ``run_test.csh``. Set them to 0 individually for
+    single-toggle captures, or all to 0 for an "amicphys-off" capture
+    (every microphysical sub-process bypassed).
+    """
+    (RUN_DIR / "namelist").write_text(NAMELIST_TEMPLATE.format(
+        dt=dt, nstep=nstep,
+        mdo_gasaerexch=mdo_gasaerexch, mdo_rename=mdo_rename,
+        mdo_newnuc=mdo_newnuc, mdo_coag=mdo_coag,
+    ))
 
 
 def run_one_baseline(nstep: int) -> Path:
@@ -297,12 +318,18 @@ def _read_indices(path: Path) -> dict[str, np.ndarray]:
     }
 
 
-def run_instrumented(nstep: int, no_aitacc_transfer: bool = False) -> list[Path]:
+def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
+                     amicphys_off: bool = False) -> list[Path]:
     dt = TOTAL_DURATION_S // nstep
-    out_dir = (
-        PER_PROCESS_NO_AITACC_OUT_DIR if no_aitacc_transfer
-        else PER_PROCESS_OUT_DIR
-    )
+    if amicphys_off:
+        out_dir = PER_PROCESS_AMICPHYS_OFF_OUT_DIR
+        flavour = "instrumented-amicphys-off"
+    elif no_aitacc_transfer:
+        out_dir = PER_PROCESS_NO_AITACC_OUT_DIR
+        flavour = "instrumented-no-aitacc"
+    else:
+        out_dir = PER_PROCESS_OUT_DIR
+        flavour = "instrumented"
     out_dir.mkdir(parents=True, exist_ok=True)
     INDICES_OUT_DIR.mkdir(parents=True, exist_ok=True)
     # Wipe any prior dumps so we never mix runs.
@@ -310,8 +337,12 @@ def run_instrumented(nstep: int, no_aitacc_transfer: bool = False) -> list[Path]
         if stale.exists():
             stale.unlink()
 
-    write_namelist(dt, nstep)
-    flavour = "instrumented-no-aitacc" if no_aitacc_transfer else "instrumented"
+    if amicphys_off:
+        write_namelist(dt, nstep,
+                       mdo_gasaerexch=0, mdo_rename=0,
+                       mdo_newnuc=0, mdo_coag=0)
+    else:
+        write_namelist(dt, nstep)
     print(f"[capture_reference] {flavour} dt={dt}s nstep={nstep} ...", flush=True)
     subprocess.run(["./mam_box_test.exe"], cwd=RUN_DIR, check=True,
                    stdout=subprocess.DEVNULL)
@@ -319,8 +350,9 @@ def run_instrumented(nstep: int, no_aitacc_transfer: bool = False) -> list[Path]
     written: list[Path] = []
 
     # Index tables (written once at init, before the time loop).
-    # Only the default (non-no-aitacc) run writes the canonical indices.
-    if not no_aitacc_transfer:
+    # Only the default (non-no-aitacc, non-amicphys-off) run writes the
+    # canonical indices.
+    if not no_aitacc_transfer and not amicphys_off:
         indices_txt = RUN_DIR / "mam4_indices.txt"
         if not indices_txt.is_file():
             raise RuntimeError(f"expected indices dump missing: {indices_txt}")
@@ -449,6 +481,7 @@ def main() -> int:
     ap.add_argument(
         "--mode",
         choices=("sweep", "instrumented", "instrumented-no-aitacc",
+                 "instrumented-amicphys-off",
                  "polysvp", "qsat", "makoh", "kohler"),
         default="sweep",
     )
@@ -482,6 +515,17 @@ def main() -> int:
                   f"{NSTEP_SWEEP}", file=sys.stderr)
         written = run_instrumented(nstep, no_aitacc_transfer=True)
         out_root = PER_PROCESS_NO_AITACC_OUT_DIR
+    elif args.mode == "instrumented-amicphys-off":
+        # Uses the default instrumented build (no patches besides the
+        # existing driver_instrumentation overlay) — the all-mdo-off
+        # control flow is selected via the namelist, not a Fortran patch.
+        ensure_built(instrumented=True)
+        nstep = args.nstep if args.nstep is not None else 60
+        if nstep not in NSTEP_SWEEP:
+            print(f"[capture_reference] warning: --nstep={nstep} is outside the canonical sweep "
+                  f"{NSTEP_SWEEP}", file=sys.stderr)
+        written = run_instrumented(nstep, amicphys_off=True)
+        out_root = PER_PROCESS_AMICPHYS_OFF_OUT_DIR
     elif args.mode == "polysvp":
         ensure_built(polysvp=True)
         written = run_polysvp()
