@@ -54,6 +54,11 @@ from __future__ import annotations
 
 from typing import Any
 
+import jax.numpy as jnp
+from jax.scipy.special import erfc
+
+from .. import data
+
 
 def amicphys(state: dict[str, Any], params=None, config=None, *,
              mdo_gasaerexch: int = 1, mdo_rename: int = 1,
@@ -110,7 +115,19 @@ def _mam_amicphys_1subarea_clear(state: dict[str, Any], *,
     if mdo_gasaerexch:
         state = _mam_gasaerexch_1subarea(state)
     if mdo_rename:
-        state = _mam_rename_1subarea(state)
+        # PR-B ported `_mam_rename_1subarea` against the amicphys-local
+        # view (qnum_cur, qaer_cur, qaer_delsub_grow4rnam, qwtr_cur,
+        # fac_m2v_aer). Wiring it into this orchestration requires the
+        # state-dict ↔ local-view unpacking that PR-C lands alongside
+        # `_mam_gasaerexch_1subarea`.
+        #
+        # We deliberately do *not* call _mam_rename_1subarea here even
+        # with a synthetic zero qaer_delsub_grow4rnam: the Fortran
+        # rename_method_optaa=40 branch can transfer particles when the
+        # Aitken-mode dgn already lies above dp_belowcut, regardless of
+        # whether the growth delta is zero. Calling it with a fabricated
+        # delta would break the all-stubs passthrough invariant.
+        state = state
     if mdo_newnuc:
         state = _mam_newnuc_1subarea(state)
     if mdo_coag:
@@ -133,14 +150,165 @@ def _mam_gasaerexch_1subarea(state: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
-def _mam_rename_1subarea(state: dict[str, Any]) -> dict[str, Any]:
-    """Stub: M3.6 PR-B will port the Aitken → accumulation mode-transfer.
+# ---------------------------------------------------------------------------
+# Rename — M3.6 PR-B
+# ---------------------------------------------------------------------------
 
-    Port target: ``modal_aero_amicphys.F90`` ``mam_rename_1subarea``
-    (lines 3923–4246, ~323 LOC). The standalone ``modal_aero_rename.F90``
-    is dead code in this configuration (see ``docs/ARCHITECTURE.md``).
+# Numerical constants from mam_rename_1subarea (modal_aero_amicphys.F90:3987-4017).
+_FRELAX = 27.0
+_ONETHIRD = 1.0 / 3.0
+_DRYVOL_SMALLEST = 1.0e-25
+_RENAME_METHOD_OPTAA = 40   # Fortran default (modal_aero_amicphys.F90:120).
+
+
+def _mam_rename_1subarea(qnum_cur, qaer_cur, qaer_delsub_grow4rnam,
+                         qwtr_cur, fac_m2v_aer):
+    """Port of ``mam_rename_1subarea`` (``modal_aero_amicphys.F90:3923–4246``).
+
+    Operates on the amicphys-local single-(col, level, sub-area) view of
+    the aerosol state, mirroring the Fortran subroutine's signature. This
+    is **not** the state-dict-shaped interface — the orchestration glue
+    (state-dict ↔ local-view unpacking) lands in PR-C alongside
+    ``_mam_gasaerexch_1subarea`` because rename's ``qaer_delsub_grow4rnam``
+    delta is produced by gasaerexch in the same sub-area.
+
+    Parameters
+    ----------
+    qnum_cur : jax.Array, shape (max_mode,)
+        Per-mode number mixing ratios (particles/kmol-air).
+    qaer_cur : jax.Array, shape (max_aer, max_mode)
+        Per-(species, mode) aerosol mass mixing ratios (kmol-AP/kmol-air).
+    qaer_delsub_grow4rnam : jax.Array, shape (max_aer, max_mode)
+        Change to ``qaer`` accumulated during the current gasaerexch
+        sub-stepping loop. Constructed in the Fortran at
+        ``modal_aero_amicphys.F90:2433`` as ``qaer_cur - qaer_sv1``.
+    qwtr_cur : jax.Array, shape (max_mode,)
+        Per-mode aerosol water content. Fortran declares it ``intent(inout)``
+        but never writes it; we pass it through unchanged for symmetry.
+    fac_m2v_aer : jax.Array, shape (max_aer,)
+        Mass-to-volume conversion per species (m³-AP/kmol-AP). Captured
+        from Fortran amicphys init via the rename-hook overlay.
+
+    Returns
+    -------
+    qnum_cur, qaer_cur, qwtr_cur : jax.Array
+        Updated per-mode/per-(species, mode) arrays.
+
+    Simplifications relative to the Fortran (all documented in
+    docs/plans/002-rename-port.md):
+
+    * Cloud-borne path omitted — ``iscldy_subarea = .false.`` always
+      holds for the box-model fixture (``cldn = 0``, ``driver.F90:591``).
+    * The only active rename pair is Aitken → accum
+      (``mtoo_renamexf(nait) = nacc``, the rest are 0). The Fortran's
+      ``n = 1..ntot_amode`` pair-loop reduces to that single pair.
+    * ``rename_method_optaa = 40`` is hardcoded (Fortran's default and
+      the only setting tested by the box-model build).
     """
-    return state
+    mfrm = data.AITKEN_MODE_IDX
+    mtoo = data.ACCUM_MODE_IDX
+
+    alnsg   = data.ALNSG_AMODE
+    dgnum   = data._DGNUM
+    dgnumlo = data._DGNUMLO
+    dgnumhi = data._DGNUMHI
+
+    xferfrac_max = 1.0 - 10.0 * jnp.finfo(jnp.float64).eps
+
+    factoraa_mfrm = (jnp.pi / 6.0) * jnp.exp(4.5 * alnsg[mfrm] ** 2)
+    factoryy_mfrm = jnp.sqrt(0.5) / alnsg[mfrm]
+
+    v2nlorlx_mfrm = (1.0 / ((jnp.pi / 6.0) *
+                            (dgnumlo[mfrm] ** 3) *
+                            jnp.exp(4.5 * alnsg[mfrm] ** 2))) * _FRELAX
+    v2nhirlx_mfrm = (1.0 / ((jnp.pi / 6.0) *
+                            (dgnumhi[mfrm] ** 3) *
+                            jnp.exp(4.5 * alnsg[mfrm] ** 2))) / _FRELAX
+
+    tmp_alnsg2_mfrm = 3.0 * (alnsg[mfrm] ** 2)
+    dp_cut_mfrm = jnp.sqrt(
+        dgnum[mfrm] * jnp.exp(1.5 * (alnsg[mfrm] ** 2)) *
+        dgnum[mtoo] * jnp.exp(1.5 * (alnsg[mtoo] ** 2))
+    )
+    lndp_cut_mfrm   = jnp.log(dp_cut_mfrm)
+    dp_belowcut_mfrm = 0.99 * dp_cut_mfrm
+
+    # Dry volume for the "from" mode (clear-sky only). qaer is (max_aer,
+    # max_mode); fac_m2v_aer is (max_aer,). Sum species contributions.
+    qaer_mfrm  = qaer_cur[:, mfrm]
+    qadel_mfrm = qaer_delsub_grow4rnam[:, mfrm]
+    deldryvol_t = jnp.sum(qadel_mfrm * fac_m2v_aer)
+    dryvol_t_old = jnp.sum(qaer_mfrm * fac_m2v_aer) - deldryvol_t
+    dryvol_t_del = deldryvol_t
+    num_t_old   = qnum_cur[mfrm]
+    dryvol_t_new = dryvol_t_old + dryvol_t_del
+
+    # Guard 1 (Fortran line 4106): dryvol_t_new <= dryvol_smallest.
+    guard_volnew = dryvol_t_new > _DRYVOL_SMALLEST
+
+    dryvol_t_oldbnd = jnp.maximum(dryvol_t_old, _DRYVOL_SMALLEST)
+    num_t_old_clip  = jnp.maximum(0.0, num_t_old)
+    num_t_oldbnd = jnp.minimum(dryvol_t_oldbnd * v2nlorlx_mfrm, num_t_old_clip)
+    num_t_oldbnd = jnp.maximum(dryvol_t_oldbnd * v2nhirlx_mfrm, num_t_oldbnd)
+
+    # Guard 2 (Fortran line 4119): dgn_t_new <= dgnum_aer[mfrm].
+    dgn_t_new = (dryvol_t_new / (num_t_oldbnd * factoraa_mfrm)) ** _ONETHIRD
+    guard_dgnnew = dgn_t_new > dgnum[mfrm]
+
+    # New tail fractions.
+    lndgn_new = jnp.log(dgn_t_new)
+    lndgv_new = lndgn_new + tmp_alnsg2_mfrm
+    yn_tail_new = (lndp_cut_mfrm - lndgn_new) * factoryy_mfrm
+    yv_tail_new = (lndp_cut_mfrm - lndgv_new) * factoryy_mfrm
+    tailfr_numnew = 0.5 * erfc(yn_tail_new)
+    tailfr_volnew = 0.5 * erfc(yv_tail_new)
+
+    # Old tail fractions — with the optaa==40 dryvol/dgn adjustment.
+    # (Fortran lines 4135-4141.)
+    dgn_t_old_raw = (dryvol_t_oldbnd / (num_t_oldbnd * factoraa_mfrm)) ** _ONETHIRD
+    above_cut = dgn_t_old_raw > dp_belowcut_mfrm
+    dryvol_t_old_used = jnp.where(
+        above_cut,
+        dryvol_t_old * (dp_belowcut_mfrm / dgn_t_old_raw) ** 3,
+        dryvol_t_old,
+    )
+    dgn_t_old = jnp.where(above_cut, dp_belowcut_mfrm, dgn_t_old_raw)
+
+    # Guard 3 (Fortran line 4141, optaa==40 branch):
+    #   (dryvol_t_new - dryvol_t_old_used) <= 1e-6 * dryvol_t_oldbnd.
+    guard_voldel = (dryvol_t_new - dryvol_t_old_used) > 1.0e-6 * dryvol_t_oldbnd
+
+    lndgn_old = jnp.log(dgn_t_old)
+    lndgv_old = lndgn_old + tmp_alnsg2_mfrm
+    yn_tail_old = (lndp_cut_mfrm - lndgn_old) * factoryy_mfrm
+    yv_tail_old = (lndp_cut_mfrm - lndgv_old) * factoryy_mfrm
+    tailfr_numold = 0.5 * erfc(yn_tail_old)
+    tailfr_volold = 0.5 * erfc(yv_tail_old)
+
+    # Transfer fractions. Guard 4 (Fortran line 4157): tmpa <= 0.
+    tmpa = tailfr_volnew * dryvol_t_new - tailfr_volold * dryvol_t_old_used
+    guard_tmpa = tmpa > 0.0
+
+    xferfrac_vol = jnp.minimum(tmpa, dryvol_t_new) / dryvol_t_new
+    xferfrac_vol = jnp.minimum(xferfrac_vol, xferfrac_max)
+    xferfrac_num = tailfr_numnew - tailfr_numold
+    xferfrac_num = jnp.maximum(0.0, jnp.minimum(xferfrac_num, xferfrac_vol))
+
+    # Any guard failing → no transfer. Mirrors the Fortran `cycle`s.
+    do_transfer = guard_volnew & guard_dgnnew & guard_voldel & guard_tmpa
+    xferfrac_vol = jnp.where(do_transfer, xferfrac_vol, 0.0)
+    xferfrac_num = jnp.where(do_transfer, xferfrac_num, 0.0)
+
+    # Apply transfers (Fortran lines 4201-4208 — clear-sky only).
+    dnum = qnum_cur[mfrm] * xferfrac_num
+    qnum_cur = qnum_cur.at[mfrm].add(-dnum)
+    qnum_cur = qnum_cur.at[mtoo].add(+dnum)
+
+    dqaer = qaer_cur[:, mfrm] * xferfrac_vol   # (max_aer,)
+    qaer_cur = qaer_cur.at[:, mfrm].add(-dqaer)
+    qaer_cur = qaer_cur.at[:, mtoo].add(+dqaer)
+
+    return qnum_cur, qaer_cur, qwtr_cur
 
 
 def _mam_newnuc_1subarea(state: dict[str, Any]) -> dict[str, Any]:
