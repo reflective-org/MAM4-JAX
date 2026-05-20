@@ -141,11 +141,17 @@
 
       subroutine dump_rename_snapshot(tag, istep, i, k, jsub, &
                                       mtoo_renamexf, qnum_cur, qaer_cur, &
-                                      qaer_delsub_grow4rnam, qwtr_cur)
+                                      qaer_delsub_grow4rnam, qwtr_cur, &
+                                      fac_m2v_aer)
          !
          ! Dump the local-view inputs and outputs of mam_rename_1subarea,
          ! captured from inside mam_amicphys_1subarea_clear via the rename
          ! hook patch. One record per call (per col, level, sub-area, step).
+         !
+         ! fac_m2v_aer is amicphys-private module data populated at
+         ! amicphys init; we dump it alongside each record (constant across
+         ! the run but having it inline makes the .npz self-contained for
+         ! tests).
          !
          ! Binary record format (stream-access, native endianness):
          !   integer(4) :: istep, i, k, jsub
@@ -155,12 +161,14 @@
          !   real(r8)   :: qaer_cur(max_aer, max_mode)
          !   real(r8)   :: qaer_delsub_grow4rnam(max_aer, max_mode)
          !   real(r8)   :: qwtr_cur(max_mode)
+         !   real(r8)   :: fac_m2v_aer(max_aer)
          !
          character(len=*), intent(in) :: tag
          integer,          intent(in) :: istep, i, k, jsub
          integer,          intent(in) :: mtoo_renamexf(:)
          real(r8),         intent(in) :: qnum_cur(:), qwtr_cur(:)
          real(r8),         intent(in) :: qaer_cur(:,:), qaer_delsub_grow4rnam(:,:)
+         real(r8),         intent(in) :: fac_m2v_aer(:)
 
          integer            :: unit
          character(len=256) :: filename
@@ -188,6 +196,7 @@
          write(unit) qaer_cur
          write(unit) qaer_delsub_grow4rnam
          write(unit) qwtr_cur
+         write(unit) fac_m2v_aer
 
          close(unit)
 

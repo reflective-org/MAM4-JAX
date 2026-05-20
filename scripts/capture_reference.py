@@ -265,6 +265,7 @@ def _read_rename_dump(path: Path) -> dict[str, np.ndarray]:
       f64   : qaer_cur(max_aer, max_mode)
       f64   : qaer_delsub_grow4rnam(max_aer, max_mode)
       f64   : qwtr_cur(max_mode)
+      f64   : fac_m2v_aer(max_aer)
     """
     raw = path.read_bytes()
     pos = 0
@@ -277,6 +278,7 @@ def _read_rename_dump(path: Path) -> dict[str, np.ndarray]:
     qaer_list: list[np.ndarray] = []
     qdel_list: list[np.ndarray] = []
     qwtr_list: list[np.ndarray] = []
+    fac_list:  list[np.ndarray] = []
 
     while pos < len(raw):
         hdr1 = np.frombuffer(raw, dtype=np.int32, count=4, offset=pos); pos += 16
@@ -298,6 +300,7 @@ def _read_rename_dump(path: Path) -> dict[str, np.ndarray]:
         qaer_list.append(take(max_aer * max_mode, (max_aer, max_mode)))
         qdel_list.append(take(max_aer * max_mode, (max_aer, max_mode)))
         qwtr_list.append(take(max_mode, (max_mode,)))
+        fac_list.append(take(max_aer, (max_aer,)))
         mtoo_list.append(mtoo)
         istep_list.append(istep); i_list.append(i); k_list.append(k); jsub_list.append(jsub)
 
@@ -311,6 +314,7 @@ def _read_rename_dump(path: Path) -> dict[str, np.ndarray]:
         "qaer_cur":               np.stack(qaer_list),
         "qaer_delsub_grow4rnam":  np.stack(qdel_list),
         "qwtr_cur":               np.stack(qwtr_list),
+        "fac_m2v_aer":            np.stack(fac_list),
     }
 
 
