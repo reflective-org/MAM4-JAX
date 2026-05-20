@@ -158,11 +158,49 @@ SIGMAG_AMODE: tuple[float, ...] = (
     1.600,     # primary_carbon
 )
 
+#: Reference dry diameter per mode (m). From
+#: ``rad_constituents.F90:167`` (MAM4-MOM branch). Also the namelist
+#: defaults written by ``scripts/capture_reference.py``.
+DGNUM_AMODE:   tuple[float, ...] = (0.1100e-6, 0.0260e-6, 2.000e-6, 0.050e-6)
+
+#: Lower / upper bounds on dry diameter per mode (m). Outside these
+#: bounds ``modal_aero_calcsize_sub`` triggers its number-bounds
+#: adjustment. From ``rad_constituents.F90:168-169``.
+DGNUMLO_AMODE: tuple[float, ...] = (0.0535e-6, 0.0087e-6, 1.000e-6, 0.010e-6)
+DGNUMHI_AMODE: tuple[float, ...] = (0.4400e-6, 0.0520e-6, 4.000e-6, 0.100e-6)
+
 #: Crystallization relative humidity (below which aerosol is dry).
 RHCRYSTAL_AMODE: tuple[float, ...] = (0.350, 0.350, 0.350, 0.350)
 
 #: Deliquescence relative humidity (above which aerosol is fully wet).
 RHDELIQUES_AMODE: tuple[float, ...] = (0.800, 0.800, 0.800, 0.800)
+
+
+# ---------------------------------------------------------------------------
+# Derived volume-to-number bounds per mode (used by modal_aero_calcsize_sub).
+# Definitions from modal_aero_initialize_data.F90:428-435:
+#
+#     alnsg     = log(sigmag)
+#     voltonumb = 1 / ( (pi/6) * dgnum^3   * exp(4.5 * alnsg^2) )
+#     dumfac    =       (pi/6)             * exp(4.5 * alnsg^2)
+#
+# voltonumb / lo / hi are evaluated at dgnum / dgnumlo / dgnumhi
+# respectively. voltonumb has units of 1/m^3 (it's "particles per unit
+# volume" so smaller dgnum → larger voltonumb).
+# ---------------------------------------------------------------------------
+
+_SIGMAG = np.asarray(SIGMAG_AMODE, dtype=np.float64)
+_DGNUM   = np.asarray(DGNUM_AMODE,   dtype=np.float64)
+_DGNUMLO = np.asarray(DGNUMLO_AMODE, dtype=np.float64)
+_DGNUMHI = np.asarray(DGNUMHI_AMODE, dtype=np.float64)
+
+ALNSG_AMODE: np.ndarray = np.log(_SIGMAG)
+_DUMFAC = (np.pi / 6.0) * np.exp(4.5 * ALNSG_AMODE ** 2)
+DUMFAC_AMODE: np.ndarray = _DUMFAC
+
+VOLTONUMB_AMODE:   np.ndarray = 1.0 / (_DUMFAC * _DGNUM   ** 3)
+VOLTONUMBLO_AMODE: np.ndarray = 1.0 / (_DUMFAC * _DGNUMLO ** 3)
+VOLTONUMBHI_AMODE: np.ndarray = 1.0 / (_DUMFAC * _DGNUMHI ** 3)
 
 
 # ---------------------------------------------------------------------------
