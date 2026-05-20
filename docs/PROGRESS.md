@@ -6,6 +6,27 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-19 — Milestone 3.5 (PR-B) — Calcsize Aitken ↔ accumulation transfer
+
+- PR: pending (`m3/calcsize-aitacc-transfer`)
+- Completes `modal_aero_calcsize_sub`. Adds the Aitken ↔ accumulation mode-transfer block (Fortran lines 944–1294) to `mam4_jax/processes/calcsize.py`. The function now matches the canonical Fortran box-model call (`do_aitacc_transfer_in=.true.`).
+- **Transfer-pair tables** computed at module-import in `mam4_jax/data.py`:
+  - `AITKEN_MODE_IDX`, `ACCUM_MODE_IDX` (0-based mode indices).
+  - `LSPECFRMA_CSIZXF` / `LSPECTOOA_CSIZXF` (interstitial) and the cloud-borne counterparts — 5 species pairs (1 number + 4 mass: sulfate, s-organic, seasalt, m-organic) matched between Aitken and accum by `lspectype_amode`.
+  - `NOXF_ACC2AIT`: mask of accum slots whose species isn't in Aitken (p-organic, black-c, dust).
+  - `V2NZZ_AIT_ACC`: geometric-mean v2n threshold (= √(voltonumb_aitken · voltonumb_accum)).
+- **New helpers** in `mam4_jax/processes/calcsize.py`:
+  - `_xferfrac_pair(num_t, drv_t, v2n_target, v2nzz, direction)`: computes (xferfrac_num, xferfrac_vol, triggered_mask) for one direction (ait→acc or acc→ait), faithfully mirroring the Fortran's full-transfer-vs-fractional and clamp logic.
+  - `_apply_aitacc_transfer(...)`: full transfer-block implementation. Vectorized per (col, level); pair-list loop is Python-level (5 iterations).
+- **`calcsize` now takes** `do_aitacc_transfer: bool = True` keyword. `False` matches the `per_process_no_aitacc/` reference (PR-A's path); `True` matches the canonical `per_process/` reference (this PR's path).
+- **`tests/reference/per_process/` refreshed** from nstep=1 to nstep=60 (matches `per_process_no_aitacc/`). The wateruptake test (uses `[0]` snapshot) still passes unchanged.
+- **Validation**:
+  - Updated `tests/test_calcsize.py` to call with `do_aitacc_transfer=False` explicitly (matches no-aitacc reference fixture name).
+  - New `tests/test_calcsize_transfer.py` (4 tests) validates `do_aitacc_transfer=True` against the full-transfer reference. dgncur_a rel-err 2.12e-16, q rel-err < ADR-003 (with `np.allclose(atol=1e-25, rtol=1e-6)` to absorb a ~1e-26 machine-noise artifact at the exactly-zero m-organic mass index), qqcw bit-exact zero.
+  - **Structural test**: `do_aitacc_transfer=True` ≡ `do_aitacc_transfer=False` on the box-model fixture — confirms transfer is a no-op here.
+- Full suite: **43/43 green** (was 39).
+- **`modal_aero_calcsize_sub` is now fully ported.** The transfer block code is faithful but exercised "in spirit only" by the current test (the transfer never triggers in the canonical reference, see `docs/DEFERRED.md`).
+
 ## 2026-05-19 — Milestone 3.5 (PR-A) — Calcsize per-mode adjustment + M2 extension
 
 - PR: pending (`m3/calcsize-per-mode-adjust`)

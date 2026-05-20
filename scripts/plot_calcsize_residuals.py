@@ -1,13 +1,19 @@
 """Render the calcsize JAX-vs-Fortran residual figure.
 
-Loads the no-aitacc 60-step capture, runs the JAX port on each
-calcsize_before snapshot, and writes
-docs/figures/calcsize_residuals.png:
+Loads the 60-step full-transfer capture
+(``tests/reference/per_process/``, which is what the canonical Fortran
+box-model produces — ``do_aitacc_transfer=True``), runs the JAX port
+with ``do_aitacc_transfer=True`` on each calcsize_before snapshot, and
+writes ``docs/figures/calcsize_residuals.png``:
 
     Top:    dgncur_a evolution per mode across the 60 timesteps,
             JAX (dashed) overlaying Fortran (solid).
     Bottom: |rel-err| per (timestep, mode) with the ADR-003 1e-6
             tolerance and float64 epsilon reference lines.
+
+The Aitken ↔ accum transfer never triggers in this fixture (see
+``docs/DEFERRED.md``), so the figure visually matches what the
+no-aitacc fixture would produce.
 
 Usage:
     python scripts/plot_calcsize_residuals.py
@@ -28,7 +34,7 @@ import mam4_jax  # noqa: F401  - enables jax_enable_x64
 from mam4_jax.data import MODE_NAMES
 from mam4_jax.processes.calcsize import calcsize
 
-REF_DIR  = REPO_ROOT / "tests" / "reference" / "per_process_no_aitacc"
+REF_DIR  = REPO_ROOT / "tests" / "reference" / "per_process"
 FIG_PATH = REPO_ROOT / "docs" / "figures" / "calcsize_residuals.png"
 
 TOLERANCE = 1e-6
