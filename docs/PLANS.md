@@ -58,10 +58,14 @@ When a milestone is in progress, its subtasks become the working task list. As s
 4. **`modal_aero_calcsize_sub`** (`modal_aero_calcsize.F90`) — size redistribution. Two-PR bottom-up split:
    - 4a. [x] **PR-A**: per-mode bounds adjustment + dgncur_a recomputation. Ported to `mam4_jax/processes/calcsize.py` (replaces the M1 stub); rel-err 2.1e-16 across 60 timesteps × 4 modes. Reference: new `tests/reference/per_process_no_aitacc/` captured with `do_aitacc_transfer_in=.false.` via `scripts/patches/disable_aitacc_transfer.patch`. Plot: `docs/figures/calcsize_residuals.png`.
    - 4b. [x] **PR-B**: Aitken ↔ accumulation mode-transfer block (Fortran lines 944–1294). Ported in `mam4_jax/processes/calcsize.py`; ``do_aitacc_transfer`` keyword (defaults to True, matching the box-model call). Validated against the refreshed `tests/reference/per_process/calcsize_{before,after}.npz` (nstep=60, full-transfer enabled): dgncur_a rel-err 2.1e-16. The transfer is a no-op in this fixture (see `docs/DEFERRED.md`); a structural test confirms `do_aitacc_transfer=True` ≡ `=False` on this fixture. **`modal_aero_calcsize_sub` is fully ported.**
-5. [ ] **`modal_aero_newnuc`** — binary H2SO4–H2O nucleation (Vehkamäki).
-6. [ ] **`modal_aero_coag`** — Brownian coagulation kernels.
-7. [ ] **`modal_aero_gasaerexch`** — condensation onto modes.
-8. [ ] **`modal_aero_rename`** — Aitken → accumulation transfer.
+5. **Amicphys** — the remaining microphysics. **Scope correction (2026-05-19):** the standalone modules `modal_aero_newnuc.F90`, `modal_aero_coag.F90`, `modal_aero_gasaerexch.F90`, and `modal_aero_rename.F90` are **not invoked** by the box-model driver — `modal_aero_amicphys_intr` (in `e3sm_src_modified/modal_aero_amicphys.F90:310`) contains its own self-contained orchestration and four sub-routines (`mam_gasaerexch_1subarea`, `mam_rename_1subarea`, `mam_newnuc_1subarea`, `mam_coag_1subarea`). See `docs/ARCHITECTURE.md` for the full module map. The M3 amicphys port targets those internal sub-routines, not the standalone files. Multi-PR plan:
+   - 5a. [ ] **Orchestration shell**: port `modal_aero_amicphys_intr` + `mam_amicphys_1gridcell` + `mam_amicphys_1subarea_clear` (`_cloudy` is unreachable when `cldn=0` in the box model). All four sub-routines stay as `NotImplementedError`-raising stubs or no-ops. Validates the input/output unpacking + sub-area split. Needs a new "all-mdo-off" capture (`mdo_*=0` for all four) — amicphys becomes a no-op state passthrough.
+   - 5b. [ ] `mam_rename_1subarea` (~323 LOC) — Aitken → accum mode-transfer.
+   - 5c. [ ] `mam_gasaerexch_1subarea` (~305 LOC) — H₂SO₄ / SOAG condensation.
+   - 5d. [ ] `mam_newnuc_1subarea` (~415 LOC) — binary H₂SO₄–H₂O nucleation.
+   - 5e. [ ] `mam_coag_1subarea` (~437 LOC) — Brownian coagulation kernels.
+
+Each sub-routine port (5b–5e) needs a single-toggle capture (e.g., `mdo_newnuc=1, others=0`) so its effect can be isolated from the others. Final validation reuses the existing `tests/reference/per_process/amicphys_{before,after}.npz` (full-bundle, 60-step) once all four are in place.
 
 Each port lands as its own PR following the validation workflow in `CLAUDE.md` (capture reference, port, diff to `1e-6`, plot residuals, log in `PROGRESS.md`).
 
