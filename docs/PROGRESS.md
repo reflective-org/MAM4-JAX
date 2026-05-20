@@ -6,6 +6,22 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-19 — Milestone 3.5 (PR-A) — Calcsize per-mode adjustment + M2 extension
+
+- PR: pending (`m3/calcsize-per-mode-adjust`)
+- Two-PR bottom-up plan for `modal_aero_calcsize_sub`; this PR-A covers the per-mode number-bounds adjustment and the dgncur_a recomputation. PR-B will add the Aitken ↔ accum mode-transfer block.
+- **M2 extension** (rule #5 — every change supports its tests):
+  - New `scripts/patches/disable_aitacc_transfer.patch` (one-line overlay flipping `do_aitacc_transfer_in=.true.` → `.false.` in driver.F90's calcsize call). Cleanly applies on top of `driver_instrumentation.patch`.
+  - `build_reference.sh --no-aitacc-transfer` applies the overlay (requires `--instrumented`).
+  - `capture_reference.py --mode instrumented-no-aitacc` writes to `tests/reference/per_process_no_aitacc/` (separate from the default `per_process/` so the two captures coexist). Default nstep=60 because calcsize is essentially trivial at nstep=1.
+- **JAX port** in `mam4_jax/processes/calcsize.py` (replaces the M1 stub): vectorized per-mode adjustment with the full 3-step bounds procedure (Fortran lines 812–869) covering all four branches (drv_a/c zero vs positive). Helpers `_gather_per_slot`, `_adjusted_num_*`, `_compute_dgn_v2n`. Skips Aitken-accum transfer (PR-B); equivalent to Fortran `do_aitacc_transfer_in=.false.`.
+- New constants in `mam4_jax/data.py`: `DGNUM_AMODE`, `DGNUMLO_AMODE`, `DGNUMHI_AMODE`, derived `ALNSG_AMODE`, `DUMFAC_AMODE`, `VOLTONUMB_AMODE`/`VOLTONUMBLO_AMODE`/`VOLTONUMBHI_AMODE` — all from `rad_constituents.F90:167-170` and `modal_aero_initialize_data.F90:428-435`.
+- Validation (`tests/test_calcsize.py`, 4 tests): batched across all 60 timesteps. Max relative error in `dgncur_a` evolution = **2.12e-16** — bit-exact at machine ε across all 240 (60 × 4) data points. Number tracers (which never adjust in the box-model setup) pass through unchanged at machine ε.
+- `tests/test_scaffolding.py`: dropped `calcsize` from the `PROCESS_MODULES` stub-raises list.
+- Residual figure: `docs/figures/calcsize_residuals.png` (top: dgncur_a evolution per mode JAX vs Fortran; bottom: per-(timestep, mode) rel-err).
+- Full suite: **39/39 green** (was 36).
+- Documentation: `docs/DEFERRED.md` got a new entry calling out that the bounds-adjust + Aitken-accum-transfer branches are dead in the captured reference; `tests/reference/SCHEMA.md` mirrors the note.
+
 ## 2026-05-19 — Milestone 3.4 (PR-C) — Wateruptake driver + completion of M3.4
 
 - PR: pending (`m3/wateruptake-driver`)
