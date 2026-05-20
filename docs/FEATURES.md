@@ -10,7 +10,7 @@ Status legend: **planned**, **in progress**, **ported (validated)**, **deferred*
 
 | Process | Fortran module | JAX status |
 | --- | --- | --- |
-| Size redistribution (`calcsize`) | `box_model_utils/modal_aero_calcsize.F90` | **per-mode adjustment ported (validated)** in `mam4_jax/processes/calcsize.py` (M3.5 PR-A); dgncur_a evolution matches Fortran at machine ε. Aitken↔accum transfer (no-op in box-model reference) lands in M3.5 PR-B. |
+| Size redistribution (`calcsize`) | `box_model_utils/modal_aero_calcsize.F90` | **ported (validated)** end-to-end in `mam4_jax/processes/calcsize.py` (M3.5 PR-A + PR-B). Per-mode bounds-adjustment + Aitken↔accum transfer both implemented; dgncur_a matches Fortran at machine ε. Transfer code paths are dead in the canonical box-model fixture (`docs/DEFERRED.md`) but the port is structurally faithful. |
 | Water uptake (`wateruptake`) | `e3sm_src_modified/modal_aero_wateruptake.F90` | **ported (validated)** end-to-end. `makoh_cubic`/`makoh_quartic`/`modal_aero_kohler` in `mam4_jax/kohler.py`; `_sub`/`_dr` orchestration in `mam4_jax/processes/wateruptake.py`. dgncur_awet/wetdens match Fortran at machine ε. |
 | Gas–aerosol exchange (condensation) | `e3sm_src/modal_aero_gasaerexch.F90` | stub in `mam4_jax/processes/gasaerexch.py`; physics port planned (M3) |
 | New-particle nucleation (binary H2SO4–H2O) | `e3sm_src/modal_aero_newnuc.F90` | stub in `mam4_jax/processes/newnuc.py`; physics port planned (M3) |

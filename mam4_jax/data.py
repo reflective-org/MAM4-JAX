@@ -204,6 +204,99 @@ VOLTONUMBHI_AMODE: np.ndarray = 1.0 / (_DUMFAC * _DGNUMHI ** 3)
 
 
 # ---------------------------------------------------------------------------
+# Aitken ↔ accumulation transfer tables (used by modal_aero_calcsize_sub
+# when do_aitacc_transfer is True; built once at module import time).
+#
+# Aitken and accum modes share some species (sulfate, s-organic, seasalt,
+# m-organic in MAM4-MOM). When the Aitken mean diameter grows beyond a
+# threshold, mass + number transfer to accum; when the accum mean
+# diameter shrinks below a threshold, the opposite transfer happens.
+# These tables encode the (aitken_pcnst_idx, accum_pcnst_idx) pairs.
+# ---------------------------------------------------------------------------
+
+#: 0-based mode indices for Aitken and accumulation in this MAM4-MOM build.
+#: Fortran refers to these via modeptr_aitken / modeptr_accum.
+AITKEN_MODE_IDX: int = 1   # MODE_NAMES[1] == "aitken"
+ACCUM_MODE_IDX:  int = 0   # MODE_NAMES[0] == "accum"
+
+
+def _build_aitacc_pairs() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Match Aitken-mode slots against accum-mode slots by species type.
+
+    Returns 1-D arrays of pcnst indices ``(lsfrma, lstooa, lsfrmc, lstooc)``
+    of length ``1 + n_matched`` where index 0 is the number-tracer pair
+    and indices 1..n are mass-species pairs.
+
+    The species ordering matches the Fortran's iq=1 → number, iq>1 →
+    mass-species convention used in modal_aero_calcsize_init.
+    """
+    ait_types = LSPECTYPE_AMODE[AITKEN_MODE_IDX]
+    acc_types = LSPECTYPE_AMODE[ACCUM_MODE_IDX]
+    ait_mass  = LMASSPTR_AMODE[AITKEN_MODE_IDX]
+    acc_mass  = LMASSPTR_AMODE[ACCUM_MODE_IDX]
+    ait_cw    = LMASSPTRCW_AMODE[AITKEN_MODE_IDX]
+    acc_cw    = LMASSPTRCW_AMODE[ACCUM_MODE_IDX]
+
+    pairs_a: list[tuple[int, int]] = []
+    pairs_c: list[tuple[int, int]] = []
+    # iq=1 — number tracer pair (Fortran convention: numbers come first).
+    pairs_a.append((int(NUMPTR_AMODE[AITKEN_MODE_IDX]),
+                    int(NUMPTR_AMODE[ACCUM_MODE_IDX])))
+    pairs_c.append((int(NUMPTRCW_AMODE[AITKEN_MODE_IDX]),
+                    int(NUMPTRCW_AMODE[ACCUM_MODE_IDX])))
+    # iq>1 — mass-species pairs, in Aitken slot order.
+    for ait_slot, ait_type in enumerate(ait_types):
+        if ait_type < 0:
+            continue
+        for acc_slot, acc_type in enumerate(acc_types):
+            if acc_type == ait_type:
+                pairs_a.append((int(ait_mass[ait_slot]), int(acc_mass[acc_slot])))
+                pairs_c.append((int(ait_cw[ait_slot]),   int(acc_cw[acc_slot])))
+                break
+
+    pa = np.asarray(pairs_a, dtype=np.int32)
+    pc = np.asarray(pairs_c, dtype=np.int32)
+    return pa[:, 0], pa[:, 1], pc[:, 0], pc[:, 1]
+
+
+_LSFRMA, _LSTOOA, _LSFRMC, _LSTOOC = _build_aitacc_pairs()
+
+#: pcnst indices of Aitken-mode species that transfer to accum (interstitial).
+#: Index 0 is the number tracer; subsequent indices are mass species in
+#: Aitken-slot order.
+LSPECFRMA_CSIZXF: np.ndarray = _LSFRMA
+
+#: pcnst indices of the matching accum species (interstitial).
+LSPECTOOA_CSIZXF: np.ndarray = _LSTOOA
+
+#: Cloud-borne counterparts.
+LSPECFRMC_CSIZXF: np.ndarray = _LSFRMC
+LSPECTOOC_CSIZXF: np.ndarray = _LSTOOC
+
+#: True for accum-mode slots whose species type is NOT present in Aitken
+#: (e.g., p-organic, black-c, dust). Their mass is excluded from the
+#: drv/num totals when computing accum→Aitken transfer rates.
+def _build_noxf_acc2ait() -> np.ndarray:
+    ait_types_set = {t for t in LSPECTYPE_AMODE[AITKEN_MODE_IDX] if t >= 0}
+    acc_types = LSPECTYPE_AMODE[ACCUM_MODE_IDX]
+    mask = np.zeros(MAXD_ASPECTYPE, dtype=bool)
+    for s, t in enumerate(acc_types):
+        if t < 0:
+            continue
+        mask[s] = (t not in ait_types_set)
+    return mask
+
+
+NOXF_ACC2AIT: np.ndarray = _build_noxf_acc2ait()
+
+#: Geometric mean v2n between Aitken and accum reference voltonumb.
+#: Fortran line 1003: ``v2nzz = sqrt(voltonumb_amode(nait) * voltonumb_amode(nacc))``.
+V2NZZ_AIT_ACC: float = float(
+    np.sqrt(VOLTONUMB_AMODE[AITKEN_MODE_IDX] * VOLTONUMB_AMODE[ACCUM_MODE_IDX])
+)
+
+
+# ---------------------------------------------------------------------------
 # Pre-computed per-(mode, slot) lookup tables for vectorized use.
 # PER_SLOT_DENSITY[mode, slot] = SPECDENS_AMODE[LSPECTYPE_AMODE[mode, slot]]
 # for valid slots; 1.0 (a harmless default) for unused slots so per-mode
