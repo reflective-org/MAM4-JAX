@@ -6,6 +6,26 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-20 — Milestone 3.6 (PR-C) — Foundation + wire rename into orchestration
+
+- PR: pending (`m3/amicphys-foundation`)
+- Plan: [`docs/plans/003-foundation-rename-wiring.md`](plans/003-foundation-rename-wiring.md). Owner-approved scope correction (2026-05-20): the original M3 plan's "4 remaining sub-PRs" became 5, because reading `mam_gasaerexch_1subarea`'s source revealed it depends on `mam_soaexch_1subarea` (~330 LOC) and `gas_aer_uptkrates_1box1gas` (~148 LOC) — too large for one PR.
+- **Capture infrastructure:**
+  - New `scripts/patches/amicphys_init_dump.patch` injects a one-shot text dump near the end of `modal_aero_amicphys_init`. Writes the amicphys-private mapping/conversion tables (`lmap_{gas,num,numcw,aer,aercw}`, `fcvt_{gas,aer,num,wtr}`, plus `mwdry` and `adv_mass(1:gas_pcnst)` so consumers can reconstruct the driver-side mmr↔vmr factor `mwdry/adv_mass`). Has to live inside the module because these tables are module-private.
+  - `scripts/capture_reference.py::_read_amicphys_init` parses the new text file and merges its keys into `tests/reference/indices/reference.npz`. Also writes `pcnst_lmap_*` variants (loffset-adjusted, 0-based, -1 sentinel).
+  - New `--mode instrumented-rename-only` (namelist with `mdo_gasaerexch=mdo_newnuc=mdo_coag=0, mdo_rename=1`) → `tests/reference/per_process_rename_only/`.
+- **JAX foundation** (`mam4_jax/processes/amicphys.py`):
+  - `_unpack_state_to_amicphys_view(state)` and `_repack_amicphys_view_to_state(state, ...)` perform a two-stage conversion: driver-side mmr→vmr via `MWDRY/ADV_MASS` per pcnst constituent, then vmr→amicphys-local via `FCVT_*` per amicphys species.
+  - `_mam_amicphys_1subarea_clear` now actually calls `_mam_rename_1subarea` when `mdo_rename=1`. Short-circuits the unpack/repack when all four `mdo_*=0` so the all-off passthrough stays bit-exact (round-tripping `qaerwat * FCVT_WTR / FCVT_WTR` would lose 1 ULP otherwise).
+  - PR-B's `_mam_rename_1subarea` refactored to be batch-friendly (`qaer_cur[:, mfrm] → qaer_cur[..., mfrm]`, `jnp.sum(...) → axis=-1`) so the orchestration can call it on `(nstep, ncol, pver, naer, nmode)`-shaped arrays without manual iteration. Mathematically identical.
+- **JAX data layer** (`mam4_jax/data.py`): new hard-coded constants `AMICPHYS_NGAS/NAER/MAX_*`, `LMAP_{GAS,NUM,NUMCW,AER,AERCW}` (0-based, pcnst-absolute, -1 sentinel for absent species), `FCVT_{GAS,AER,NUM,WTR}`, `FAC_M2V_AER`, `MWDRY`, `ADV_MASS`, `MMR_TO_VMR`. Parity test in `tests/test_scaffolding.py` against `indices/reference.npz`. Cross-check: `LMAP_NUM == NUMPTR_AMODE` (amicphys's internal table independently encodes the same physical mapping as `modal_aero_data`'s).
+- **Validation** (`tests/test_amicphys.py`):
+  - New `test_orchestration_rename_only_matches_fortran`: JAX `amicphys(state, mdo_rename=1, others=0)` matches the new single-toggle reference at machine epsilon across 60 steps and all 6 aerosol-state arrays.
+  - Replaced PR-A's `test_amicphys_all_on_with_stubs_is_passthrough` (no longer accurate post-wiring) with `test_orchestration_with_stubs_matches_rename_only_fortran`. Acts as the new tripwire: with `mdo_*=1` but gasaerexch/newnuc/coag still stubs, only rename can fire — so the orchestration matches the rename-only Fortran. Will start failing once PR-D wires gasaerexch.
+  - `test_amicphys_all_off_is_passthrough` and `test_amicphys_returns_all_state_keys` unchanged.
+- **Empirical finding** from the new rename-only capture: with gasaerexch off, `qaer_delsub_grow4rnam=0` at the rename call site, and Aitken's `dgn_t_old` stays at the initial `dgnum_aer ≈ 2.6e-8 m` (well below `dp_belowcut ≈ 8e-8 m`). The Fortran rename's optaa=40 guard at line 4141 trips and rename is a no-op every step. So the orchestration test exercises the full unpack/repack pipeline against bit-exact Fortran. The PR-B local-view rename test continues to validate the physics when called with non-zero growth deltas (from the full-physics fixture).
+- Full suite: **49/49 green** (was 47 + 2 new orchestration tests).
+
 ## 2026-05-20 — Milestone 3.6 (PR-B) — Rename port (`mam_rename_1subarea`)
 
 - PR: pending (`m3/rename-port`)
