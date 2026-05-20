@@ -321,6 +321,58 @@ SLOT_VALID: np.ndarray = (
 )
 
 
+# ---------------------------------------------------------------------------
+# amicphys-internal mapping & conversion tables (M3.6 PR-C foundation).
+#
+# Fortran ``modal_aero_amicphys.F90`` orders aerosol species by its own
+# ``name_aerpfx`` list (set up in ``modal_aero_amicphys_init``), which
+# is *different* from ``modal_aero_data``'s ``lmassptr_amode`` ordering.
+# The unpacking ``q[pcnst]`` → ``(qgas, qaer, qnum, qwtr)`` uses these
+# amicphys-internal tables, not the modal_aero_data ones.
+#
+# Values captured via ``scripts/patches/amicphys_init_dump.patch``.
+# Parity test: ``tests/test_scaffolding.py``.
+# ---------------------------------------------------------------------------
+
+#: Number of gases tracked by amicphys (SOAG + H2SO4 for MAM4-MOM).
+AMICPHYS_NGAS: int = 2
+#: Number of aerosol species tracked by amicphys (soa, so4, ..., 7 in MAM4-MOM).
+AMICPHYS_NAER: int = 7
+#: ``max_gas`` / ``max_aer`` compile-time bounds from amicphys.
+AMICPHYS_MAX_GAS: int = 2
+AMICPHYS_MAX_AER: int = 7
+
+#: 0-based pcnst-absolute indices of each gas in ``q``. Derived from the
+#: Fortran ``lmap_gas + loffset - 1``.
+LMAP_GAS:   np.ndarray = np.asarray([9, 6], dtype=np.int32)
+#: 0-based pcnst-absolute indices of each mode's interstitial number tracer.
+#: Always matches ``NUMPTR_AMODE``; we keep a separate name for symmetry with
+#: the other ``LMAP_*`` tables that come from the same amicphys dump.
+LMAP_NUM:   np.ndarray = np.asarray([17, 22, 30, 34], dtype=np.int32)
+LMAP_NUMCW: np.ndarray = LMAP_NUM.copy()
+#: 0-based pcnst-absolute indices of (mode, amicphys-iaer) interstitial mass
+#: tracers. Sentinel ``-1`` for species absent from that mode.
+#: Row order: (accum, aitken, coarse, primary_carbon). Column order is
+#: amicphys's internal iaer ordering (soa, so4, ...).
+LMAP_AER: np.ndarray = np.asarray(
+    [[12, 10, 11, 13, 15, 14, 16],
+     [19, 18, -1, -1, 20, -1, 21],
+     [28, 25, 27, 26, 24, 23, 29],
+     [-1, -1, 31, 32, -1, -1, 33]],
+    dtype=np.int32,
+)
+LMAP_AERCW: np.ndarray = LMAP_AER.copy()
+
+#: Unit-conversion factors (kg/kg → mol/mol or kg/kg → #/kmol). Applied by
+#: the state-dict → amicphys-view unpacking.
+FCVT_GAS: np.ndarray = np.asarray([0.0800733333333333, 1.0], dtype=np.float64)
+FCVT_AER: np.ndarray = np.asarray(
+    [0.08, 1.0, 0.08, 1.0, 1.0, 1.0, 1.0], dtype=np.float64,
+)
+FCVT_NUM: float = 1.0
+FCVT_WTR: float = 1.607793072824157
+
+
 @dataclass(frozen=True)
 class IndexTables:
     """0-based pcnst index tables for the MAM4 tracer array.
