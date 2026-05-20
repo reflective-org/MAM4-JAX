@@ -16,7 +16,7 @@ Status legend: **planned**, **in progress**, **ported (validated)**, **deferred*
 | New-particle nucleation (binary H2SO4–H2O) | `e3sm_src/modal_aero_newnuc.F90` | stub in `mam4_jax/processes/newnuc.py`; physics port planned (M3) |
 | Coagulation (Brownian, intra/inter-modal) | `e3sm_src/modal_aero_coag.F90` | stub in `mam4_jax/processes/coag.py`; physics port planned (M3) |
 | Rename (Aitken → accumulation) | `e3sm_src/modal_aero_rename.F90` | stub in `mam4_jax/processes/rename.py`; physics port planned (M3) |
-| Umbrella orchestrator (`amicphys`) | `e3sm_src_modified/modal_aero_amicphys.F90` | stub in `mam4_jax/processes/amicphys.py`; orchestration planned (M4) |
+| Umbrella orchestrator (`amicphys`) | `e3sm_src_modified/modal_aero_amicphys.F90` | **orchestration shell ported** in `mam4_jax/processes/amicphys.py` (M3.6 PR-A); four sub-process stubs land in PR-B (`rename`), PR-C (`gasaerexch`), PR-D (`newnuc`), PR-E (`coag`). All-mdo-off passthrough validated bit-exact. |
 
 ## Supporting physics
 
