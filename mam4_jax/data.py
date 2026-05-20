@@ -109,6 +109,87 @@ LMASSPTR_AMODE: tuple[tuple[int, ...], ...] = (
 LMASSPTRCW_AMODE: tuple[tuple[int, ...], ...] = LMASSPTR_AMODE
 
 
+# ---------------------------------------------------------------------------
+# Per-species physical properties (indexed by species TYPE — 0-based into
+# SPECNAME_AMODE). Values verbatim from
+# rad_constituents.F90:96-103 (MODAL_AERO_4MODE_MOM branch).
+# ---------------------------------------------------------------------------
+
+#: Aerosol species density (kg/m³) by species type.
+SPECDENS_AMODE: tuple[float, ...] = (
+    1770.0,    # sulfate
+    1770.0,    # ammonium
+    1770.0,    # nitrate
+    1000.0,    # p-organic
+    1000.0,    # s-organic
+    1700.0,    # black-c
+    1900.0,    # seasalt
+    2600.0,    # dust
+    1601.0,    # m-organic
+)
+
+#: Volume-mean hygroscopicity by species type (dimensionless).
+SPECHYGRO_AMODE: tuple[float, ...] = (
+    0.507,     # sulfate
+    0.507,     # ammonium
+    0.507,     # nitrate
+    0.010,     # p-organic
+    0.140,     # s-organic
+    1.0e-10,   # black-c
+    1.160,     # seasalt
+    0.068,     # dust
+    0.100,     # m-organic
+)
+
+
+# ---------------------------------------------------------------------------
+# Per-mode log-normal width and crystal/deliques thresholds.
+# Sources:
+#   - sigmag from rad_constituents.F90:170 (MODAL_AERO_4MODE/4MODE_MOM)
+#   - rhcrystal/rhdeliques from rad_constituents.F90:180-181
+# All four MAM4-MOM modes share rhcrystal = 0.35 and rhdeliques = 0.80.
+# ---------------------------------------------------------------------------
+
+#: Log-normal width of each mode's size distribution.
+SIGMAG_AMODE: tuple[float, ...] = (
+    1.800,     # accum
+    1.600,     # aitken
+    1.800,     # coarse
+    1.600,     # primary_carbon
+)
+
+#: Crystallization relative humidity (below which aerosol is dry).
+RHCRYSTAL_AMODE: tuple[float, ...] = (0.350, 0.350, 0.350, 0.350)
+
+#: Deliquescence relative humidity (above which aerosol is fully wet).
+RHDELIQUES_AMODE: tuple[float, ...] = (0.800, 0.800, 0.800, 0.800)
+
+
+# ---------------------------------------------------------------------------
+# Pre-computed per-(mode, slot) lookup tables for vectorized use.
+# PER_SLOT_DENSITY[mode, slot] = SPECDENS_AMODE[LSPECTYPE_AMODE[mode, slot]]
+# for valid slots; 1.0 (a harmless default) for unused slots so per-mode
+# accumulations sum to 0 when q[unused_slot] == 0.
+# ---------------------------------------------------------------------------
+
+def _build_per_slot_table(values: tuple[float, ...], default: float) -> np.ndarray:
+    table = np.full((NTOT_AMODE, MAXD_ASPECTYPE), default, dtype=np.float64)
+    for m in range(NTOT_AMODE):
+        for s, type_idx in enumerate(LSPECTYPE_AMODE[m]):
+            if type_idx >= 0:
+                table[m, s] = values[type_idx]
+    return table
+
+
+PER_SLOT_DENSITY: np.ndarray = _build_per_slot_table(SPECDENS_AMODE, default=1.0)
+PER_SLOT_HYGRO:   np.ndarray = _build_per_slot_table(SPECHYGRO_AMODE, default=0.0)
+
+#: For each (mode, slot), is that slot used (True) or unused (False).
+SLOT_VALID: np.ndarray = (
+    np.asarray(LSPECTYPE_AMODE, dtype=np.int32) >= 0
+)
+
+
 @dataclass(frozen=True)
 class IndexTables:
     """0-based pcnst index tables for the MAM4 tracer array.

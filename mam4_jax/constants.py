@@ -31,6 +31,9 @@ LATICE: float = 3.337e5             # J/kg  (shr_const_latice)
 LATVAP: float = 2.501e6             # J/kg  (shr_const_latvap)
 LATSUB: float = LATICE + LATVAP     # J/kg  (latent heat of sublimation)
 
+# Densities (shr_const_rhofw = 1000 kg/m³ in shr_const_mod.F90:51).
+RHOH2O: float = 1.0e3               # kg/m³  (density of liquid water at STP)
+
 # Aliases matching the wv_saturation module-level names used after
 # gestbl() runs. Use the wv_saturation names in code that mirrors Fortran
 # formulas; use the shr_const_* names elsewhere.
