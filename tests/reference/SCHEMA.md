@@ -15,7 +15,9 @@ tests/reference/
 │   ├── wateruptake_before.npz
 │   ├── wateruptake_after.npz
 │   ├── amicphys_before.npz
-│   └── amicphys_after.npz
+│   ├── amicphys_after.npz
+│   ├── rename_before.npz           # amicphys-internal hook (different schema, see below)
+│   └── rename_after.npz
 ├── per_process_no_aitacc/          # same hooks, with Aitken↔accum transfer disabled
 │   ├── calcsize_before.npz
 │   ├── calcsize_after.npz
@@ -107,6 +109,39 @@ Every `.npz` contains the same seven arrays. Leading axis is the number of times
 | `wetdens` | `float64` | `(nstep, ncol, pver, ntot_amode)` | Wet aerosol density per mode (kg/m³) |
 
 For the reference build config (`PCOLS=1`, `PVER=1`, `PCNST=35`, `NTOT_AMODE=4`), per-record sizes are `q,qqcw = 35 doubles each`, mode arrays `4 doubles each`. One record = 704 B in the underlying `.bin` (+4 B for the `istep` prefix).
+
+### `rename_before.npz` / `rename_after.npz` — amicphys-internal hook
+
+Captured from inside `mam_amicphys_1subarea_clear` by
+`scripts/patches/rename_hook.patch` (added in M3.6 PR-B), wrapping the
+`call mam_rename_1subarea(...)` at `modal_aero_amicphys.F90:2467`. The
+schema differs from the outer `q`-tracer dumps above because rename
+operates on the amicphys-local single-(col, level, sub-area) view of
+the aerosol state after it's been unpacked from `q` and converted to
+volume mixing ratios.
+
+One record per call. For the box-model fixture (`cldn=0`, single
+clear sub-area, `ncol=1`, `pver=1`), that's exactly one record per
+timestep, so the leading axis = `nstep`.
+
+| Key | dtype | Shape | Meaning |
+| --- | --- | --- | --- |
+| `istep` | `int32` | `(nstep,)` | Fortran 1-based timestep index. |
+| `i`, `k`, `jsub` | `int32` | `(nstep,)` | Column, level, sub-area indices (all `1` for the box model). |
+| `mtoo_renamexf` | `int32` | `(nstep, max_mode)` | 1-based "to" mode index per source mode; `0` if that mode has no rename target. Only `mtoo_renamexf[nait_1based-1]=nacc_1based` is non-zero. |
+| `qnum_cur` | `float64` | `(nstep, max_mode)` | Per-mode number mixing ratios (particles / kmol-air). |
+| `qaer_cur` | `float64` | `(nstep, max_aer, max_mode)` | Per-(species, mode) aerosol mass mixing ratios (kmol-AP / kmol-air). |
+| `qaer_delsub_grow4rnam` | `float64` | `(nstep, max_aer, max_mode)` | Change to `qaer_cur` accumulated during the current gasaerexch sub-stepping loop. Built at `modal_aero_amicphys.F90:2433`. |
+| `qwtr_cur` | `float64` | `(nstep, max_mode)` | Per-mode aerosol water content. Declared `intent(inout)` in the Fortran but never written by rename. |
+| `fac_m2v_aer` | `float64` | `(nstep, max_aer)` | Mass→volume conversion per species (m³-AP / kmol-AP). Constant across the run (it's amicphys init data); we dump it per-record so the `.npz` is self-contained for tests. |
+
+`max_mode` and `max_aer` are amicphys-internal constants (5 and 7
+respectively in the MAM4-MOM build), generally larger than the active
+`ntot_amode=4` / `naer<=7`. Unused mode/species slots carry zero.
+
+Consumed by `tests/test_rename.py` (M3.6 PR-B); the same dumps will
+feed the rename portion of the orchestration-level cross-check once
+PR-C wires `_mam_rename_1subarea` into the JAX shell.
 
 ### `per_process_no_aitacc/` — variant with Aitken↔accum transfer disabled
 

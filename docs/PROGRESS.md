@@ -6,6 +6,27 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-20 — Milestone 3.6 (PR-B) — Rename port (`mam_rename_1subarea`)
+
+- PR: pending (`m3/rename-port`)
+- Second of five amicphys PRs. Replaces the no-op `_mam_rename_1subarea` stub in `mam4_jax/processes/amicphys.py` with the full port of the Aitken→accum mode-transfer (Fortran lines 3923–4246, ~323 LOC). Plan: [`docs/plans/002-rename-port.md`](plans/002-rename-port.md).
+- **Capture infrastructure** (subtasks 1-2):
+  - New `scripts/patches/rename_hook.patch` adds two new dump sites inside `mam_amicphys_1subarea_clear` around the rename call at `modal_aero_amicphys.F90:2467`.
+  - `mam4_dump_state.F90` gained `dump_rename_snapshot` with the amicphys-local schema (`mtoo_renamexf`, `qnum_cur`, `qaer_cur`, `qaer_delsub_grow4rnam`, `qwtr_cur`, `fac_m2v_aer`).
+  - `scripts/build_reference.sh` now compiles `mam4_dump_state.o` into OBJ4 (was OBJ9) so OBJ5's `modal_aero_amicphys.o` can `use` the module.
+  - `scripts/capture_reference.py --mode instrumented` now also emits `tests/reference/per_process/rename_{before,after}.npz` (60 records, ~46 KB each). Schema in `tests/reference/SCHEMA.md`.
+- **JAX port** (subtask 3, `mam4_jax/processes/amicphys.py`):
+  - `_mam_rename_1subarea(qnum_cur, qaer_cur, qaer_delsub_grow4rnam, qwtr_cur, fac_m2v_aer)` — matches Fortran's local-view signature, not the state-dict shape. Cloud-borne path omitted (`iscldy_subarea=False` always at `cldn=0`); pair loop collapsed to the only active Aitken→accum pair; `rename_method_optaa=40` hardcoded.
+  - The Fortran's `cycle`-based guard logic is expressed as boolean masks AND'd into a final `do_transfer` decision (JAX needs a single straight-line trace). Mathematically equivalent because intermediate quantities are still well-defined when gates trip.
+  - **Orchestration shell wiring deferred**: `_mam_amicphys_1subarea_clear` still skips the rename call. Wiring requires the state-dict ↔ amicphys-local-view unpacking that PR-C lands alongside `_mam_gasaerexch_1subarea` (which produces the `qaer_delsub_grow4rnam` delta).
+- **Validation** (subtask 4, `tests/test_rename.py`, 2 tests):
+  - `test_rename_matches_fortran_full_physics`: per-step diff across 60 captured timesteps. **Max rel-err: qnum 2.5e-9, qaer 7.0e-10** — both ~3 orders of magnitude below ADR-003's 1e-6 tolerance.
+  - `test_rename_conserves_number_and_mass`: total number (summed over modes) and per-species mass (summed over modes) invariant under rename. Catches sign errors in the `.at[].add()` plumbing independent of the Fortran reference.
+- **Plan-execution finding** (subtask 4 surprise): the original plan's structural assertion "rename is a no-op when `qaer_delsub_grow4rnam = 0`" was based on a misreading of the Fortran's `optaa != 40` guard 2 (line 4109). The default `optaa == 40` branch uses a different guard (line 4141) that can fire even with zero growth-delta — specifically when the Aitken-mode `dgn_t_old` already lies above `dp_belowcut`. This is correct physics, not a bug; documented in the orchestration-shell comment and in the test that replaced the planned assertion.
+- **Empirical finding from the 60-step fixture**: rename actually fires on **every single timestep** here, with max Aitken→accum number transfer ~8.6e7 particles/kmol-air. This is the first M3 port whose physics path is non-trivially exercised by the canonical box-model namelist (calcsize's analogous transfer block is a structural no-op on the same fixture).
+- Plot: `docs/figures/rename_residuals.png` — top: per-mode `qnum_cur` time series (Aitken decreasing, accum increasing, JAX/Fortran visually indistinguishable); bottom: per-(timestep, mode) rel-err vs. ADR-003 tolerance.
+- Full suite: **47/47 green** (was 45).
+
 ## 2026-05-19 — Milestone 3.6 (PR-A) — Amicphys orchestration shell
 
 - PR: [#13](https://github.com/reflective-org/MAM4-JAX/pull/13) (merged at [`dff389d`](https://github.com/reflective-org/MAM4-JAX/commit/dff389d)).

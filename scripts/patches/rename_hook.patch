@@ -1,0 +1,32 @@
+--- a/modal_aero_amicphys.F90
++++ b/modal_aero_amicphys.F90
+@@ -2093,6 +2093,7 @@
+ !       due to condensation and coagulation
+ !
+       use physconst, only:  r_universal
++      use mam4_dump_state, only: dump_rename_snapshot
+
+       logical,  intent(in)    :: do_cond, do_rename, do_newnuc, do_coag
+       logical,  intent(in)    :: iscldy_subarea        ! true if sub-area is cloudy
+@@ -2464,6 +2465,10 @@
+       qnum_sv1 = qnum_cur
+       qaer_sv1 = qaer_cur
+
++      call dump_rename_snapshot('rename_before', nstep, i, k, jsub, &
++         mtoo_renamexf, qnum_cur, qaer_cur, qaer_delsub_grow4rnam, qwtr_cur, &
++         fac_m2v_aer)
++
+       call mam_rename_1subarea(                                    &
+          nstep,             lchnk,                                 &
+          i,                 k,                jsub,                &
+@@ -2473,6 +2478,10 @@
+          qnum_cur,                                                 &
+          qaer_cur,          qaer_delsub_grow4rnam,                 &
+          qwtr_cur                                                  )
++
++      call dump_rename_snapshot('rename_after', nstep, i, k, jsub, &
++         mtoo_renamexf, qnum_cur, qaer_cur, qaer_delsub_grow4rnam, qwtr_cur, &
++         fac_m2v_aer)
+
+       qnum_del_rnam = qnum_del_rnam + (qnum_cur - qnum_sv1)
+       qaer_del_rnam = qaer_del_rnam + (qaer_cur - qaer_sv1)

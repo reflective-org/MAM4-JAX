@@ -115,6 +115,7 @@ if [[ "$INSTRUMENTED" == "1" ]]; then
   echo "Applying instrumentation overlay..."
   cp "$PATCH_DIR/mam4_dump_state.F90" "$BUILD_DIR/"
   ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/driver_instrumentation.patch" )
+  ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/rename_hook.patch" )
 fi
 
 if [[ "$NO_AITACC_TRANSFER" == "1" ]]; then
@@ -132,10 +133,13 @@ fi
 # --- Build ------------------------------------------------------------------
 
 if [[ "$INSTRUMENTED" == "1" ]]; then
-  # mam4_dump_state.o must be built before driver.o so its .mod file is
-  # available when driver.F90 references the module.
-  OBJ9_OVERRIDE="mam4_dump_state.o gaschem_simple.o cloudchem_simple.o driver.o main.o"
-  ( cd "$BUILD_DIR" && make FCFLAGS="$FCFLAGS" LDFLAGS="$LDFLAGS" OBJ9="$OBJ9_OVERRIDE" )
+  # mam4_dump_state.o must be built before any consumer of the module.
+  # Consumers: driver.o (OBJ9) and modal_aero_amicphys.o (OBJ5, via the
+  # rename_hook patch). Compile it into OBJ4 so its .mod is available
+  # before OBJ5 (modal_aero_amicphys) and OBJ9 (driver) are built.
+  OBJ4_OVERRIDE="rad_constituents.o mam4_dump_state.o"
+  ( cd "$BUILD_DIR" && make FCFLAGS="$FCFLAGS" LDFLAGS="$LDFLAGS" \
+       OBJ4="$OBJ4_OVERRIDE" )
 else
   ( cd "$BUILD_DIR" && make FCFLAGS="$FCFLAGS" LDFLAGS="$LDFLAGS" )
 fi
