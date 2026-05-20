@@ -463,6 +463,10 @@ def _read_amicphys_init(path: Path) -> dict[str, np.ndarray]:
     fcvt_wtr    = scalar_float("fcvt_wtr")
     mwdry       = scalar_float("mwdry")
     adv_mass    = floats("adv_mass")     # shape (gas_pcnst,)
+    vmdry       = scalar_float("vmdry")
+    mw_gas      = floats("mw_gas")       # shape (ngas,)
+    vol_molar_gas   = floats("vol_molar_gas")
+    accom_coef_gas  = floats("accom_coef_gas")
 
     # Convert lmap_* from gas_pcnst-relative 1-based to pcnst-absolute 0-based.
     # Empty slots (Fortran 0) become -1 sentinel.
@@ -491,6 +495,10 @@ def _read_amicphys_init(path: Path) -> dict[str, np.ndarray]:
         "fcvt_wtr":             np.float64(fcvt_wtr),
         "mwdry":                np.float64(mwdry),
         "adv_mass":             adv_mass,
+        "vmdry":                np.float64(vmdry),
+        "mw_gas":               mw_gas,
+        "vol_molar_gas":        vol_molar_gas,
+        "accom_coef_gas":       accom_coef_gas,
     }
 
 

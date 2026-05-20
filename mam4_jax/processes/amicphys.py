@@ -59,6 +59,34 @@ import numpy as np
 from jax.scipy.special import erfc
 
 from .. import data
+from ..constants import RGAS
+
+
+# ---------------------------------------------------------------------------
+# Gasaerexch leaf helpers (M3.6 PR-D)
+# ---------------------------------------------------------------------------
+
+def _mean_molecular_speed(temp, rmw):
+    """Port of ``modal_aero_amicphys.F90:5290-5297``.
+
+    Returns mean molecular speed (m/s) given temperature (K) and
+    molecular weight (g/mol).
+    """
+    return jnp.sqrt(8.0 * RGAS * temp / (jnp.pi * rmw))
+
+
+def _gas_diffusivity(t_k, p_atm, rmw, vm):
+    """Port of ``modal_aero_amicphys.F90:5302-5316``.
+
+    Returns gas diffusivity (m²/s) via the Fuller-Schettler-Giddings
+    correlation. ``rmw`` is molecular weight (g/mol), ``vm`` molar
+    diffusion volume (unitless).
+    """
+    onethird = 1.0 / 3.0
+    dgas = (1.0e-3 * t_k ** 1.75 *
+            jnp.sqrt(1.0 / rmw + 1.0 / data.MWDRY)) / (
+            p_atm * (vm ** onethird + data.VMDRY ** onethird) ** 2)
+    return dgas * 1.0e-4
 
 
 # ---------------------------------------------------------------------------

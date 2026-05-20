@@ -390,6 +390,17 @@ FCVT_WTR: float = 1.607793072824157
 # something proportional to a volume mixing ratio).
 # ---------------------------------------------------------------------------
 
+#: Molar diffusion volume of dry air (unitless). Used by ``gas_diffusivity``
+#: (modal_aero_amicphys.F90:5302-5316). Source: ``physconst.F90:80``.
+VMDRY: float = 20.1
+
+#: Gas-phase properties indexed by amicphys's igas (1..AMICPHYS_NGAS).
+#: Order matches ``name_gas``: [0]=SOA, [1]=H2SO4 for MAM4-MOM.
+#: Captured via the amicphys init dump (M3.6 PR-D).
+MW_GAS:         np.ndarray = np.asarray([150.0,        98.0784], dtype=np.float64)
+VOL_MOLAR_GAS:  np.ndarray = np.asarray([65.63265306122449, 42.88], dtype=np.float64)
+ACCOM_COEF_GAS: np.ndarray = np.asarray([0.65,         0.65   ], dtype=np.float64)
+
 MWDRY: float = 28.966
 ADV_MASS: np.ndarray = np.asarray([
     34.0136, 98.0784, 64.0648, 62.1324, 12.011,                # 0-4: O, H2SO4, SO2, DMS, C
