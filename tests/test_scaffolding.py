@@ -13,12 +13,19 @@ import pytest
 # implementations have their own coverage:
 #   - wateruptake → tests/test_wateruptake.py (filled by M3.4 PR-C)
 #   - calcsize    → tests/test_calcsize.py    (filled by M3.5 PR-A)
+#   - amicphys    → tests/test_amicphys.py    (filled by M3.6 PR-A as
+#                   an orchestration shell with stub sub-processes;
+#                   real physics lands in M3.6 PR-B through PR-E)
+#
+# `gasaerexch`, `newnuc`, `coag`, `rename` are NOT in this list because
+# the standalone modules with those names are dead code in the box
+# model (see docs/ARCHITECTURE.md). The corresponding physics lives
+# inside `mam4_jax/processes/amicphys.py` as `_mam_*_1subarea` helpers.
 PROCESS_MODULES: tuple[str, ...] = (
     "gasaerexch",
     "newnuc",
     "coag",
     "rename",
-    "amicphys",
 )
 
 INDICES_NPZ = (
