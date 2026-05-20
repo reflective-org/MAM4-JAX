@@ -41,9 +41,18 @@ Three modes:
   branches), and archives to ``tests/reference/kohler/reference.npz``
   with arrays ``rdry_in``, ``hygro``, ``s``, ``rwet``.
 
+* ``--mode instrumented-no-aitacc``: same as ``instrumented`` but also
+  applies ``disable_aitacc_transfer.patch`` (calcsize is called with
+  ``do_aitacc_transfer_in=.false.``). Writes the per-process dumps to
+  ``tests/reference/per_process_no_aitacc/`` rather than the default
+  ``per_process/`` so the two captures coexist. Defaults to ``--nstep 60``
+  because calcsize is essentially trivial at ``nstep=1`` (per-mode
+  evolution needs multiple steps to be meaningful).
+
 Usage:
     python scripts/capture_reference.py
     python scripts/capture_reference.py --mode instrumented [--nstep 1]
+    python scripts/capture_reference.py --mode instrumented-no-aitacc [--nstep 60]
     python scripts/capture_reference.py --mode polysvp
     python scripts/capture_reference.py --mode qsat
     python scripts/capture_reference.py --mode makoh
@@ -69,6 +78,7 @@ BUILD_SCRIPT = REPO_ROOT / "scripts" / "build_reference.sh"
 
 SWEEP_OUT_DIR = REPO_ROOT / "tests" / "reference" / "sweep"
 PER_PROCESS_OUT_DIR = REPO_ROOT / "tests" / "reference" / "per_process"
+PER_PROCESS_NO_AITACC_OUT_DIR = REPO_ROOT / "tests" / "reference" / "per_process_no_aitacc"
 POLYSVP_OUT_DIR = REPO_ROOT / "tests" / "reference" / "polysvp"
 POLYSVP_EXE = RUN_DIR / "polysvp_driver.exe"
 QSAT_OUT_DIR = REPO_ROOT / "tests" / "reference" / "qsat"
@@ -123,21 +133,23 @@ NAMELIST_TEMPLATE = dedent("""\
 
 def ensure_built(instrumented: bool = False, polysvp: bool = False,
                  qsat: bool = False, makoh: bool = False,
-                 kohler: bool = False) -> None:
+                 kohler: bool = False, no_aitacc_transfer: bool = False) -> None:
     """Build the executable. Always rebuilds — the build flag determines
     whether the previous binary is the right flavour."""
     cmd = [str(BUILD_SCRIPT)]
-    if instrumented: cmd.append("--instrumented")
-    if polysvp:      cmd.append("--polysvp")
-    if qsat:         cmd.append("--qsat")
-    if makoh:        cmd.append("--makoh")
-    if kohler:       cmd.append("--kohler")
+    if instrumented:        cmd.append("--instrumented")
+    if polysvp:             cmd.append("--polysvp")
+    if qsat:                cmd.append("--qsat")
+    if makoh:               cmd.append("--makoh")
+    if kohler:              cmd.append("--kohler")
+    if no_aitacc_transfer:  cmd.append("--no-aitacc-transfer")
     flavours = []
-    if instrumented: flavours.append("instrumented")
-    if polysvp:      flavours.append("polysvp")
-    if qsat:         flavours.append("qsat")
-    if makoh:        flavours.append("makoh")
-    if kohler:       flavours.append("kohler")
+    if instrumented:        flavours.append("instrumented")
+    if polysvp:             flavours.append("polysvp")
+    if qsat:                flavours.append("qsat")
+    if makoh:               flavours.append("makoh")
+    if kohler:              flavours.append("kohler")
+    if no_aitacc_transfer:  flavours.append("no-aitacc-transfer")
     flavours = flavours or ["baseline"]
     print(f"[capture_reference] building {'+'.join(flavours)} executable(s) ...")
     subprocess.run(cmd, check=True)
@@ -285,9 +297,13 @@ def _read_indices(path: Path) -> dict[str, np.ndarray]:
     }
 
 
-def run_instrumented(nstep: int) -> list[Path]:
+def run_instrumented(nstep: int, no_aitacc_transfer: bool = False) -> list[Path]:
     dt = TOTAL_DURATION_S // nstep
-    PER_PROCESS_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_dir = (
+        PER_PROCESS_NO_AITACC_OUT_DIR if no_aitacc_transfer
+        else PER_PROCESS_OUT_DIR
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
     INDICES_OUT_DIR.mkdir(parents=True, exist_ok=True)
     # Wipe any prior dumps so we never mix runs.
     for stale in list(RUN_DIR.glob("mam4_dump_*.bin")) + [RUN_DIR / "mam4_indices.txt"]:
@@ -295,19 +311,22 @@ def run_instrumented(nstep: int) -> list[Path]:
             stale.unlink()
 
     write_namelist(dt, nstep)
-    print(f"[capture_reference] instrumented dt={dt}s nstep={nstep} ...", flush=True)
+    flavour = "instrumented-no-aitacc" if no_aitacc_transfer else "instrumented"
+    print(f"[capture_reference] {flavour} dt={dt}s nstep={nstep} ...", flush=True)
     subprocess.run(["./mam_box_test.exe"], cwd=RUN_DIR, check=True,
                    stdout=subprocess.DEVNULL)
 
     written: list[Path] = []
 
     # Index tables (written once at init, before the time loop).
-    indices_txt = RUN_DIR / "mam4_indices.txt"
-    if not indices_txt.is_file():
-        raise RuntimeError(f"expected indices dump missing: {indices_txt}")
-    indices_npz = INDICES_OUT_DIR / "reference.npz"
-    np.savez(indices_npz, **_read_indices(indices_txt))
-    written.append(indices_npz)
+    # Only the default (non-no-aitacc) run writes the canonical indices.
+    if not no_aitacc_transfer:
+        indices_txt = RUN_DIR / "mam4_indices.txt"
+        if not indices_txt.is_file():
+            raise RuntimeError(f"expected indices dump missing: {indices_txt}")
+        indices_npz = INDICES_OUT_DIR / "reference.npz"
+        np.savez(indices_npz, **_read_indices(indices_txt))
+        written.append(indices_npz)
 
     # Per-process tracer snapshots (one record per istep, across the loop).
     for tag in DUMP_TAGS:
@@ -315,7 +334,7 @@ def run_instrumented(nstep: int) -> list[Path]:
         if not bin_path.is_file():
             raise RuntimeError(f"expected dump missing: {bin_path}")
         arrays = _read_dump(bin_path)
-        npz_path = PER_PROCESS_OUT_DIR / f"{tag}.npz"
+        npz_path = out_dir / f"{tag}.npz"
         np.savez(npz_path, **arrays)
         written.append(npz_path)
     return written
@@ -429,11 +448,17 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument(
         "--mode",
-        choices=("sweep", "instrumented", "polysvp", "qsat", "makoh", "kohler"),
+        choices=("sweep", "instrumented", "instrumented-no-aitacc",
+                 "polysvp", "qsat", "makoh", "kohler"),
         default="sweep",
     )
-    ap.add_argument("--nstep", type=int, default=1,
-                    help="instrumented mode: number of timesteps over 1800 s (default 1)")
+    ap.add_argument(
+        "--nstep", type=int, default=None,
+        help=(
+            "instrumented mode: number of timesteps over 1800 s "
+            "(default: 1 for `instrumented`, 60 for `instrumented-no-aitacc`)"
+        ),
+    )
     args = ap.parse_args()
 
     if args.mode == "sweep":
@@ -443,11 +468,20 @@ def main() -> int:
         out_root = SWEEP_OUT_DIR
     elif args.mode == "instrumented":
         ensure_built(instrumented=True)
-        if args.nstep not in NSTEP_SWEEP:
-            print(f"[capture_reference] warning: --nstep={args.nstep} is outside the canonical sweep "
+        nstep = args.nstep if args.nstep is not None else 1
+        if nstep not in NSTEP_SWEEP:
+            print(f"[capture_reference] warning: --nstep={nstep} is outside the canonical sweep "
                   f"{NSTEP_SWEEP}", file=sys.stderr)
-        written = run_instrumented(args.nstep)
+        written = run_instrumented(nstep)
         out_root = PER_PROCESS_OUT_DIR
+    elif args.mode == "instrumented-no-aitacc":
+        ensure_built(instrumented=True, no_aitacc_transfer=True)
+        nstep = args.nstep if args.nstep is not None else 60
+        if nstep not in NSTEP_SWEEP:
+            print(f"[capture_reference] warning: --nstep={nstep} is outside the canonical sweep "
+                  f"{NSTEP_SWEEP}", file=sys.stderr)
+        written = run_instrumented(nstep, no_aitacc_transfer=True)
+        out_root = PER_PROCESS_NO_AITACC_OUT_DIR
     elif args.mode == "polysvp":
         ensure_built(polysvp=True)
         written = run_polysvp()

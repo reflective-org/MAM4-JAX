@@ -50,6 +50,15 @@ Index conversion: the Fortran writes **1-based** indices with `0` for unused slo
 
 The hard-coded constants in `mam4_jax/data.py` (`NUMPTR_AMODE`, `LMASSPTR_AMODE`, etc.) must match this `.npz` — `tests/test_scaffolding.py::test_index_tables_match_npz_reference` enforces that.
 
+## What the captured references actually exercise
+
+Empirical note (added 2026-05-19, after the 60-step instrumented run was inspected): the box-model namelist + initial conditions do **not** drive the aerosol state out of normal operating ranges, so several Fortran code paths are dead in the captures. The most consequential examples:
+
+- **`modal_aero_calcsize_sub`:** the number-tracer bounds-adjustment branches and the Aitken↔accumulation mode-transfer branches never trigger. All four mode-number tracers change by exactly zero between `calcsize_before` and `calcsize_after` across 60 timesteps; the only update calcsize makes is to `dgncur_a` (recomputed from updated mass + fixed number).
+- **`modal_aero_amicphys` sub-processes** (gasaerexch, newnuc, coag, rename): only the outer `amicphys_before`/`amicphys_after` is captured. Individual sub-process contributions are not separable from this capture alone — a single-toggle re-run (e.g., `mdo_gasaerexch=1` only, others off) would be needed.
+
+JAX ports of these processes are implemented in full (rule #6 — match Fortran), so they should be correct on inputs that *do* exercise the dead branches. But the .npz-based regression test cannot directly detect a bug in those branches with the current fixture. See `docs/DEFERRED.md` for resurface conditions.
+
 ## Per-process dumps — `tests/reference/per_process/*.npz`
 
 Six NumPy `.npz` archives, one per (microphysics process, before/after) point inside `cambox_do_run`. Written by the instrumented build (`scripts/build_reference.sh --instrumented`) — the patch overlay inserts `call dump_snapshot('<tag>', ...)` at the six call sites described in ADR-012.

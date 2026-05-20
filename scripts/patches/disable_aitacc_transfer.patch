@@ -1,0 +1,9 @@
+--- a/driver.F90
++++ b/driver.F90
+@@ -1118,7 +1118,7 @@
+ ! call calcsize
+       call modal_aero_calcsize_sub( state, ptend, deltat, pbuf, &
+-         do_adjust_in=.true., do_aitacc_transfer_in=.true. )
++         do_adjust_in=.true., do_aitacc_transfer_in=.false. )
+
+ ! unload ptend

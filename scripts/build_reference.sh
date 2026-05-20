@@ -6,12 +6,15 @@
 # which are gitignored — the committed vendored source is never modified.
 #
 # Usage:
-#   scripts/build_reference.sh                 # baseline build
-#   scripts/build_reference.sh --instrumented  # adds per-process I/O dump hooks
-#   scripts/build_reference.sh --polysvp       # also builds the polysvp reference driver
-#   scripts/build_reference.sh --qsat          # also builds the qsat reference driver
-#   scripts/build_reference.sh --makoh         # also builds the makoh reference driver
-#   scripts/build_reference.sh --kohler        # also builds the kohler reference driver
+#   scripts/build_reference.sh                       # baseline build
+#   scripts/build_reference.sh --instrumented        # adds per-process I/O dump hooks
+#   scripts/build_reference.sh --instrumented --no-aitacc-transfer
+#                                                    # additionally flips the calcsize
+#                                                    # call to do_aitacc_transfer_in=.false.
+#   scripts/build_reference.sh --polysvp             # also builds the polysvp reference driver
+#   scripts/build_reference.sh --qsat                # also builds the qsat reference driver
+#   scripts/build_reference.sh --makoh               # also builds the makoh reference driver
+#   scripts/build_reference.sh --kohler              # also builds the kohler reference driver
 #
 # Instrumented build overlays scripts/patches/mam4_dump_state.F90 and applies
 # scripts/patches/driver_instrumentation.patch to the build/ copy of
@@ -36,16 +39,23 @@ BUILD_POLYSVP=0
 BUILD_QSAT=0
 BUILD_MAKOH=0
 BUILD_KOHLER=0
+NO_AITACC_TRANSFER=0
 for arg in "$@"; do
   case "$arg" in
-    --instrumented) INSTRUMENTED=1 ;;
-    --polysvp)      BUILD_POLYSVP=1 ;;
-    --qsat)         BUILD_QSAT=1 ;;
-    --makoh)        BUILD_MAKOH=1 ;;
-    --kohler)       BUILD_KOHLER=1 ;;
+    --instrumented)         INSTRUMENTED=1 ;;
+    --polysvp)              BUILD_POLYSVP=1 ;;
+    --qsat)                 BUILD_QSAT=1 ;;
+    --makoh)                BUILD_MAKOH=1 ;;
+    --kohler)               BUILD_KOHLER=1 ;;
+    --no-aitacc-transfer)   NO_AITACC_TRANSFER=1 ;;
     *) echo "Unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
+
+if [[ "$NO_AITACC_TRANSFER" == "1" && "$INSTRUMENTED" != "1" ]]; then
+  echo "Error: --no-aitacc-transfer must be combined with --instrumented" >&2
+  exit 2
+fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC_DIR="$REPO_ROOT/mam4-original-src-code"
@@ -105,6 +115,12 @@ if [[ "$INSTRUMENTED" == "1" ]]; then
   echo "Applying instrumentation overlay..."
   cp "$PATCH_DIR/mam4_dump_state.F90" "$BUILD_DIR/"
   ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/driver_instrumentation.patch" )
+fi
+
+if [[ "$NO_AITACC_TRANSFER" == "1" ]]; then
+  echo ""
+  echo "Applying disable_aitacc_transfer overlay..."
+  ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/disable_aitacc_transfer.patch" )
 fi
 
 if [[ "$BUILD_MAKOH" == "1" || "$BUILD_KOHLER" == "1" ]]; then
