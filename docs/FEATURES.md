@@ -11,7 +11,7 @@ Status legend: **planned**, **in progress**, **ported (validated)**, **deferred*
 | Process | Fortran module | JAX status |
 | --- | --- | --- |
 | Size redistribution (`calcsize`) | `box_model_utils/modal_aero_calcsize.F90` | stub in `mam4_jax/processes/calcsize.py`; physics port planned (M3) |
-| Water uptake (`wateruptake`) | `e3sm_src_modified/modal_aero_wateruptake.F90` | stub in `mam4_jax/processes/wateruptake.py`; physics port in progress — bottom-up. `makoh_cubic`/`makoh_quartic` polynomial root finders + `modal_aero_kohler` equilibrium solver **ported (validated)** in `mam4_jax/kohler.py`; `_sub`/`_dr` driver to follow. |
+| Water uptake (`wateruptake`) | `e3sm_src_modified/modal_aero_wateruptake.F90` | **ported (validated)** end-to-end. `makoh_cubic`/`makoh_quartic`/`modal_aero_kohler` in `mam4_jax/kohler.py`; `_sub`/`_dr` orchestration in `mam4_jax/processes/wateruptake.py`. dgncur_awet/wetdens match Fortran at machine ε. |
 | Gas–aerosol exchange (condensation) | `e3sm_src/modal_aero_gasaerexch.F90` | stub in `mam4_jax/processes/gasaerexch.py`; physics port planned (M3) |
 | New-particle nucleation (binary H2SO4–H2O) | `e3sm_src/modal_aero_newnuc.F90` | stub in `mam4_jax/processes/newnuc.py`; physics port planned (M3) |
 | Coagulation (Brownian, intra/inter-modal) | `e3sm_src/modal_aero_coag.F90` | stub in `mam4_jax/processes/coag.py`; physics port planned (M3) |

@@ -9,10 +9,11 @@ import numpy as np
 import pytest
 
 
-# Process modules whose stubs must raise NotImplementedError.
+# Process modules whose stubs must raise NotImplementedError. `wateruptake`
+# was filled in by M3.4 PR-C and now has a real implementation — it has
+# its own coverage in tests/test_wateruptake.py.
 PROCESS_MODULES: tuple[str, ...] = (
     "calcsize",
-    "wateruptake",
     "gasaerexch",
     "newnuc",
     "coag",
