@@ -36,6 +36,19 @@ The point of this file is to keep the *decided to skip for now* knowledge out of
 - **Why:** A motivation for porting to JAX is potential autodiff through aerosol microphysics. However, several MAM4 routines use bisection, conditional branches on physical regimes, and other constructs that don't admit clean gradients out of the box. Promising differentiability up front would be a claim we cannot yet support.
 - **Resurface when:** Milestone 6 (audit + optimization), as part of the differentiability audit subtask.
 
+## Stress validation of `calcsize_sub`'s bounds-adjust and Aitken↔accum transfer branches
+
+- **Status:** deferred (coverage gap in the captured reference).
+- **Why:** Empirical inspection of a 60-step instrumented run of the box model shows that, given the namelist defaults in `mam4-original-src-code/run_test.csh` and the dgnum / sigmag in `box_model_utils/rad_constituents.F90:167-170`, two `modal_aero_calcsize_sub` branches are **never triggered**:
+  1. **Number-tracer bounds adjustment** (Fortran 3-step procedure around `num_a0 → num_a1 → num_a2 → num_a3`). The per-mode `v2ncur` stays inside `voltonumblo_amode` / `voltonumbhi_amode` throughout the run, so the relaxation branch is dead code in the captured `.npz` reference.
+  2. **Aitken ↔ accumulation mode transfer.** The Aitken mean diameter never grows above its `dgnumhi` and the accumulation mean diameter never drops below its `dgnumlo`, so the transfer block is also dead in the reference.
+  Concretely: across 60 timesteps, all four mode-number tracers (`q[17, 22, 30, 34]`) show **exactly zero** change between `calcsize_before` and `calcsize_after`. The only thing `calcsize_sub` actually does in our reference is recompute `dgncur_a` from updated mass mixing ratios + fixed number (max rel-change ~5.5e-2 in `dgncur_a`).
+  The M3.5 port still implements both branches faithfully (rule #6), but the .npz-based regression test cannot **directly** catch a bug in those branches — they will appear identical to a no-op port for these inputs. We accept the coverage gap because (a) the JAX port is a line-by-line transcription and (b) any future workflow that does perturb the state into the adjust/transfer regime will surface bugs as soon as it's exercised.
+- **Resurface when:** any of these triggers:
+  - A multi-day box-model run (or a synthetic spin-up) drives the mode sizes out of `[dgnumlo, dgnumhi]` and exercises the transfer / adjust branches in a captured reference.
+  - We add a synthetic test fixture in `tests/test_calcsize.py` with `q` and `num` values that intentionally violate bounds (e.g., manually set `num` such that `v2ncur > voltonumbhi`).
+  - The first downstream code path that actually depends on the adjust/transfer outputs lands (e.g., a multi-step amicphys + calcsize loop).
+
 ## Multi-column / multi-level support
 
 - **Status:** deferred.
