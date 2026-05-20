@@ -106,6 +106,11 @@ DUMP_TAGS: tuple[str, ...] = (
     "amicphys_before", "amicphys_after",
 )
 
+# Tags with the per-(col, level, subarea) rename schema (different from
+# DUMP_TAGS' outer pcnst-tracer layout). Captured by the rename_hook patch
+# inside mam_amicphys_1subarea_clear. Absent from runs where mdo_rename=0.
+RENAME_DUMP_TAGS: tuple[str, ...] = ("rename_before", "rename_after")
+
 
 NAMELIST_TEMPLATE = dedent("""\
     &time_input
@@ -249,6 +254,66 @@ def _read_dump(path: Path) -> dict[str, np.ndarray]:
     }
 
 
+def _read_rename_dump(path: Path) -> dict[str, np.ndarray]:
+    """Parse one mam4_dump_rename_{before,after}.bin into per-call stacks.
+
+    Binary record layout written by mam4_dump_state::dump_rename_snapshot:
+      int32 : istep, i, k, jsub                       (4 values)
+      int32 : max_mode, max_aer                       (2 values)
+      int32 : mtoo_renamexf(max_mode)
+      f64   : qnum_cur(max_mode)
+      f64   : qaer_cur(max_aer, max_mode)
+      f64   : qaer_delsub_grow4rnam(max_aer, max_mode)
+      f64   : qwtr_cur(max_mode)
+    """
+    raw = path.read_bytes()
+    pos = 0
+    istep_list: list[int] = []
+    i_list: list[int] = []
+    k_list: list[int] = []
+    jsub_list: list[int] = []
+    mtoo_list: list[np.ndarray] = []
+    qnum_list: list[np.ndarray] = []
+    qaer_list: list[np.ndarray] = []
+    qdel_list: list[np.ndarray] = []
+    qwtr_list: list[np.ndarray] = []
+
+    while pos < len(raw):
+        hdr1 = np.frombuffer(raw, dtype=np.int32, count=4, offset=pos); pos += 16
+        istep, i, k, jsub = (int(x) for x in hdr1)
+        hdr2 = np.frombuffer(raw, dtype=np.int32, count=2, offset=pos); pos += 8
+        max_mode, max_aer = (int(x) for x in hdr2)
+
+        mtoo = np.frombuffer(raw, dtype=np.int32, count=max_mode,
+                             offset=pos).copy(); pos += max_mode * 4
+
+        def take(n: int, shape: tuple[int, ...]) -> np.ndarray:
+            nonlocal pos
+            arr = np.frombuffer(raw, dtype=np.float64, count=n,
+                                offset=pos).reshape(shape, order="F").copy()
+            pos += n * 8
+            return arr
+
+        qnum_list.append(take(max_mode, (max_mode,)))
+        qaer_list.append(take(max_aer * max_mode, (max_aer, max_mode)))
+        qdel_list.append(take(max_aer * max_mode, (max_aer, max_mode)))
+        qwtr_list.append(take(max_mode, (max_mode,)))
+        mtoo_list.append(mtoo)
+        istep_list.append(istep); i_list.append(i); k_list.append(k); jsub_list.append(jsub)
+
+    return {
+        "istep":                  np.asarray(istep_list, dtype=np.int32),
+        "i":                      np.asarray(i_list,     dtype=np.int32),
+        "k":                      np.asarray(k_list,     dtype=np.int32),
+        "jsub":                   np.asarray(jsub_list,  dtype=np.int32),
+        "mtoo_renamexf":          np.stack(mtoo_list),
+        "qnum_cur":               np.stack(qnum_list),
+        "qaer_cur":               np.stack(qaer_list),
+        "qaer_delsub_grow4rnam":  np.stack(qdel_list),
+        "qwtr_cur":               np.stack(qwtr_list),
+    }
+
+
 def _read_indices(path: Path) -> dict[str, np.ndarray]:
     """Parse mam4_indices.txt into a dict of numpy arrays.
 
@@ -369,6 +434,18 @@ def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
         npz_path = out_dir / f"{tag}.npz"
         np.savez(npz_path, **arrays)
         written.append(npz_path)
+
+    # Rename hook dumps (skipped when mdo_rename=0; the hook lives inside
+    # do_rename_if_block30 so the .bin files are never created in that case).
+    for tag in RENAME_DUMP_TAGS:
+        bin_path = RUN_DIR / f"mam4_dump_{tag}.bin"
+        if not bin_path.is_file():
+            continue
+        arrays = _read_rename_dump(bin_path)
+        npz_path = out_dir / f"{tag}.npz"
+        np.savez(npz_path, **arrays)
+        written.append(npz_path)
+
     return written
 
 

@@ -30,7 +30,7 @@
 
       implicit none
       private
-      public :: dump_snapshot, dump_indices
+      public :: dump_snapshot, dump_indices, dump_rename_snapshot
 
       contains
 
@@ -138,5 +138,59 @@
          close(unit)
 
       end subroutine dump_snapshot
+
+      subroutine dump_rename_snapshot(tag, istep, i, k, jsub, &
+                                      mtoo_renamexf, qnum_cur, qaer_cur, &
+                                      qaer_delsub_grow4rnam, qwtr_cur)
+         !
+         ! Dump the local-view inputs and outputs of mam_rename_1subarea,
+         ! captured from inside mam_amicphys_1subarea_clear via the rename
+         ! hook patch. One record per call (per col, level, sub-area, step).
+         !
+         ! Binary record format (stream-access, native endianness):
+         !   integer(4) :: istep, i, k, jsub
+         !   integer(4) :: max_mode, max_aer
+         !   integer(4) :: mtoo_renamexf(max_mode)
+         !   real(r8)   :: qnum_cur(max_mode)
+         !   real(r8)   :: qaer_cur(max_aer, max_mode)
+         !   real(r8)   :: qaer_delsub_grow4rnam(max_aer, max_mode)
+         !   real(r8)   :: qwtr_cur(max_mode)
+         !
+         character(len=*), intent(in) :: tag
+         integer,          intent(in) :: istep, i, k, jsub
+         integer,          intent(in) :: mtoo_renamexf(:)
+         real(r8),         intent(in) :: qnum_cur(:), qwtr_cur(:)
+         real(r8),         intent(in) :: qaer_cur(:,:), qaer_delsub_grow4rnam(:,:)
+
+         integer            :: unit
+         character(len=256) :: filename
+         logical            :: exists
+         integer            :: max_mode_loc, max_aer_loc
+
+         filename = 'mam4_dump_' // trim(tag) // '.bin'
+
+         inquire(file=filename, exist=exists)
+         if (exists) then
+            open(newunit=unit, file=filename, form='unformatted', &
+                 access='stream', position='append', action='write')
+         else
+            open(newunit=unit, file=filename, form='unformatted', &
+                 access='stream', action='write')
+         end if
+
+         max_mode_loc = size(qnum_cur)
+         max_aer_loc  = size(qaer_cur, dim=1)
+
+         write(unit) istep, i, k, jsub
+         write(unit) max_mode_loc, max_aer_loc
+         write(unit) mtoo_renamexf
+         write(unit) qnum_cur
+         write(unit) qaer_cur
+         write(unit) qaer_delsub_grow4rnam
+         write(unit) qwtr_cur
+
+         close(unit)
+
+      end subroutine dump_rename_snapshot
 
       end module mam4_dump_state
