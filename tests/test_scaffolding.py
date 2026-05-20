@@ -111,6 +111,43 @@ def test_index_tables_match_npz_reference() -> None:
     np.testing.assert_array_equal(ref["specname_amode"], np.asarray(data.SPECNAME_AMODE))
 
 
+def test_amicphys_init_tables_match_npz_reference() -> None:
+    """The hard-coded amicphys init constants match the captured tables (M3.6 PR-C)."""
+    from mam4_jax import data
+
+    ref = np.load(INDICES_NPZ, allow_pickle=False)
+    assert int(ref["amicphys_ngas"])    == data.AMICPHYS_NGAS
+    assert int(ref["amicphys_naer"])    == data.AMICPHYS_NAER
+    assert int(ref["amicphys_max_gas"]) == data.AMICPHYS_MAX_GAS
+    assert int(ref["amicphys_max_aer"]) == data.AMICPHYS_MAX_AER
+    np.testing.assert_array_equal(ref["pcnst_lmap_gas"],   data.LMAP_GAS)
+    np.testing.assert_array_equal(ref["pcnst_lmap_num"],   data.LMAP_NUM)
+    np.testing.assert_array_equal(ref["pcnst_lmap_numcw"], data.LMAP_NUMCW)
+    np.testing.assert_array_equal(ref["pcnst_lmap_aer"],   data.LMAP_AER)
+    np.testing.assert_array_equal(ref["pcnst_lmap_aercw"], data.LMAP_AERCW)
+    np.testing.assert_allclose(ref["fcvt_gas"], data.FCVT_GAS, rtol=1e-14)
+    np.testing.assert_array_equal(ref["fcvt_aer"], data.FCVT_AER)
+    assert float(ref["fcvt_num"]) == data.FCVT_NUM
+    assert float(ref["fcvt_wtr"]) == data.FCVT_WTR
+
+    # Cross-check: amicphys's lmap_num must equal modal_aero_data's
+    # numptr_amode (different tables, same physical content).
+    np.testing.assert_array_equal(data.LMAP_NUM, data.NUMPTR_AMODE)
+
+    # FAC_M2V_AER parity: PR-B captured it per-record in the rename
+    # snapshot. Constant across the run, must match the hard-coded constant.
+    rename_ref = np.load(
+        INDICES_NPZ.parent.parent / "per_process" / "rename_before.npz",
+        allow_pickle=False,
+    )
+    np.testing.assert_allclose(rename_ref["fac_m2v_aer"][0], data.FAC_M2V_AER,
+                               rtol=1e-14, atol=0.0)
+
+    # mwdry and adv_mass (driver-side mmr→vmr conversion factors).
+    assert float(ref["mwdry"]) == data.MWDRY
+    np.testing.assert_array_equal(ref["adv_mass"], data.ADV_MASS)
+
+
 def test_get_number_returns_slice() -> None:
     import jax.numpy as jnp
 

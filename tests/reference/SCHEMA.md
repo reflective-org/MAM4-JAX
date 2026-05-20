@@ -32,6 +32,15 @@ tests/reference/
 │   ├── wateruptake_after.npz
 │   ├── amicphys_before.npz
 │   └── amicphys_after.npz
+├── per_process_rename_only/        # same hooks, with mdo_rename=1, others=0
+│   ├── calcsize_before.npz
+│   ├── calcsize_after.npz
+│   ├── wateruptake_before.npz
+│   ├── wateruptake_after.npz
+│   ├── amicphys_before.npz
+│   ├── amicphys_after.npz
+│   ├── rename_before.npz
+│   └── rename_after.npz
 ├── polysvp/                        # standalone polysvp T-sweep
 │   └── reference.npz
 ├── qsat/                           # standalone qsat (T, p)-grid
@@ -69,6 +78,23 @@ Arrays (all `int32` unless noted):
 Index conversion: the Fortran writes **1-based** indices with `0` for unused slots. `scripts/capture_reference.py` converts to **0-based** (subtract 1) with `-1` for unused. Indices in `mam4_jax/data.py` follow the same 0-based convention.
 
 The hard-coded constants in `mam4_jax/data.py` (`NUMPTR_AMODE`, `LMASSPTR_AMODE`, etc.) must match this `.npz` — `tests/test_scaffolding.py::test_index_tables_match_npz_reference` enforces that.
+
+### Additional amicphys init keys (M3.6 PR-C)
+
+The same `indices/reference.npz` also carries the amicphys-internal mapping/conversion tables, captured by `scripts/patches/amicphys_init_dump.patch` (a sibling overlay that writes from inside `modal_aero_amicphys_init` where the tables are in scope). Used to wire the orchestration's state-dict ↔ amicphys-local-view unpacking.
+
+| Key | Shape | Meaning |
+| --- | --- | --- |
+| `amicphys_loffset`, `amicphys_ngas`, `amicphys_naer`, `amicphys_max_gas`, `amicphys_max_aer` | scalar | Compile-time bounds (5, 2, 7, 2, 7 for MAM4-MOM). |
+| `lmap_gas`, `lmap_num`, `lmap_numcw` | `(ngas|ntot_amode,)` | Raw 1-based **gas_pcnst-relative** indices written by Fortran. |
+| `lmap_aer`, `lmap_aercw` | `(ntot_amode, naer)` | Same, for (mode, amicphys-iaer) mass tracers. `0` for absent. |
+| `pcnst_lmap_*` | same shapes | Loffset-adjusted, **0-based, pcnst-absolute** with `-1` sentinel. Direct-use form for JAX. |
+| `fcvt_gas`, `fcvt_aer` | `(ngas,) / (naer,)` | Amicphys-internal vmr→local conversion factors. |
+| `fcvt_num`, `fcvt_wtr` | scalar | Same, for number and aerosol-water tracers. |
+| `mwdry` | scalar | Mean molecular weight of dry air. |
+| `adv_mass` | `(gas_pcnst,)` | Per-constituent molecular weight. Combined with `mwdry`, gives the driver-side `mmr → vmr` factor `mwdry/adv_mass`. |
+
+Cross-check: `pcnst_lmap_num` must equal `numptr_amode` (different Fortran tables, same physical mapping). Enforced by `test_amicphys_init_tables_match_npz_reference`.
 
 ## What the captured references actually exercise
 
@@ -150,6 +176,14 @@ Same six tags and same per-record arrays as `per_process/`, captured from a buil
 Captured at `--nstep 60`. Used by M3.5 PR-A's calcsize test (`tests/test_calcsize.py`) to validate the per-mode bounds-adjustment + `dgncur_a` recomputation in isolation, before PR-B re-enabled the transfer block.
 
 The fixture's transfer block is a structural no-op even with the full transfer enabled (see "What the captured references actually exercise" above), so the structural test `test_aitacc_transfer_is_no_op_on_this_fixture` in `tests/test_calcsize.py` cross-checks the two captures against each other.
+
+### `per_process_rename_only/` — single-toggle rename-only fixture
+
+Captured by `scripts/capture_reference.py --mode instrumented-rename-only` with the namelist set to `mdo_gasaerexch=mdo_newnuc=mdo_coag=0, mdo_rename=1`. Used by M3.6 PR-C's `tests/test_amicphys.py::test_orchestration_rename_only_matches_fortran` to validate the JAX orchestration's state-dict ↔ amicphys-local-view unpacking against Fortran ground truth.
+
+Empirical note: with gasaerexch off, `qaer_delsub_grow4rnam` is identically zero at the rename call site, and the Aitken-mode `dgn_t_old` stays at the initial `dgnum_aer ≈ 2.6e-8 m` (well below `dp_belowcut ≈ 8e-8 m`). The Fortran rename's optaa=40 guard at line 4141 trips and rename is a no-op every step, so `amicphys_after.q == amicphys_before.q` across all 60 captured timesteps. The fixture thus exercises the JAX unpack/repack round-trip end-to-end without rename actually transferring any mass/number. The PR-B rename test (`tests/test_rename.py`) covers the physics when the input has non-zero growth delta.
+
+Same six tags + rename hook as `per_process/`. Schemas are identical (`q` etc. for the outer dumps; `qnum_cur`/`qaer_cur`/... for `rename_*`).
 
 ### `per_process_amicphys_off/` — variant with the amicphys sub-processes disabled
 

@@ -321,6 +321,108 @@ SLOT_VALID: np.ndarray = (
 )
 
 
+# ---------------------------------------------------------------------------
+# amicphys-internal mapping & conversion tables (M3.6 PR-C foundation).
+#
+# Fortran ``modal_aero_amicphys.F90`` orders aerosol species by its own
+# ``name_aerpfx`` list (set up in ``modal_aero_amicphys_init``), which
+# is *different* from ``modal_aero_data``'s ``lmassptr_amode`` ordering.
+# The unpacking ``q[pcnst]`` → ``(qgas, qaer, qnum, qwtr)`` uses these
+# amicphys-internal tables, not the modal_aero_data ones.
+#
+# Values captured via ``scripts/patches/amicphys_init_dump.patch``.
+# Parity test: ``tests/test_scaffolding.py``.
+# ---------------------------------------------------------------------------
+
+#: Number of gases tracked by amicphys (SOAG + H2SO4 for MAM4-MOM).
+AMICPHYS_NGAS: int = 2
+#: Number of aerosol species tracked by amicphys (soa, so4, ..., 7 in MAM4-MOM).
+AMICPHYS_NAER: int = 7
+#: ``max_gas`` / ``max_aer`` compile-time bounds from amicphys.
+AMICPHYS_MAX_GAS: int = 2
+AMICPHYS_MAX_AER: int = 7
+
+#: 0-based pcnst-absolute indices of each gas in ``q``. Derived from the
+#: Fortran ``lmap_gas + loffset - 1``.
+LMAP_GAS:   np.ndarray = np.asarray([9, 6], dtype=np.int32)
+#: 0-based pcnst-absolute indices of each mode's interstitial number tracer.
+#: Always matches ``NUMPTR_AMODE``; we keep a separate name for symmetry with
+#: the other ``LMAP_*`` tables that come from the same amicphys dump.
+LMAP_NUM:   np.ndarray = np.asarray([17, 22, 30, 34], dtype=np.int32)
+LMAP_NUMCW: np.ndarray = LMAP_NUM.copy()
+#: 0-based pcnst-absolute indices of (mode, amicphys-iaer) interstitial mass
+#: tracers. Sentinel ``-1`` for species absent from that mode.
+#: Row order: (accum, aitken, coarse, primary_carbon). Column order is
+#: amicphys's internal iaer ordering (soa, so4, ...).
+LMAP_AER: np.ndarray = np.asarray(
+    [[12, 10, 11, 13, 15, 14, 16],
+     [19, 18, -1, -1, 20, -1, 21],
+     [28, 25, 27, 26, 24, 23, 29],
+     [-1, -1, 31, 32, -1, -1, 33]],
+    dtype=np.int32,
+)
+LMAP_AERCW: np.ndarray = LMAP_AER.copy()
+
+#: Unit-conversion factors (kg/kg → mol/mol or kg/kg → #/kmol). Applied by
+#: the state-dict → amicphys-view unpacking.
+FCVT_GAS: np.ndarray = np.asarray([0.0800733333333333, 1.0], dtype=np.float64)
+FCVT_AER: np.ndarray = np.asarray(
+    [0.08, 1.0, 0.08, 1.0, 1.0, 1.0, 1.0], dtype=np.float64,
+)
+FCVT_NUM: float = 1.0
+FCVT_WTR: float = 1.607793072824157
+
+# ---------------------------------------------------------------------------
+# Driver-level mmr ↔ vmr conversion (driver.F90:1217-1228).
+#
+# Before calling ``modal_aero_amicphys_intr``, the Fortran driver converts
+# each constituent from mass mixing ratio to volume mixing ratio via
+# ``vmr(l2) = mmr(l2) * mwdry / adv_mass(l2)``. The amicphys-internal
+# ``fcvt_*`` factors are then applied to the *vmr* values inside
+# ``mam_amicphys_1gridcell``. For consistency with the captured
+# amicphys-local reference data, the JAX unpacking must apply both
+# stages.
+#
+# imozart = 6 (1-based) in this build → loffset = 5, gas_pcnst = 30.
+# adv_mass[i] is the molecular weight of pcnst tracer (i + loffset + 1, 1-based).
+# Number tracers have adv_mass ≈ 1.0074 (a convention that makes the
+# mwdry/adv_mass factor ≈ 28.75 — converts particles/kmol-air to
+# something proportional to a volume mixing ratio).
+# ---------------------------------------------------------------------------
+
+MWDRY: float = 28.966
+ADV_MASS: np.ndarray = np.asarray([
+    34.0136, 98.0784, 64.0648, 62.1324, 12.011,                # 0-4: O, H2SO4, SO2, DMS, C
+    115.10734, 12.011, 12.011, 12.011, 135.064039, 58.442468,  # 5-10: soa, ...
+    250092.672, 1.0074, 115.10734, 12.011, 58.442468,          # 11-15
+    250092.672, 1.0074, 135.064039, 58.442468, 115.10734,      # 16-20
+    12.011, 12.011, 12.011, 250092.672, 1.0074,                # 21-25
+    12.011, 12.011, 250092.672, 1.0074,                        # 26-29
+], dtype=np.float64)
+assert ADV_MASS.shape == (30,), "ADV_MASS must match gas_pcnst=30"
+
+#: per-pcnst mmr → vmr factor. Length PCNST=35; entries before imozart-1
+#: (the chemistry offset) are 1.0 since those constituents aren't part of
+#: the chemistry vmr conversion.
+_LOFFSET = 5
+_MMR_TO_VMR = np.ones(PCNST, dtype=np.float64)
+_MMR_TO_VMR[_LOFFSET:] = MWDRY / ADV_MASS
+MMR_TO_VMR: np.ndarray = _MMR_TO_VMR
+
+#: Mass→volume conversion per amicphys species (m³-AP / kmol-AP).
+#: Distinct from FCVT_AER (which is the kg/kg ↔ mol/mol unit conversion).
+#: ``fac_m2v_aer = mw_aer / dens_aer`` in the Fortran amicphys init code.
+#: Consumed by rename's dryvol summation (and by gasaerexch/coag/newnuc
+#: when they land). Values match the per-record capture in
+#: ``tests/reference/per_process/rename_{before,after}.npz``; parity test
+#: in ``tests/test_scaffolding.py``.
+FAC_M2V_AER: np.ndarray = np.asarray(
+    [0.15, 0.06497175141242938, 0.15, 0.007058823529411765,
+     0.030789473684210526, 0.051923076923076926, 156.20986883198],
+    dtype=np.float64,
+)
+
+
 @dataclass(frozen=True)
 class IndexTables:
     """0-based pcnst index tables for the MAM4 tracer array.
