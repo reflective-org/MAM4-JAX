@@ -6,6 +6,16 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-19 — M3.6 prep — Documented that amicphys is self-contained
+
+- PR: [#12](https://github.com/reflective-org/MAM4-JAX/pull/12) (merged at [`2975c3d`](https://github.com/reflective-org/MAM4-JAX/commit/2975c3d)).
+- Scope-shifting finding ahead of the amicphys port: the box-model `driver.F90` calls `modal_aero_amicphys_intr` in `e3sm_src_modified/modal_aero_amicphys.F90:310`, and **that module contains its own self-contained copies** of all four sub-processes plus the orchestration (`mam_amicphys_1gridcell`, `mam_amicphys_1subarea_clear`/`_cloudy`, `mam_gasaerexch_1subarea`, `mam_rename_1subarea`, `mam_newnuc_1subarea`, `mam_coag_1subarea`). The standalone files `modal_aero_{rename,gasaerexch,newnuc,coag}.F90` are real implementations but **not reachable** from this driver — `modal_aero_rename_sub` is called solely from `modal_aero_gasaerexch.F90:685`, which itself isn't called by the box model.
+- Recorded in three docs:
+  - `docs/ARCHITECTURE.md` — new "amicphys is self-contained" section with a complete line-by-line module map.
+  - `docs/PLANS.md` — M3 entry restructured into a five-PR amicphys plan (5a orchestration shell + 5b–5e four `mam_*_1subarea` sub-routines), targeting the **internal** Fortran symbols.
+  - `docs/DEFERRED.md` — explicit "not planned" entry for the standalone modules with resurface conditions if the active call graph ever changes.
+- No code changes; tests stayed 43/43 green. This PROGRESS entry itself was added later in a docs catch-up PR (the original PR #12 only touched ARCHITECTURE/PLANS/DEFERRED).
+
 ## 2026-05-19 — Milestone 3.5 (PR-B) — Calcsize Aitken ↔ accumulation transfer
 
 - PR: pending (`m3/calcsize-aitacc-transfer`)

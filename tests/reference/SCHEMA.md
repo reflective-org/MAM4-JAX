@@ -4,21 +4,32 @@ Captured Fortran outputs live under this directory:
 
 ```
 tests/reference/
-├── SCHEMA.md                # this file
-├── sweep/                   # baseline 12-point convergence sweep (NetCDF)
+├── SCHEMA.md                       # this file
+├── sweep/                          # baseline 12-point convergence sweep (NetCDF)
 │   └── mam_dt<DT>_ndt<N>.nc
-├── indices/                 # one-time integer index tables (.npz)
+├── indices/                        # one-time integer index tables (.npz)
 │   └── reference.npz
-├── per_process/             # instrumented per-microphysics-call dumps (.npz)
+├── per_process/                    # instrumented per-microphysics-call dumps (.npz)
 │   ├── calcsize_before.npz
 │   ├── calcsize_after.npz
 │   ├── wateruptake_before.npz
 │   ├── wateruptake_after.npz
 │   ├── amicphys_before.npz
 │   └── amicphys_after.npz
-├── polysvp/                 # standalone polysvp T-sweep
+├── per_process_no_aitacc/          # same hooks, with Aitken↔accum transfer disabled
+│   ├── calcsize_before.npz
+│   ├── calcsize_after.npz
+│   ├── wateruptake_before.npz
+│   ├── wateruptake_after.npz
+│   ├── amicphys_before.npz
+│   └── amicphys_after.npz
+├── polysvp/                        # standalone polysvp T-sweep
 │   └── reference.npz
-└── qsat/                    # standalone qsat (T, p)-grid
+├── qsat/                           # standalone qsat (T, p)-grid
+│   └── reference.npz
+├── makoh/                          # standalone makoh_cubic / makoh_quartic
+│   └── reference.npz
+└── kohler/                         # standalone modal_aero_kohler (rdry, hygro, s) grid
     └── reference.npz
 ```
 
@@ -90,6 +101,14 @@ Every `.npz` contains the same seven arrays. Leading axis is the number of times
 
 For the reference build config (`PCOLS=1`, `PVER=1`, `PCNST=35`, `NTOT_AMODE=4`), per-record sizes are `q,qqcw = 35 doubles each`, mode arrays `4 doubles each`. One record = 704 B in the underlying `.bin` (+4 B for the `istep` prefix).
 
+### `per_process_no_aitacc/` — variant with Aitken↔accum transfer disabled
+
+Same six tags and same per-record arrays as `per_process/`, captured from a build that applied `scripts/patches/disable_aitacc_transfer.patch` on top of the ADR-012 overlay. The patch flips the `do_aitacc_transfer_in` argument to `.false.` at the calcsize call site so the second half of `modal_aero_calcsize_sub` (Fortran lines 944–1294, the mode-transfer block) is short-circuited.
+
+Captured at `--nstep 60`. Used by M3.5 PR-A's calcsize test (`tests/test_calcsize.py`) to validate the per-mode bounds-adjustment + `dgncur_a` recomputation in isolation, before PR-B re-enabled the transfer block.
+
+The fixture's transfer block is a structural no-op even with the full transfer enabled (see "What the captured references actually exercise" above), so the structural test `test_aitacc_transfer_is_no_op_on_this_fixture` in `tests/test_calcsize.py` cross-checks the two captures against each other.
+
 ### Note on `amicphys_*` and VMR conversion
 
 `modal_aero_amicphys_intr` operates on **volume mixing ratios** (`vmr`, `vmrcw`), not mass mixing ratios (`q`, `qqcw`). The conversion happens at `driver.F90:1217-1228` between the wateruptake and amicphys calls. The dumps capture `q`/`qqcw` for layout consistency across the six tags; to compare against amicphys's internal VMR state, multiply by `mwdry/adv_mass(species_index)` (constants live in `chem_mods.F90` / `physconst.F90`). A future port that needs the VMR view directly can extend the schema or do the conversion in the loader.
@@ -108,6 +127,55 @@ python scripts/capture_reference.py --mode instrumented --nstep 60
 ```
 
 The committed `per_process/*.npz` were generated with `--nstep 1` (single-step, 1800 s timestep). Re-running with the same flag should reproduce them bit-for-bit on a host with the same compiler/library versions; small differences across `gfortran` versions are expected.
+
+## Standalone-driver references
+
+These four directories archive outputs from tiny Fortran drivers under `scripts/reference_drivers/`. They do **not** run the box-model executable — they link directly against the relevant leaf module (`wv_saturation.F90` or `modal_aero_wateruptake.F90`) and sweep a parameter grid. Used by the warm-up M3 ports (polysvp, qsat, makoh, kohler).
+
+### `polysvp/reference.npz`
+
+Goff–Gratch saturation vapor pressure swept over temperature. Driver: `scripts/reference_drivers/polysvp_driver.F90`.
+
+| Key | dtype | Shape | Meaning |
+| --- | --- | --- | --- |
+| `T` | `float64` | `(1501,)` | Temperature (K) on a 1 K grid covering the supported range |
+| `esat_water` | `float64` | `(1501,)` | `polysvp(T, type=0)` — saturation vapor pressure over liquid water (Pa) |
+| `esat_ice` | `float64` | `(1501,)` | `polysvp(T, type=1)` — saturation vapor pressure over ice (Pa) |
+
+JAX port consumes this in `tests/test_saturation.py` (max rel-err ~4e-15).
+
+### `qsat/reference.npz`
+
+Saturation specific humidity over a (T, p) grid. Driver: `scripts/reference_drivers/qsat_driver.F90`. Note `qsat_ice` uses Clausius–Clapeyron (Fortran convention), not `polysvp_ice` — see the JAX-side notes in `mam4_jax/saturation.py`.
+
+| Key | dtype | Shape | Meaning |
+| --- | --- | --- | --- |
+| `T` | `float64` | `(1505,)` | Temperature (K) |
+| `p` | `float64` | `(1505,)` | Pressure (Pa) |
+| `qs_water` | `float64` | `(1505,)` | `qsat_water(T, p)` (kg/kg) |
+| `qs_ice` | `float64` | `(1505,)` | `qsat_ice(T, p)` (kg/kg) |
+
+### `makoh/reference.npz`
+
+Hand-picked test cases for the Cardano (`makoh_cubic`) and Ferrari (`makoh_quartic`) polynomial root finders, lifted from `modal_aero_wateruptake.F90:684-793`. Driver: `scripts/reference_drivers/makoh_driver.F90`.
+
+| Key | dtype | Shape | Meaning |
+| --- | --- | --- | --- |
+| `cubic_inputs` | `float64` | `(6, 3)` | Six cubic-coefficient tuples `(a, b, c)` for `x³ + a x² + b x + c = 0` |
+| `cubic_roots` | `complex128` | `(6, 3)` | Three roots per input (complex-valued; some test cases produce NaN to match Fortran's faithful NaN propagation) |
+| `quartic_inputs` | `float64` | `(6, 4)` | Six quartic-coefficient tuples |
+| `quartic_roots` | `complex128` | `(6, 4)` | Four roots per input |
+
+### `kohler/reference.npz`
+
+`modal_aero_kohler` (`modal_aero_wateruptake.F90:488-680`) swept over a 168-point grid of `(rdry, hygro, s)`. Driver: `scripts/reference_drivers/kohler_driver.F90`.
+
+| Key | dtype | Shape | Meaning |
+| --- | --- | --- | --- |
+| `rdry_in` | `float64` | `(168,)` | Dry radius input (m) |
+| `hygro` | `float64` | `(168,)` | Hygroscopicity parameter (κ-equivalent, dimensionless) |
+| `s` | `float64` | `(168,)` | Saturation ratio (dimensionless) |
+| `rwet` | `float64` | `(168,)` | Solved wet radius (m) |
 
 ## Binary `.bin` format (transient — for reference only)
 

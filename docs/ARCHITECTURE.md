@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the architecture of the MAM4 aerosol-microphysics model as represented in the Fortran reference under `mam4-original-src-code/`, and the **proposed** structure of the JAX port. The Fortran section is factual. The JAX section is a proposal that has **not** yet been approved by the owner — items marked **TBD** await explicit decisions before scaffolding begins.
+This document describes the architecture of the MAM4 aerosol-microphysics model as represented in the Fortran reference under `mam4-original-src-code/`, and the structure of the JAX port as currently implemented. Both sections are factual; outstanding architectural decisions are captured as ADRs in [`KEY_DECISIONS.md`](KEY_DECISIONS.md).
 
 ## Glossary
 
@@ -80,40 +80,60 @@ The Fortran build is configured via `test_drivers/cambox_config.cpp.in`:
 
 This means: MAM4 with marine organics, 35 total tracers, single column, single vertical level. The JAX port targets this configuration as its primary validation surface.
 
-## JAX port: proposed layout (TBD — pending owner approval)
+## JAX port: actual layout
 
-> Nothing in this section has been built yet. Any module name, signature, or directory below is a proposal. Confirm with the owner before scaffolding.
+The four architectural questions that were "TBD" in the initial draft have all been resolved (see `docs/KEY_DECISIONS.md`):
 
-**Proposed package name:** `mam4_jax` (importable as `from mam4_jax import ...`).
+| Question | Resolution | ADR |
+| --- | --- | --- |
+| Tracer representation | Flat `(pcols, pver, pcnst)` array mirroring Fortran, with named accessors on top (`get_number`, `get_mass`, `get_mass_by_species_name`). | ADR-008 |
+| Process signature | Pure functional `process_fn(state, params, config) -> new_state`. | ADR-009 |
+| Time-loop expression | Python `for` loop initially; `jax.lax.scan` deferred to Milestone 6. | ADR-004 |
+| Configuration | Frozen `@dataclass` per namelist group + `RunConfig` + YAML loader. | ADR-010 |
 
-**Proposed directory layout (TBD):**
+**Package name:** `mam4_jax` (importable as `from mam4_jax import ...`).
+
+**Current directory layout** (everything below exists in the repo; status reflects what is filled in vs. stubbed):
 
 ```
-mam4_jax/                  # JAX package source — TBD
-  __init__.py
-  config.py                # float64 enable, mode/species constants
-  data.py                  # mode/species index bookkeeping, tracer layout
+mam4_jax/
+  __init__.py               # enables jax_enable_x64 at import
+  config.py                 # @dataclass configs + load_yaml (ADR-010)
+  constants.py              # physical constants from shr_const_mod.F90 / physconst.F90
+  data.py                   # MAM4-MOM constants + IndexTables + accessors (ADR-008)
+  saturation.py             # polysvp_water/ice, qsat_water/ice (ported, M3.1/M3.2)
+  kohler.py                 # makoh_cubic/quartic + modal_aero_kohler (ported, M3.4 A/B)
   processes/
-    calcsize.py
-    wateruptake.py
-    gasaerexch.py
-    newnuc.py
-    coag.py
-    rename.py
-    amicphys.py            # composes the four above in order
-  driver.py                # operator-splitting time loop
-tests/                     # validation harness — TBD
-  reference/               # captured Fortran outputs (NetCDF or .npz)
-  test_<process>.py        # one per process, asserts rel-err < 1e-6
-scripts/                   # CLI utilities — TBD
-  capture_reference.py     # run Fortran + dump per-process inputs/outputs
-  plot_residuals.py        # diagnostic figures
+    calcsize.py             # modal_aero_calcsize_sub (ported, M3.5 A+B)
+    wateruptake.py          # modal_aero_wateruptake_sub/_dr (ported, M3.4 C)
+    amicphys.py             # orchestration shell (M3.6 PR-A); sub-routines pending
+    gasaerexch.py           # M1 stub — dead code (see "amicphys is self-contained" above)
+    newnuc.py               # M1 stub — dead code
+    coag.py                 # M1 stub — dead code
+    rename.py               # M1 stub — dead code
+tests/
+  reference/                # committed Fortran captures (NetCDF + .npz); see tests/reference/SCHEMA.md
+  test_scaffolding.py       # M1 acceptance
+  test_saturation.py        # M3.1 + M3.2 rel-err harness
+  test_kohler.py            # M3.4 A+B
+  test_wateruptake.py       # M3.4 C
+  test_calcsize.py          # M3.5 A+B
+scripts/
+  build_reference.sh        # builds the Fortran reference (Homebrew/Linux auto-detect)
+  capture_reference.py      # 7 modes — sweep / instrumented(+no-aitacc) / polysvp / qsat / makoh / kohler
+  patches/                  # ADR-012 patch overlay (mam4_dump_state.F90 + driver instrumentation + transfer-off)
+  reference_drivers/        # standalone Fortran main programs for the leaf-function ports (polysvp, qsat, makoh, kohler)
+docs/
+  ARCHITECTURE.md PROGRESS.md PLANS.md KEY_DECISIONS.md DEFERRED.md FEATURES.md REFERENCE_BUILD.md
+  figures/                  # residual / diagnostic plots committed alongside each port PR
+  plans/                    # archived approved plans (ADR-007)
 ```
 
-**Open architectural questions (TBD, owner decision needed):**
-- Tracer representation: flat `(pcols, pver, pcnst)` array (mirror Fortran) **or** a structured `pytree`/`dataclass` per (mode, species)? The Fortran approach is bug-prone but enables exact diffing; the pytree approach is JAX-native.
-- Pure-functional process signatures (return new state) vs. in-place semantics (return only deltas).
-- Whether to express the operator-splitting loop with `jax.lax.scan` from the start, or keep it as a Python `for` loop until correctness lands (rule #8 phase-A says the latter).
-- How to expose namelist-style configuration: dataclass, dict, or YAML config files.
+Notable structural decisions that emerged during the port and weren't in the original sketch:
 
-See [PLANS.md](PLANS.md) for milestone sequencing once these are resolved.
+- **`constants.py` and `saturation.py` are package-level**, not under `processes/`. They are leaf math (no aerosol state), reused by multiple processes.
+- **`kohler.py` is package-level** for the same reason — it's the equilibrium solver consumed by `wateruptake`, and is independently testable.
+- **No `driver.py` yet.** The operator-splitting time loop is Milestone 4; only the leaf processes have landed so far.
+- **The four `processes/{gasaerexch,newnuc,coag,rename}.py` stubs are kept** as dead M1 scaffolding, even though the box-model build never reaches them. Removing them would be a no-op refactor; they get deleted (or repurposed) when the corresponding `_mam_*_1subarea` helpers inside `amicphys.py` land in M3.6 PR-B/C/D/E.
+
+See [PLANS.md](PLANS.md) for milestone sequencing and [KEY_DECISIONS.md](KEY_DECISIONS.md) for the architectural ADRs.
