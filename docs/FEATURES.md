@@ -12,10 +12,10 @@ Status legend: **planned**, **in progress**, **ported (validated)**, **deferred*
 | --- | --- | --- |
 | Size redistribution (`calcsize`) | `box_model_utils/modal_aero_calcsize.F90` | **ported (validated)** end-to-end in `mam4_jax/processes/calcsize.py` (M3.5 PR-A + PR-B). Per-mode bounds-adjustment + Aitken↔accum transfer both implemented; dgncur_a matches Fortran at machine ε. Transfer code paths are dead in the canonical box-model fixture (`docs/DEFERRED.md`) but the port is structurally faithful. |
 | Water uptake (`wateruptake`) | `e3sm_src_modified/modal_aero_wateruptake.F90` | **ported (validated)** end-to-end. `makoh_cubic`/`makoh_quartic`/`modal_aero_kohler` in `mam4_jax/kohler.py`; `_sub`/`_dr` orchestration in `mam4_jax/processes/wateruptake.py`. dgncur_awet/wetdens match Fortran at machine ε. |
-| Gas–aerosol exchange (condensation) | `e3sm_src/modal_aero_gasaerexch.F90` | stub in `mam4_jax/processes/gasaerexch.py`; physics port planned (M3) |
-| New-particle nucleation (binary H2SO4–H2O) | `e3sm_src/modal_aero_newnuc.F90` | stub in `mam4_jax/processes/newnuc.py`; physics port planned (M3) |
-| Coagulation (Brownian, intra/inter-modal) | `e3sm_src/modal_aero_coag.F90` | stub in `mam4_jax/processes/coag.py`; physics port planned (M3) |
-| Rename (Aitken → accumulation) | `e3sm_src/modal_aero_rename.F90` | stub in `mam4_jax/processes/rename.py`; physics port planned (M3) |
+| Gas–aerosol exchange (condensation) | `e3sm_src_modified/modal_aero_amicphys.F90` (`mam_gasaerexch_1subarea`, lines 3279–3584) | stub `mam4_jax/processes/gasaerexch.py` is **dead code** in the box-model build — the standalone module isn't called from the driver. Active port target is `_mam_gasaerexch_1subarea` inside `amicphys.py` (currently a no-op stub after M3.6 PR-A), scheduled for M3.6 PR-C. See `docs/ARCHITECTURE.md`. |
+| New-particle nucleation (binary H₂SO₄–H₂O) | `e3sm_src_modified/modal_aero_amicphys.F90` (`mam_newnuc_1subarea`, lines 4251–4665) | stub `mam4_jax/processes/newnuc.py` is dead code. Active port target is `_mam_newnuc_1subarea` inside `amicphys.py` (currently a no-op stub after M3.6 PR-A), scheduled for M3.6 PR-D. |
+| Coagulation (Brownian, intra/inter-modal) | `e3sm_src_modified/modal_aero_amicphys.F90` (`mam_coag_1subarea`, lines 4670–5106) | stub `mam4_jax/processes/coag.py` is dead code. Active port target is `_mam_coag_1subarea` inside `amicphys.py` (currently a no-op stub after M3.6 PR-A), scheduled for M3.6 PR-E. |
+| Rename (Aitken → accumulation) | `e3sm_src_modified/modal_aero_amicphys.F90` (`mam_rename_1subarea`, lines 3923–4246) | stub `mam4_jax/processes/rename.py` is dead code. Active port target is `_mam_rename_1subarea` inside `amicphys.py` (currently a no-op stub after M3.6 PR-A), scheduled for M3.6 PR-B. |
 | Umbrella orchestrator (`amicphys`) | `e3sm_src_modified/modal_aero_amicphys.F90` | **orchestration shell ported** in `mam4_jax/processes/amicphys.py` (M3.6 PR-A); four sub-process stubs land in PR-B (`rename`), PR-C (`gasaerexch`), PR-D (`newnuc`), PR-E (`coag`). All-mdo-off passthrough validated bit-exact. |
 
 ## Supporting physics
@@ -42,7 +42,7 @@ The MAM4-MOM (with `RAIN_EVAP_TO_COARSE_AERO`) reference configuration has four 
 The nine aerosol species *types* available across modes (`specname_amode`, `modal_aero_data.F90:49-52`):
 `sulfate`, `ammonium`, `nitrate`, `p-organic`, `s-organic`, `black-c`, `seasalt`, `dust`, `m-organic`.
 
-The exact species-to-mode assignment is set at initialization in `modal_aero_initialize_data.F90:250-309` and will be captured authoritatively when M2 lands the instrumented reference. Until then, `mam4_jax/data.py` keeps `IndexTables` sentinel-filled (-1).
+The exact species-to-mode assignment is set at initialization in `modal_aero_initialize_data.F90:250-309`. M3.3 captured these indices via the instrumented `dump_indices()` overlay and hard-coded them into `mam4_jax/data.py` (`NUMPTR_AMODE`, `LMASSPTR_AMODE`, etc.); the canonical values live at `tests/reference/indices/reference.npz` with `tests/test_scaffolding.py::test_index_tables_match_npz_reference` enforcing parity.
 
 Reference build flags: `-DMODAL_AERO_4MODE_MOM -DRAIN_EVAP_TO_COARSE_AERO -DPCNST=35 -DPCOLS=1 -DPVER=1 -DNBC=1 -DNPOA=1 -DNSOA=1` (see `mam4-original-src-code/test_drivers/cambox_config.cpp.in`).
 
@@ -58,10 +58,10 @@ Reference build flags: `-DMODAL_AERO_4MODE_MOM -DRAIN_EVAP_TO_COARSE_AERO -DPCNS
 
 | Capability | Status |
 | --- | --- |
-| Element-wise `1e-6` rel-err assertion (ADR-003) | scaffolding test (`tests/test_scaffolding.py`) live; rel-err assertion harness planned for first M3 port |
+| Element-wise `1e-6` rel-err assertion (ADR-003) | **in use** — every M3 port PR has an end-to-end test asserting max rel-err < 1e-6 against a committed Fortran capture. As of M3.5, eight ports (polysvp, qsat_water/ice, IndexTables, makoh_cubic/quartic, modal_aero_kohler, wateruptake_dr, calcsize_sub) all match at machine ε. |
 | 12-point convergence sweep matching `run_test.csh` | captured (`tests/reference/sweep/*.nc`); JAX reproduction planned for M5 |
-| Per-process reference data for M3 port validation | captured (`tests/reference/per_process/*.npz`); schema in `tests/reference/SCHEMA.md` |
-| Residual / convergence diagnostic plots | planned (rule #6 — figures are first-class deliverables) |
+| Per-process reference data for M3 port validation | captured (`tests/reference/per_process/*.npz` and siblings); schema in `tests/reference/SCHEMA.md` |
+| Residual / convergence diagnostic plots | **in use** — seven plots committed under `docs/figures/` (polysvp, qsat, makoh, kohler, wateruptake, calcsize residuals + the upstream flowchart). New ports add their plot per the validation workflow in `CLAUDE.md`. |
 
 ## Out of scope (deferred or not planned)
 

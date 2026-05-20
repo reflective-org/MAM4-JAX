@@ -8,7 +8,7 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ## 2026-05-19 — Milestone 3.6 (PR-A) — Amicphys orchestration shell
 
-- PR: pending (`m3/amicphys-orchestration`)
+- PR: [#13](https://github.com/reflective-org/MAM4-JAX/pull/13) (merged at [`dff389d`](https://github.com/reflective-org/MAM4-JAX/commit/dff389d)).
 - First of five PRs to port `modal_aero_amicphys_intr`. PR-A wires up the orchestration skeleton with all four physics sub-routines as no-op stubs; PR-B–PR-E will replace one stub at a time.
 - **Capture infrastructure**: `scripts/capture_reference.py` now supports `--mode instrumented-amicphys-off`, which writes a namelist with `mdo_gasaerexch=mdo_rename=mdo_newnuc=mdo_coag=0` and saves the dump to `tests/reference/per_process_amicphys_off/`. The Fortran `modal_aero_amicphys_intr` is a true bit-exact passthrough under these toggles (every captured array's `after` matches `before` exactly across 60 timesteps).
 - **JAX shell** at `mam4_jax/processes/amicphys.py` (replaces M1 NotImplementedError stub):
@@ -22,6 +22,16 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
   - `test_amicphys_returns_all_state_keys`: checks that meteorology / deltat pass through.
 - `tests/test_scaffolding.py`: dropped `amicphys` from `PROCESS_MODULES` (it's a real implementation now); kept `gasaerexch`, `newnuc`, `coag`, `rename` since those standalone process modules are dead code in the box-model build per the M3.6-prep finding.
 - Full suite: **45/45 green** (was 43).
+
+## 2026-05-19 — M3.6 prep — Documented that amicphys is self-contained
+
+- PR: [#12](https://github.com/reflective-org/MAM4-JAX/pull/12) (merged at [`2975c3d`](https://github.com/reflective-org/MAM4-JAX/commit/2975c3d)).
+- Scope-shifting finding ahead of the amicphys port: the box-model `driver.F90` calls `modal_aero_amicphys_intr` in `e3sm_src_modified/modal_aero_amicphys.F90:310`, and **that module contains its own self-contained copies** of all four sub-processes plus the orchestration (`mam_amicphys_1gridcell`, `mam_amicphys_1subarea_clear`/`_cloudy`, `mam_gasaerexch_1subarea`, `mam_rename_1subarea`, `mam_newnuc_1subarea`, `mam_coag_1subarea`). The standalone files `modal_aero_{rename,gasaerexch,newnuc,coag}.F90` are real implementations but **not reachable** from this driver — `modal_aero_rename_sub` is called solely from `modal_aero_gasaerexch.F90:685`, which itself isn't called by the box model.
+- Recorded in three docs:
+  - `docs/ARCHITECTURE.md` — new "amicphys is self-contained" section with a complete line-by-line module map.
+  - `docs/PLANS.md` — M3 entry restructured into a five-PR amicphys plan (5a orchestration shell + 5b–5e four `mam_*_1subarea` sub-routines), targeting the **internal** Fortran symbols.
+  - `docs/DEFERRED.md` — explicit "not planned" entry for the standalone modules with resurface conditions if the active call graph ever changes.
+- No code changes; tests stayed 43/43 green. This PROGRESS entry itself was added later in a docs catch-up PR (the original PR #12 only touched ARCHITECTURE/PLANS/DEFERRED).
 
 ## 2026-05-19 — Milestone 3.5 (PR-B) — Calcsize Aitken ↔ accumulation transfer
 
