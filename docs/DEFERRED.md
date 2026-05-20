@@ -49,6 +49,16 @@ The point of this file is to keep the *decided to skip for now* knowledge out of
   - We add a synthetic test fixture in `tests/test_calcsize.py` with `q` and `num` values that intentionally violate bounds (e.g., manually set `num` such that `v2ncur > voltonumbhi`).
   - The first downstream code path that actually depends on the adjust/transfer outputs lands (e.g., a multi-step amicphys + calcsize loop).
 
+## Porting the standalone `modal_aero_{rename,gasaerexch,newnuc,coag}.F90` modules
+
+- **Status:** explicitly **not** planned for the box-model port.
+- **Why:** Discovered during M3.5 PR-B planning that these standalone modules are **not invoked** by the box-model driver. `driver.F90:1283` calls `modal_aero_amicphys_intr`, which contains its own self-contained copies of all four sub-processes (`mam_gasaerexch_1subarea`, `mam_rename_1subarea`, `mam_newnuc_1subarea`, `mam_coag_1subarea`) plus orchestration. The standalone modules are reachable only via a different call graph (`modal_aero_rename_sub` is called solely from `modal_aero_gasaerexch.F90:685`, which itself is unreachable from this driver). See `docs/ARCHITECTURE.md` "amicphys is self-contained" for the full module map.
+  - The M3 plan therefore targets the `mam_*_1subarea` versions inside `modal_aero_amicphys.F90`.
+  - Numerical results from a port of the standalones could differ from the active code path even if the algorithms are conceptually the same (different code, different rounding paths, potentially different defaults).
+- **Resurface when:** any of:
+  - The active call graph changes (e.g., we adopt a different MAM driver where `modal_aero_gasaerexch.F90`'s entry point becomes live).
+  - An academic/research interest justifies porting the standalone implementation alongside (e.g., to compare it against the active path or to support a different host model in the future).
+
 ## Multi-column / multi-level support
 
 - **Status:** deferred.

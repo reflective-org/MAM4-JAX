@@ -38,6 +38,29 @@ Useful for scoping porting effort:
 | `box_model_utils/wv_saturation.F90` | ~1400 | Goff-Gratch / Flatau saturation vapor pressure; candidate for direct closed-form port. |
 | `e3sm_src_modified/modal_aero_amicphys.F90` | (large) | Orchestrates gas-aerosol exchange, nucleation, coagulation, rename. |
 
+## amicphys is self-contained — the standalone process modules are dead code
+
+This caught us by surprise during M3.5 PR-B planning, so it's worth pinning down. The box-model `driver.F90` calls `modal_aero_amicphys_intr` (defined in `e3sm_src_modified/modal_aero_amicphys.F90:310`), and **this single module contains its own copies of all four sub-processes plus the orchestration**:
+
+| `modal_aero_amicphys.F90` symbol | Lines | Role |
+| --- | --- | --- |
+| `modal_aero_amicphys_intr` | 310–1185 | Entry point. Called by `driver.F90:1283`. |
+| `mam_amicphys_1gridcell` | 1190–1499 | Per-(col, level) orchestrator. |
+| `mam_amicphys_1subarea_clear` | 2064–2626 | Clear-sky sub-area handler. |
+| `mam_amicphys_1subarea_cloudy` | 1504–2059 | Cloudy sub-area handler (unused when `cldn=0`). |
+| `mam_gasaerexch_1subarea` | 3279–3584 | Gas–aerosol exchange. |
+| `mam_rename_1subarea` | 3923–4246 | Aitken → accum mode-transfer (renaming). |
+| `mam_newnuc_1subarea` | 4251–4665 | Binary H₂SO₄–H₂O nucleation. |
+| `mam_coag_1subarea` | 4670–5106 | Brownian coagulation. |
+
+The standalone files `modal_aero_rename.F90`, `modal_aero_gasaerexch.F90`, `modal_aero_newnuc.F90`, `modal_aero_coag.F90` are **not invoked** by the box-model driver. They are real implementations of the same physics but are reachable only via a different orchestration path that the box-model build does not exercise. (`modal_aero_rename_sub` is called solely from `modal_aero_gasaerexch.F90:685`, which itself is unreachable from this driver.)
+
+Implications for the JAX port:
+
+- M3 ports targeting the box-model fixture must port the `mam_*_1subarea` versions inside `modal_aero_amicphys.F90`, not the standalone modules.
+- "Smallest module by line count" is a misleading scoping heuristic: the standalone `modal_aero_rename.F90` is ~682 LOC but irrelevant; the active `mam_rename_1subarea` is ~323 LOC and inside a tightly-coupled orchestration.
+- The `tests/reference/per_process/amicphys_{before,after}.npz` captures already bundle all four sub-processes' contributions (per ADR-012). Validating any single sub-routine in isolation requires a single-toggle re-run (e.g., `mdo_newnuc=1, others=0`) or mid-routine instrumentation.
+
 ## Fortran reference: E3SM infrastructure that can be short-circuited
 
 The following modules are mostly empty shims in the box model and should be replaced with minimal JAX equivalents (or eliminated) rather than ported faithfully:
