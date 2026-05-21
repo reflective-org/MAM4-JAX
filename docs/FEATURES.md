@@ -24,6 +24,8 @@ Status legend: **planned**, **in progress**, **ported (validated)**, **deferred*
 | --- | --- | --- |
 | Saturation vapor pressure (`polysvp`) | `box_model_utils/wv_saturation.F90:699-736` (Goff–Gratch) | **ported (validated)** in `mam4_jax/saturation.py`; max rel-err 4e-15. |
 | Saturation specific humidity (`qsat_water`, `qsat_ice`) | `wv_saturation.F90:758-862` (Goff–Gratch / Clausius–Clapeyron mix) | **ported (validated)** in `mam4_jax/saturation.py`; max rel-err 9e-14 / 8e-15. |
+| Binary H₂SO₄–H₂O nucleation parameterization | `modal_aero_newnuc.F90:1256-1448` (Vehkamäki 2002) | **ported (validated)** in `mam4_jax/newnuc.py` (M3.6 PR-F1); max rel-err **6.4e-11** on `rateloge` across 1920 (T, RH, [H₂SO₄]) records. |
+| Boundary-layer nucleation overlay | `modal_aero_newnuc.F90:1179-1255` (Wang 2008 first/second order) | **ported (validated)** in `mam4_jax/newnuc.py` (M3.6 PR-F1); both flagaa=11 (first-order) and flagaa=12 (second-order) paths match at machine ε. |
 | Physical constants (RGAS, MWDAIR, MWWV, LATVAP, LATICE, EPSQS, …) | `e3sm_src/shr_const_mod.F90:33-61`, `box_model_utils/physconst.F90` | **transcribed** in `mam4_jax/constants.py`. |
 | Constants and species table | `e3sm_src/modal_aero_data.F90`, `e3sm_src/shr_const_mod.F90` | compile-time + runtime indices hard-coded in `mam4_jax/data.py` (0-based, with sentinel `-1` for unused slots); provenance at `tests/reference/indices/reference.npz` |
 | Error function / special functions | `box_model_utils/error_function.F90`, `e3sm_src/shr_spfn_mod.F90` | use `jax.scipy.special` if available; otherwise port closed-form |
@@ -58,10 +60,10 @@ Reference build flags: `-DMODAL_AERO_4MODE_MOM -DRAIN_EVAP_TO_COARSE_AERO -DPCNS
 
 | Capability | Status |
 | --- | --- |
-| Element-wise `1e-6` rel-err assertion (ADR-003) | **in use** — every M3 port PR has an end-to-end test asserting max rel-err < 1e-6 against a committed Fortran capture. As of M3.6 PR-E, eleven ports plus the orchestration unpack/repack round-trip all pass. Most ports match at machine ε; rename matches at ~1e-9; orchestration's gasaerexch+soaexch-wired-through test matches at < 1e-14 against the new single-toggle Fortran capture. |
+| Element-wise `1e-6` rel-err assertion (ADR-003) | **in use** — every M3 port PR has an end-to-end test asserting max rel-err < 1e-6 against a committed Fortran capture. As of M3.6 PR-F1, **thirteen** ports plus the orchestration unpack/repack round-trip all pass. Most ports match at machine ε; rename matches at ~1e-9; orchestration's gasaerexch+soaexch test matches at < 1e-14; binary_nuc_vehk2002's polynomial-accumulated rateloge matches at < 6.5e-11. |
 | 12-point convergence sweep matching `run_test.csh` | captured (`tests/reference/sweep/*.nc`); JAX reproduction planned for M5 |
 | Per-process reference data for M3 port validation | captured (`tests/reference/per_process/*.npz` and siblings); schema in `tests/reference/SCHEMA.md` |
-| Residual / convergence diagnostic plots | **in use** — ten plots committed under `docs/figures/` (polysvp, qsat, makoh, kohler, wateruptake, calcsize, rename, gasaerexch, soaexch residuals + the upstream flowchart). New ports add their plot per the validation workflow in `CLAUDE.md`. |
+| Residual / convergence diagnostic plots | **in use** — eleven plots committed under `docs/figures/` (polysvp, qsat, makoh, kohler, wateruptake, calcsize, rename, gasaerexch, soaexch, newnuc_helpers residuals + the upstream flowchart). New ports add their plot per the validation workflow in `CLAUDE.md`. |
 
 ## Out of scope (deferred or not planned)
 

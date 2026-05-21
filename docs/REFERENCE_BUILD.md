@@ -56,12 +56,13 @@ Sweep mode writes 12 NetCDF files (~1.7 MB total) under `tests/reference/sweep/`
 | `qsat` | Standalone `qsat_water` / `qsat_ice` driver over a (T, p) grid. | `scripts/reference_drivers/qsat_driver.F90` | `tests/reference/qsat/reference.npz` |
 | `makoh` | Standalone `makoh_cubic` / `makoh_quartic` driver over hand-picked polynomial test cases. | `scripts/reference_drivers/makoh_driver.F90` | `tests/reference/makoh/reference.npz` |
 | `kohler` | Standalone `modal_aero_kohler` driver across a (rdry, hygro, s) grid. | `scripts/reference_drivers/kohler_driver.F90` | `tests/reference/kohler/reference.npz` |
+| `newnuc-helpers` | Standalone `binary_nuc_vehk2002` + `pbl_nuc_wang2008` driver across a (T, RH, [H₂SO₄]) grid; both PBL flagaa branches captured. | `scripts/reference_drivers/newnuc_helpers_driver.F90` | `tests/reference/newnuc_helpers/reference.npz` |
 
 `--nstep` applies to the two `instrumented*` modes. Defaults: `1` for `instrumented`, `60` for `instrumented-no-aitacc`. Values outside the canonical sweep `(1, 2, 4, 9, 18, 30, 60, 120, 180, 360, 900, 1800)` print a warning but still run. The standalone-driver modes (`polysvp`, `qsat`, `makoh`, `kohler`) have no `--nstep` knob — they sweep their own input grids.
 
 ### Standalone reference drivers
 
-The four standalone driver modes (`polysvp`, `qsat`, `makoh`, `kohler`) compile a tiny Fortran main against `box_model_utils/wv_saturation.F90` or `e3sm_src_modified/modal_aero_wateruptake.F90` and dump tabulated outputs. They do **not** run the box-model driver, so they bypass the namelist, `cambox_config.*`, and the ADR-012 overlay entirely. Each driver source lives in `scripts/reference_drivers/`; `capture_reference.py` builds and runs it directly with `gfortran`.
+The five standalone driver modes (`polysvp`, `qsat`, `makoh`, `kohler`, `newnuc-helpers`) compile a tiny Fortran main against `box_model_utils/wv_saturation.F90`, `e3sm_src_modified/modal_aero_wateruptake.F90`, or `e3sm_src/modal_aero_newnuc.F90` and dump tabulated outputs. They do **not** run the box-model driver, so they bypass the namelist, `cambox_config.*`, and the ADR-012 overlay entirely. Each driver source lives in `scripts/reference_drivers/`; `capture_reference.py` builds and runs it directly with `gfortran`. The `makoh`, `kohler`, and `newnuc-helpers` modes additionally apply `scripts/patches/expose_internals.patch` to make module-private helpers (`makoh_cubic/quartic`, `modal_aero_kohler`, `binary_nuc_vehk2002`, `pbl_nuc_wang2008`) public so the standalone drivers can call them.
 
 ## What the scripts do
 
