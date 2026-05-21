@@ -32,6 +32,10 @@ T_BOX_MODEL    = 273.0
 PMID_BOX_MODEL = 1.0e5
 CLDN_BOX_MODEL = 0.0
 DELTAT_60      = 30.0   # 1800 s / 60 snapshots
+# Vertical / RH from driver.F90:577-579 + RH_CLEA namelist.
+ZMID_BOX_MODEL = 3.0e3
+PBLH_BOX_MODEL = 1.1e3
+RH_BOX_MODEL   = 0.9
 
 
 @pytest.fixture(scope="module")
@@ -53,6 +57,9 @@ def _build_state(before: dict[str, np.ndarray]) -> dict[str, jnp.ndarray]:
         "t":           jnp.asarray(np.full((nstep, ncol, pver), T_BOX_MODEL)),
         "pmid":        jnp.asarray(np.full((nstep, ncol, pver), PMID_BOX_MODEL)),
         "cldn":        jnp.asarray(np.full((nstep, ncol, pver), CLDN_BOX_MODEL)),
+        "zmid":        jnp.asarray(np.full((nstep, ncol, pver), ZMID_BOX_MODEL)),
+        "pblh":        jnp.asarray(np.full((nstep, ncol, pver), PBLH_BOX_MODEL)),
+        "relhum":      jnp.asarray(np.full((nstep, ncol, pver), RH_BOX_MODEL)),
         "deltat":      jnp.asarray(DELTAT_60),
     }
 
@@ -139,6 +146,52 @@ def gasaerexch_captured() -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]
     aw     = {k: np.asarray(v) for k, v in np.load(
                 GASAEREXCH_REF_DIR / "amicphys_after_writeback.npz").items()}
     return before, aw
+
+
+GASAEREXCH_AND_NEWNUC_REF_DIR = (
+    Path(__file__).resolve().parent / "reference"
+    / "per_process_gasaerexch_and_newnuc"
+)
+
+
+@pytest.fixture(scope="module")
+def gasaerexch_and_newnuc_captured() -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Single-toggle Fortran capture: `mdo_gasaerexch=1, mdo_newnuc=1,
+    others=0` with `skip_pcarbon_aging.patch`. Newnuc needs gasaerexch's
+    `qgas_avg` to fire — that's why both must be on. SOA exchange runs
+    too (inside the unmodified gasaerexch call).
+    """
+    before = {k: np.asarray(v) for k, v in np.load(
+        GASAEREXCH_AND_NEWNUC_REF_DIR / "amicphys_before.npz").items()}
+    aw     = {k: np.asarray(v) for k, v in np.load(
+        GASAEREXCH_AND_NEWNUC_REF_DIR / "amicphys_after_writeback.npz").items()}
+    return before, aw
+
+
+def test_orchestration_gasaerexch_and_newnuc_matches_fortran(
+    gasaerexch_and_newnuc_captured,
+) -> None:
+    """JAX `amicphys(state, mdo_gasaerexch=1, mdo_newnuc=1, others=0)`
+    reproduces the Fortran fixture at 1e-6 on `q` and `qqcw`
+    (M3.6 PR-F3 wiring test).
+    """
+    before, aw = gasaerexch_and_newnuc_captured
+    state = _build_state(before)
+    new_state = amicphys(state,
+                         mdo_gasaerexch=1, mdo_rename=0,
+                         mdo_newnuc=1, mdo_coag=0)
+    for key in ("q", "qqcw"):
+        np.testing.assert_allclose(
+            np.asarray(new_state[key]), aw[key],
+            rtol=1e-6, atol=1e-20,
+            err_msg=f"gasaerexch+newnuc orchestration diverged on {key!r}",
+        )
+    for key in ("dgncur_a", "dgncur_awet", "qaerwat", "wetdens"):
+        np.testing.assert_allclose(
+            np.asarray(new_state[key]), aw[key],
+            rtol=1e-3, atol=1e-15,
+            err_msg=f"gasaerexch+newnuc orchestration drifted on {key!r}",
+        )
 
 
 def test_orchestration_gasaerexch_matches_fortran(gasaerexch_captured) -> None:

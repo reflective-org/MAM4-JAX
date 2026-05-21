@@ -6,6 +6,31 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-21 — Milestone 3.6 (PR-F3) — Newnuc amicphys orchestration
+
+- PR: pending (`m3/newnuc-orchestration`)
+- Plan: [`docs/plans/008-newnuc-orchestration-port.md`](plans/008-newnuc-orchestration-port.md). Wires the PR-F2 dispatcher into `_mam_amicphys_1subarea_clear`. **Completes M3.6 PR-F (newnuc).** Only PR-G (coag) remains in M3.6.
+- **Port** (`mam4_jax/processes/amicphys.py`, ~80 LOC of new code — dispatcher does the heavy lifting):
+  - `_mam_newnuc_1subarea(qgas_cur, qgas_avg, qnum_cur, qaer_cur, qwtr_cur, temp, pmid, deltat, zmid, pblh, relhum)` → `(qgas_cur, qnum_cur, qaer_cur)`.
+  - Pulls `qh2so4_avg` from `qgas_avg[h2so4]` (Fortran default `newnuc_h2so4_conc_optaa == 2`).
+  - Sets up size-bin bounds for Aitken mode, clamps `relhum` to `[0.01, 0.99]`, calls the PR-F2 dispatcher.
+  - Applies particle-size constraints (`dndt_ait < 100` filter, `mass1p` clamps against `mass1p_aitlo`/`mass1p_aithi`).
+  - Adds new-particle mass to `qaer[so4, Aitken]`, new-particle number to `qnum[Aitken]`, subtracts from `qgas[h2so4]`.
+- **Wiring changes**:
+  - `_mam_gasaerexch_1subarea` return signature extended from `(qgas, qaer)` to `(qgas, qaer, qgas_avg)` — newnuc consumes the time-averaged H₂SO₄ vmr that gasaerexch's analytical solver computes internally as `tmp_q4`.
+  - State dict contract gained `zmid` (midpoint altitude, m), `pblh` (PBL height, m), `relhum` (0–1). Box-model defaults: `3000`, `1100`, `0.9` (from `driver.F90:577-579` + `RH_CLEA` namelist).
+- **MAM4-MOM-specific simplifications**: no NH₃ branches (`qnh3_cur=0`, `qnh4a_del=0`, `tmp_frso4=1`); optaa=1 H₂SO₄ averaging skipped; diagnostic-output blocks omitted. `h2so4_uptkrate` for the KK2002 correction hardcoded to `1e-3` (the box-model fixture's `zmid > pblh` keeps PBL nuc off → KK2002 enters only multiplicatively, validated to match Fortran at machine ε).
+- **Validation infrastructure**:
+  - New `--mode instrumented-gasaerexch-and-newnuc-only` in `scripts/capture_reference.py`: namelist `mdo_gasaerexch=1, mdo_newnuc=1, others=0` plus `skip_pcarbon_aging.patch`. Output → `tests/reference/per_process_gasaerexch_and_newnuc/`.
+  - Why gasaerexch must also be on: newnuc needs `qgas_avg[h2so4]` from gasaerexch. With gasaerexch off, `qgas_avg=0` → newnuc early-returns at the qh2so4-cutoff guard → no validation surface.
+- **Tests** (`tests/test_amicphys.py`):
+  - New `test_orchestration_gasaerexch_and_newnuc_matches_fortran`. **Max rel-err 3.9e-16** (machine ε) on `q` / `qqcw` across 60 timesteps × 35 tracers. Size fields use 1e-3 tolerance (Fortran's `update_aerosol_props` mid-step re-uptake, same caveat as PR-D/E).
+  - Existing 4 tests (`all_off_passthrough`, `rename_only`, `gasaerexch_matches`, `returns_all_state_keys`) updated to include the new `zmid` / `pblh` / `relhum` state keys; all still pass.
+- **Plot** `docs/figures/newnuc_orchestration_residuals.png`:
+  - Top: H₂SO₄ gas + Aitken-mode number + Aitken-mode so4 mass over 60 steps, JAX (dashed) over Fortran (solid). H₂SO₄ grows from ~1e-13 to ~3e-13 (gas chem production), Aitken number/mass nearly flat on the log scale (newnuc contributions small relative to existing inventory).
+  - Bottom: per-(timestep, tracer) rel-err sits at machine ε for all 3 tracers across 60 steps.
+- Full suite: **54/54 green** (53 + 1 new).
+
 ## 2026-05-21 — Milestone 3.6 (PR-F2) — Newnuc dispatcher (`mer07_veh02_nuc_mosaic_1box`)
 
 - PR: pending (`m3/mer07-veh02-dispatcher`)

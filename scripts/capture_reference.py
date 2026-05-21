@@ -94,6 +94,9 @@ PER_PROCESS_GASAEREXCH_ONLY_OUT_DIR = (
 PER_PROCESS_GASAEREXCH_OUT_DIR = (
     REPO_ROOT / "tests" / "reference" / "per_process_gasaerexch"
 )
+PER_PROCESS_GASAEREXCH_AND_NEWNUC_OUT_DIR = (
+    REPO_ROOT / "tests" / "reference" / "per_process_gasaerexch_and_newnuc"
+)
 POLYSVP_OUT_DIR = REPO_ROOT / "tests" / "reference" / "polysvp"
 POLYSVP_EXE = RUN_DIR / "polysvp_driver.exe"
 QSAT_OUT_DIR = REPO_ROOT / "tests" / "reference" / "qsat"
@@ -551,9 +554,13 @@ def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
                      amicphys_off: bool = False,
                      rename_only: bool = False,
                      gasaerexch_only: bool = False,
-                     gasaerexch: bool = False) -> list[Path]:
+                     gasaerexch: bool = False,
+                     gasaerexch_and_newnuc: bool = False) -> list[Path]:
     dt = TOTAL_DURATION_S // nstep
-    if gasaerexch:
+    if gasaerexch_and_newnuc:
+        out_dir = PER_PROCESS_GASAEREXCH_AND_NEWNUC_OUT_DIR
+        flavour = "instrumented-gasaerexch-and-newnuc-only"
+    elif gasaerexch:
         out_dir = PER_PROCESS_GASAEREXCH_OUT_DIR
         flavour = "instrumented-gasaerexch-with-soaexch-only"
     elif gasaerexch_only:
@@ -590,6 +597,10 @@ def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
         write_namelist(dt, nstep,
                        mdo_gasaerexch=1, mdo_rename=0,
                        mdo_newnuc=0, mdo_coag=0)
+    elif gasaerexch_and_newnuc:
+        write_namelist(dt, nstep,
+                       mdo_gasaerexch=1, mdo_rename=0,
+                       mdo_newnuc=1, mdo_coag=0)
     else:
         write_namelist(dt, nstep)
     print(f"[capture_reference] {flavour} dt={dt}s nstep={nstep} ...", flush=True)
@@ -601,7 +612,8 @@ def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
     # Index tables (written once at init, before the time loop). Only the
     # canonical full-physics run writes the canonical indices.
     if (not no_aitacc_transfer and not amicphys_off
-            and not rename_only and not gasaerexch_only and not gasaerexch):
+            and not rename_only and not gasaerexch_only
+            and not gasaerexch and not gasaerexch_and_newnuc):
         indices_txt = RUN_DIR / "mam4_indices.txt"
         if not indices_txt.is_file():
             raise RuntimeError(f"expected indices dump missing: {indices_txt}")
@@ -891,6 +903,7 @@ def main() -> int:
                  "instrumented-amicphys-off", "instrumented-rename-only",
                  "instrumented-gasaerexch-only",
                  "instrumented-gasaerexch-with-soaexch-only",
+                 "instrumented-gasaerexch-and-newnuc-only",
                  "polysvp", "qsat", "makoh", "kohler", "newnuc-helpers",
                  "mer07-veh02"),
         default="sweep",
@@ -973,6 +986,16 @@ def main() -> int:
                   f"{NSTEP_SWEEP}", file=sys.stderr)
         written = run_instrumented(nstep, gasaerexch=True)
         out_root = PER_PROCESS_GASAEREXCH_OUT_DIR
+    elif args.mode == "instrumented-gasaerexch-and-newnuc-only":
+        # gasaerexch + newnuc on (newnuc needs qgas_avg from gasaerexch
+        # to fire), with pcarbon_aging skipped (still M3.6 out of scope).
+        ensure_built(instrumented=True, skip_pcarbon_aging=True)
+        nstep = args.nstep if args.nstep is not None else 60
+        if nstep not in NSTEP_SWEEP:
+            print(f"[capture_reference] warning: --nstep={nstep} is outside the canonical sweep "
+                  f"{NSTEP_SWEEP}", file=sys.stderr)
+        written = run_instrumented(nstep, gasaerexch_and_newnuc=True)
+        out_root = PER_PROCESS_GASAEREXCH_AND_NEWNUC_OUT_DIR
     elif args.mode == "polysvp":
         ensure_built(polysvp=True)
         written = run_polysvp()
