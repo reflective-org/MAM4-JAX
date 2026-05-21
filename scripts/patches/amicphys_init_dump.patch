@@ -1,6 +1,6 @@
 --- a/modal_aero_amicphys.F90
 +++ b/modal_aero_amicphys.F90
-@@ -6098,4 +6098,54 @@
+@@ -6098,4 +6098,61 @@
        end if ! ( masterproc )
  
  
@@ -49,6 +49,13 @@
 +         write(unit_aa,'(/a,1x,1pe23.15)') '% mwdry', mwdry
 +         write(unit_aa,'(/a)') '% adv_mass (shape: gas_pcnst; driver mmr->vmr factor = mwdry/adv_mass)'
 +         write(unit_aa,'(*(1pe23.15,1x))') (adv_mass(ia), ia=1, gas_pcnst)
++         write(unit_aa,'(/a,1x,1pe23.15)') '% vmdry', vmdry
++         write(unit_aa,'(/a)') '% mw_gas (shape: ngas)'
++         write(unit_aa,'(*(1pe23.15,1x))') (mw_gas(ia), ia=1, ngas)
++         write(unit_aa,'(/a)') '% vol_molar_gas (shape: ngas)'
++         write(unit_aa,'(*(1pe23.15,1x))') (vol_molar_gas(ia), ia=1, ngas)
++         write(unit_aa,'(/a)') '% accom_coef_gas (shape: ngas)'
++         write(unit_aa,'(*(1pe23.15,1x))') (accom_coef_gas(ia), ia=1, ngas)
 +         close(unit_aa)
 +      end block
 +!==> MAM4-JAX end

@@ -59,6 +59,110 @@ import numpy as np
 from jax.scipy.special import erfc
 
 from .. import data
+from ..constants import RGAS
+
+
+# ---------------------------------------------------------------------------
+# Gasaerexch leaf helpers (M3.6 PR-D)
+# ---------------------------------------------------------------------------
+
+def _mean_molecular_speed(temp, rmw):
+    """Port of ``modal_aero_amicphys.F90:5290-5297``.
+
+    Returns mean molecular speed (m/s) given temperature (K) and
+    molecular weight (g/mol).
+    """
+    return jnp.sqrt(8.0 * RGAS * temp / (jnp.pi * rmw))
+
+
+def _gas_diffusivity(t_k, p_atm, rmw, vm):
+    """Port of ``modal_aero_amicphys.F90:5302-5316``.
+
+    Returns gas diffusivity (m²/s) via the Fuller-Schettler-Giddings
+    correlation. ``rmw`` is molecular weight (g/mol), ``vm`` molar
+    diffusion volume (unitless).
+    """
+    onethird = 1.0 / 3.0
+    dgas = (1.0e-3 * t_k ** 1.75 *
+            jnp.sqrt(1.0 / rmw + 1.0 / data.MWDRY)) / (
+            p_atm * (vm ** onethird + data.VMDRY ** onethird) ** 2)
+    return dgas * 1.0e-4
+
+
+# Two-point Gauss-Hermite quadrature constants from
+# ``box_model_utils/physconst.F90:237-238``. The Fortran default
+# ``nghq = 2`` is the only quadrature order we support in the JAX port —
+# higher orders are available in the Fortran but not used by the
+# box-model build.
+_XGHQ2 = np.asarray([-7.0710678118654746e-01,
+                      7.0710678118654746e-01], dtype=np.float64)
+_WGHQ2 = np.asarray([ 8.8622692545275794e-01,
+                      8.8622692545275794e-01], dtype=np.float64)
+_TWOROOTPI = 2.0 * np.sqrt(np.pi)
+_ROOT2     = np.sqrt(2.0)
+
+
+def _gas_aer_uptkrates_1box1gas(accom, gasdiffus, gasfreepath,
+                                 dgncur_awet, lnsg):
+    """Port of ``modal_aero_amicphys.F90:5321-5468``.
+
+    Per-mode gas-to-aerosol mass transfer rate (1/s for number = 1 #/m³)
+    via two-point Gauss-Hermite quadrature of the Fuchs-Sutugin kernel
+    over the log-normal size distribution.
+
+    Parameters
+    ----------
+    accom, gasdiffus, gasfreepath : scalar
+        Accommodation coefficient (dimensionless), gas diffusivity
+        (m²/s), gas mean free path (m).
+    dgncur_awet, lnsg : array, shape (ntot_amode,) or batched (..., ntot_amode)
+        Wet mode diameter (m) and ln(sigmag) per mode.
+
+    Returns
+    -------
+    uptkrate : array, same shape as ``dgncur_awet``.
+
+    Fortran's ``beta_inp`` parameter is the call site's choice of
+    quadrature regime. Gasaerexch passes ``beta_inp = 0`` so the
+    Knudsen-driven branch (``|beta_inp - 1.5| > 0.5``) always runs;
+    we inline that here for clarity (the alternative branch isn't
+    reached by the box-model build).
+    """
+    accomxp283 = accom * 0.283
+    accomxp75  = accom * 0.75
+
+    # gasfreepath and gasdiffus are per-(col, level) scalars; lift them
+    # with a trailing length-1 axis so they broadcast against arrays that
+    # carry an extra trailing n_mode axis.
+    gasfreepath = jnp.asarray(gasfreepath)[..., None]
+    gasdiffus   = jnp.asarray(gasdiffus)[..., None]
+
+    # Outer factor of the quadrature.
+    lndpgn = jnp.log(dgncur_awet)                            # (..., n_mode)
+
+    # beta computed from the un-scaled wet diameter (knudsen branch).
+    dp0 = dgncur_awet
+    knudsen0 = 2.0 * gasfreepath / dp0
+    tmpa = 1.0 / (1.0 + knudsen0) - (
+        2.0 * knudsen0 + 1.0 + accomxp283) / (
+        knudsen0 * (knudsen0 + 1.0 + accomxp283) + accomxp75)
+    beta = 1.0 - knudsen0 * tmpa
+    beta = jnp.maximum(1.0, jnp.minimum(2.0, beta))         # (..., n_mode)
+
+    const = _TWOROOTPI * jnp.exp(beta * lndpgn + 0.5 * (beta * lnsg) ** 2)
+
+    # Two-point Gauss-Hermite sum. Each quadrature point gives its own
+    # (dp, knudsen, fuchs_sutugin) — broadcast lnsg/beta against xghq[iq].
+    sumghq = jnp.zeros_like(dgncur_awet)
+    for iq in range(_XGHQ2.size):
+        lndp = lndpgn + beta * lnsg ** 2 + _ROOT2 * lnsg * _XGHQ2[iq]
+        dp = jnp.exp(lndp)
+        knudsen = 2.0 * gasfreepath / dp
+        fuchs_sutugin = (accomxp75 * (1.0 + knudsen)) / (
+            knudsen * (knudsen + 1.0 + accomxp283) + accomxp75)
+        sumghq = sumghq + _WGHQ2[iq] * dp * fuchs_sutugin / (dp ** beta)
+
+    return const * gasdiffus * sumghq
 
 
 # ---------------------------------------------------------------------------
@@ -140,8 +244,10 @@ def _repack_amicphys_view_to_state(state: dict[str, Any],
     valid_vals = qaer_mode_first[..., _LMAP_AER_VALID_MASK]   # (..., n_valid)
     q_vmr = q_vmr.at[..., _LMAP_AER_FLAT_VALID].set(valid_vals)
 
-    # Stage-1 inverse: vmr → mmr.
-    new_q = q_vmr / data.MMR_TO_VMR
+    # Stage-1 inverse: vmr → mmr. Use the independently computed
+    # VMR_TO_MMR factor (not 1/MMR_TO_VMR) so the JAX round-trip ULP
+    # drift matches Fortran's driver.F90:1321 exactly.
+    new_q = q_vmr * data.VMR_TO_MMR
 
     new_qaerwat = qwtr / data.FCVT_WTR
     return {**state, "q": new_q, "qaerwat": new_qaerwat}
@@ -213,12 +319,18 @@ def _mam_amicphys_1subarea_clear(state: dict[str, Any], *,
 
     qgas, qaer, qnum, qwtr = _unpack_state_to_amicphys_view(state)
 
-    if mdo_gasaerexch:
-        # PR-D will fill this in. For now the stub leaves qgas/qaer
-        # unchanged, so the rename delta below is zero.
-        pass
-
     qaer_sv1 = qaer
+
+    if mdo_gasaerexch:
+        # M3.6 PR-D — H2SO4 analytical-solver path. SOA exchange and
+        # the RK4 branch are NOT ported here (PR-E for SOA).
+        qgas, qaer = _mam_gasaerexch_1subarea(
+            qgas, qaer, qnum, qwtr,
+            state["dgncur_a"], state["dgncur_awet"], state["wetdens"],
+            state["t"], state["pmid"], state["deltat"],
+            jnp.asarray(data.FAC_M2V_AER),
+        )
+
     # qaer_delsub_grow4rnam = change made by gasaerexch in this sub-area.
     # Fortran constructs it at modal_aero_amicphys.F90:2433.
     qaer_delsub_grow4rnam = qaer - qaer_sv1
@@ -243,13 +355,121 @@ def _mam_amicphys_1subarea_clear(state: dict[str, Any], *,
 # shell ship before the physics, with the all-mdo-off case validated.
 # ---------------------------------------------------------------------------
 
-def _mam_gasaerexch_1subarea(state: dict[str, Any]) -> dict[str, Any]:
-    """Stub: M3.6 PR-C will port H₂SO₄ / SOAG condensation onto modes.
+def _mam_gasaerexch_1subarea(qgas, qaer, qnum, qwtr,
+                             dgn_a, dgn_awet, wetdens,
+                             temp, pmid, deltat, fac_m2v_aer):
+    """Port of ``mam_gasaerexch_1subarea`` (``modal_aero_amicphys.F90:3279-3584``).
 
-    Port target: ``modal_aero_amicphys.F90`` ``mam_gasaerexch_1subarea``
-    (lines 3279–3584, ~305 LOC).
+    H₂SO₄ analytical-solver path only — SOA exchange (separate sub-call
+    ``mam_soaexch_1subarea``) and the RK4 branch (``nonsoa_rk4``) are
+    out of scope for M3.6 PR-D; the SOA Fortran call is also skipped by
+    ``scripts/patches/gasaerexch_skip_soaexch.patch`` in the matching
+    reference capture so JAX and Fortran agree 1:1.
+
+    Returns updated ``qgas, qaer``. Other state (``qnum, qwtr, dgn_a,
+    dgn_awet, wetdens``) is untouched.
+
+    Assumptions:
+    * ``cond_subcycles = 1`` (Fortran default for the box-model build) →
+      ``dtsubstep = deltat`` and ``jtsubstep = 1`` (so uptake rates are
+      computed every call).
+    * ``qgas_netprod_otrproc`` is hard-coded to match driver.F90:1248's
+      gas-chem stub: ``1e-16 mol/mol/s`` on H₂SO₄, ``0`` on SOA.
+    * No NH3 (``ntot_amode=4`` → ``igas_nh3 = -999...`` → NH4 limit block
+      skipped).
     """
-    return state
+    # Air molar concentration (kmol/m³). RGAS is in J/K/kmole.
+    aircon = pmid / (RGAS * temp)
+    p_atm = pmid / 101325.0   # convert Pa → atm for gas_diffusivity
+
+    # Per-gas uptake rate scaffolding. ngas = AMICPHYS_NGAS = 2 (SOA, H2SO4).
+    # Compute the H2SO4 uptake rate per mode via the helper.
+    igas_soa, igas_h2so4 = 0, 1
+    iaer_h2so4 = igas_h2so4   # by Fortran convention (iaer = igas for SOA / SO4)
+
+    # Stage A: gas diffusivity, mean free path, uptake rate (per mode)
+    # for H2SO4 — only the H2SO4 path uses the per-mode quadrature; SOA is
+    # scaled off it by the cam5.1.00 ratio.
+    mw_h2so4 = data.MW_GAS[igas_h2so4]
+    vm_h2so4 = data.VOL_MOLAR_GAS[igas_h2so4]
+    accom_h2so4 = data.ACCOM_COEF_GAS[igas_h2so4]
+
+    diffus_h2so4 = _gas_diffusivity(temp, p_atm, mw_h2so4, vm_h2so4)
+    mean_speed_h2so4 = _mean_molecular_speed(temp, mw_h2so4)
+    free_path_h2so4 = 3.0 * diffus_h2so4 / mean_speed_h2so4
+
+    # uptkrate (1/s for number=1 #/m³), shape (..., NTOT_AMODE).
+    lnsg = jnp.asarray(data.ALNSG_AMODE)
+    uptkrate_per_mode = _gas_aer_uptkrates_1box1gas(
+        accom_h2so4, diffus_h2so4, free_path_h2so4,
+        dgn_awet, lnsg,
+    )
+
+    # Multiply by per-mode (qnum * aircon) to get total uptake rate (1/s).
+    # qnum has shape (..., NTOT_AMODE); aircon has shape (...,) — broadcast.
+    uptkaer_h2so4 = uptkrate_per_mode * (qnum * aircon[..., None])  # (..., NTOT_AMODE)
+    # SOA scales as 0.81 × H2SO4 (cam5.1.00 convention, Fortran line 3407).
+    uptkaer_soa = uptkaer_h2so4 * 0.81
+
+    # Stage B: analytical solver for H2SO4 condensation.
+    # qgas_prv = qgas (saved before the solver).
+    qgas_h2so4_prv = qgas[..., igas_h2so4]                  # (...,)
+    qaer_h2so4_prv = qaer[..., iaer_h2so4, :]               # (..., NTOT_AMODE)
+
+    tmpa = jnp.sum(uptkaer_h2so4, axis=-1)                  # (...,)
+    tmp_kxt = tmpa * deltat
+    qgas_netprod_h2so4 = 1.0e-16                            # mol/mol/s (driver.F90:1248)
+    tmp_pxt = qgas_netprod_h2so4 * deltat
+
+    tmp_q1 = qgas_h2so4_prv
+
+    # Two analytical branches depending on tmp_kxt magnitude.
+    # Branch A: tmp_kxt > 0.001 → use exp(-tmp_kxt).
+    # Branch B: tmp_kxt <= 0.001 → Taylor series (avoids cancellation).
+    # Branch C: tmp_kxt < 1e-20 → uptake negligible, no qaer update.
+    tmp_kxt2 = tmp_kxt * tmp_kxt
+    safe_kxt = jnp.where(tmp_kxt > 0.0, tmp_kxt, 1.0)       # avoid 0/0
+    tmp_pok = tmp_pxt / safe_kxt
+    e = jnp.exp(-tmp_kxt)
+
+    q3_A = (tmp_q1 - tmp_pok) * e + tmp_pok
+    q4_A = (tmp_q1 - tmp_pok) * (1.0 - e) / safe_kxt + tmp_pok
+    q3_B = tmp_q1 * (1.0 - tmp_kxt + tmp_kxt2 * 0.5) + \
+           tmp_pxt * (1.0 - tmp_kxt * 0.5 + tmp_kxt2 / 6.0)
+    q4_B = tmp_q1 * (1.0 - tmp_kxt * 0.5 + tmp_kxt2 / 6.0) + \
+           tmp_pxt * (0.5 - tmp_kxt / 6.0 + tmp_kxt2 / 24.0)
+    q3_C = tmp_q1 + tmp_pxt           # tmp_kxt < 1e-20 (uptake essentially zero)
+    q4_C = tmp_q1 + tmp_pxt * 0.5
+
+    use_A = tmp_kxt > 0.001
+    use_C = tmp_kxt < 1.0e-20
+    use_B = (~use_A) & (~use_C)
+
+    tmp_q3 = jnp.where(use_A, q3_A, jnp.where(use_B, q3_B, q3_C))
+    tmp_q4 = jnp.where(use_A, q4_A, jnp.where(use_B, q4_B, q4_C))
+
+    new_qgas_h2so4 = tmp_q3
+    tmp_qdel_cond = (tmp_q1 + tmp_pxt) - tmp_q3              # (...,)
+
+    # Distribute the gas-phase loss across modes (proportional to per-mode uptake).
+    # Match Fortran's operator order at line 3536: tmpc = tmp_qdel_cond * (uptkaer/tmpa).
+    # The parenthesization (uptkaer/tmpa) BEFORE the multiplication is 1 ULP
+    # different from (tmp_qdel_cond * uptkaer) / tmpa, so we replicate it.
+    safe_tmpa = jnp.where(tmpa > 0.0, tmpa, 1.0)
+    frac_per_mode = jnp.where(
+        uptkaer_h2so4 > 0.0, uptkaer_h2so4 / safe_tmpa[..., None], 0.0,
+    )
+    delta_qaer_h2so4 = tmp_qdel_cond[..., None] * frac_per_mode
+    # When tmp_kxt < 1e-20, the Fortran skips the qaer update entirely
+    # (line 3556-3563). Zero-out the delta in that case.
+    delta_qaer_h2so4 = jnp.where(use_C[..., None], 0.0, delta_qaer_h2so4)
+    new_qaer_h2so4 = qaer_h2so4_prv + delta_qaer_h2so4       # (..., NTOT_AMODE)
+
+    # Stage C: pack back into qgas / qaer arrays.
+    new_qgas = qgas.at[..., igas_h2so4].set(new_qgas_h2so4)
+    new_qaer = qaer.at[..., iaer_h2so4, :].set(new_qaer_h2so4)
+
+    return new_qgas, new_qaer
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,22 @@
+--- a/modal_aero_amicphys.F90
++++ b/modal_aero_amicphys.F90
+@@ -3429,16 +3429,7 @@
+ ! do soa
+-      call mam_soaexch_1subarea(                                    &
+-         nstep,             lchnk,                                  &
+-         i,                 k,                jsub,                 &
+-         latndx,            lonndx,           lund,                 &
+-         dtsubstep,                                                 &
+-         temp,              pmid,             aircon,               &
+-         n_mode,                                                    &
+-         qgas_cur,          qgas_avg,                               &
+-         qaer_cur,                                                  &
+-         qnum_cur,                                                  &
+-         qwtr_cur,                                                  &
+-         uptkaer                                                    )
++! soa exchange disabled by gasaerexch_skip_soaexch.patch (M3.6 PR-D);
++! the soaexch port lands in PR-E.
++      qgas_avg(1:nsoa) = qgas_cur(1:nsoa)
+ 
+ 
+ ! do other gases (that are assumed non-volatile) with no time sub-stepping

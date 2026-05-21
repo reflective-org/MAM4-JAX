@@ -1,0 +1,30 @@
+--- a/modal_aero_amicphys.F90
++++ b/modal_aero_amicphys.F90
+@@ -2549,21 +2549,12 @@
+ ! primary carbon aging
+ !
+ !
+-      if ( n_agepair > 0 ) then
+-if (iaer == 2) print *, 'so4 condensed from H2SO4 to Primary carbon mode: ', qaer_delsub_cond(2,4)
+-
+-      call mam_pcarbon_aging_1subarea(                              &
+-         nstep,             lchnk,                                  &
+-         i,                 k,                jsub,                 &
+-         latndx,            lonndx,           lund,                 &
+-         dtsubstep,         dgn_a,            do_cond,              &
+-         n_mode,                                                    &
+-         qnum_cur,          qnum_delsub_cond, qnum_delsub_coag,     &
+-         qaer_cur,          qaer_delsub_cond, qaer_delsub_coag,     &
+-         qaer_delsub_coag_in,                                       &
+-         qwtr_cur                                                   )
+-
+-      end if
++! pcarbon aging disabled by skip_pcarbon_aging.patch (M3.6 PR-D).
++! The aging port is out of scope for the M3.6 sub-process PRs — it's a
++! separate sub-process (see modal_aero_amicphys.F90:5111-5285) that
++! M3.6 doesn't cover. When this patch is applied, the Fortran fixture
++! agrees with the M3.6 sub-process orchestration scope (gasaerexch /
++! rename / newnuc / coag).
+ 
+ 
+ ! accumulate sub-step q-dels

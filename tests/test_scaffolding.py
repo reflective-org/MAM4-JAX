@@ -147,6 +147,12 @@ def test_amicphys_init_tables_match_npz_reference() -> None:
     assert float(ref["mwdry"]) == data.MWDRY
     np.testing.assert_array_equal(ref["adv_mass"], data.ADV_MASS)
 
+    # Gas-property constants (M3.6 PR-D — for gasaerexch).
+    assert float(ref["vmdry"]) == data.VMDRY
+    np.testing.assert_array_equal(ref["mw_gas"],         data.MW_GAS)
+    np.testing.assert_array_equal(ref["vol_molar_gas"],  data.VOL_MOLAR_GAS)
+    np.testing.assert_array_equal(ref["accom_coef_gas"], data.ACCOM_COEF_GAS)
+
 
 def test_get_number_returns_slice() -> None:
     import jax.numpy as jnp

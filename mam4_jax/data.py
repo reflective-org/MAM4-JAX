@@ -390,6 +390,17 @@ FCVT_WTR: float = 1.607793072824157
 # something proportional to a volume mixing ratio).
 # ---------------------------------------------------------------------------
 
+#: Molar diffusion volume of dry air (unitless). Used by ``gas_diffusivity``
+#: (modal_aero_amicphys.F90:5302-5316). Source: ``physconst.F90:80``.
+VMDRY: float = 20.1
+
+#: Gas-phase properties indexed by amicphys's igas (1..AMICPHYS_NGAS).
+#: Order matches ``name_gas``: [0]=SOA, [1]=H2SO4 for MAM4-MOM.
+#: Captured via the amicphys init dump (M3.6 PR-D).
+MW_GAS:         np.ndarray = np.asarray([150.0,        98.0784], dtype=np.float64)
+VOL_MOLAR_GAS:  np.ndarray = np.asarray([65.63265306122449, 42.88], dtype=np.float64)
+ACCOM_COEF_GAS: np.ndarray = np.asarray([0.65,         0.65   ], dtype=np.float64)
+
 MWDRY: float = 28.966
 ADV_MASS: np.ndarray = np.asarray([
     34.0136, 98.0784, 64.0648, 62.1324, 12.011,                # 0-4: O, H2SO4, SO2, DMS, C
@@ -404,10 +415,20 @@ assert ADV_MASS.shape == (30,), "ADV_MASS must match gas_pcnst=30"
 #: per-pcnst mmr → vmr factor. Length PCNST=35; entries before imozart-1
 #: (the chemistry offset) are 1.0 since those constituents aren't part of
 #: the chemistry vmr conversion.
+#:
+#: We store ``MMR_TO_VMR`` and ``VMR_TO_MMR`` as **two independently
+#: computed** arrays (``mwdry/adv_mass`` and ``adv_mass/mwdry``) rather
+#: than deriving ``VMR_TO_MMR = 1 / MMR_TO_VMR`` so the JAX round-trip
+#: drift matches the Fortran driver's (driver.F90:1224 vs :1321) at ULP
+#: level — important for bit-comparable tests on tracers amicphys
+#: doesn't touch.
 _LOFFSET = 5
 _MMR_TO_VMR = np.ones(PCNST, dtype=np.float64)
+_VMR_TO_MMR = np.ones(PCNST, dtype=np.float64)
 _MMR_TO_VMR[_LOFFSET:] = MWDRY / ADV_MASS
+_VMR_TO_MMR[_LOFFSET:] = ADV_MASS / MWDRY
 MMR_TO_VMR: np.ndarray = _MMR_TO_VMR
+VMR_TO_MMR: np.ndarray = _VMR_TO_MMR
 
 #: Mass→volume conversion per amicphys species (m³-AP / kmol-AP).
 #: Distinct from FCVT_AER (which is the kg/kg ↔ mol/mol unit conversion).

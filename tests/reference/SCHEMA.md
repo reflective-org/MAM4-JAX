@@ -41,6 +41,14 @@ tests/reference/
 │   ├── amicphys_after.npz
 │   ├── rename_before.npz
 │   └── rename_after.npz
+├── per_process_gasaerexch_only/    # mdo_gasaerexch=1; soaexch + pcarbon-aging skipped via patches
+│   ├── calcsize_before.npz
+│   ├── calcsize_after.npz
+│   ├── wateruptake_before.npz
+│   ├── wateruptake_after.npz
+│   ├── amicphys_before.npz
+│   ├── amicphys_after.npz                # pre vmr→mmr writeback (always = before.q)
+│   └── amicphys_after_writeback.npz      # post vmr→mmr writeback (where gasaerexch changes appear)
 ├── polysvp/                        # standalone polysvp T-sweep
 │   └── reference.npz
 ├── qsat/                           # standalone qsat (T, p)-grid
@@ -184,6 +192,29 @@ Captured by `scripts/capture_reference.py --mode instrumented-rename-only` with 
 Empirical note: with gasaerexch off, `qaer_delsub_grow4rnam` is identically zero at the rename call site, and the Aitken-mode `dgn_t_old` stays at the initial `dgnum_aer ≈ 2.6e-8 m` (well below `dp_belowcut ≈ 8e-8 m`). The Fortran rename's optaa=40 guard at line 4141 trips and rename is a no-op every step, so `amicphys_after.q == amicphys_before.q` across all 60 captured timesteps. The fixture thus exercises the JAX unpack/repack round-trip end-to-end without rename actually transferring any mass/number. The PR-B rename test (`tests/test_rename.py`) covers the physics when the input has non-zero growth delta.
 
 Same six tags + rename hook as `per_process/`. Schemas are identical (`q` etc. for the outer dumps; `qnum_cur`/`qaer_cur`/... for `rename_*`).
+
+### `per_process_gasaerexch_only/` — single-toggle gasaerexch-only fixture
+
+Captured by `scripts/capture_reference.py --mode instrumented-gasaerexch-only`
+with the namelist set to `mdo_gasaerexch=1, mdo_rename=mdo_newnuc=mdo_coag=0`
+plus two additional Fortran-side patches:
+
+- `scripts/patches/gasaerexch_skip_soaexch.patch` — skips the
+  `mam_soaexch_1subarea` call inside `mam_gasaerexch_1subarea` so the
+  SOA gas tracer doesn't diverge between Fortran (which would otherwise
+  run SOA exchange) and JAX (which doesn't port it until PR-E).
+- `scripts/patches/skip_pcarbon_aging.patch` — skips the
+  `mam_pcarbon_aging_1subarea` call inside `mam_amicphys_1subarea_clear`.
+  Without this, the Fortran transfers gasaerexch-deposited so4 mass
+  from pcarbon to accum, which JAX doesn't track (the aging port is
+  out of scope for M3.6).
+
+Used by M3.6 PR-D's `tests/test_amicphys.py::test_orchestration_gasaerexch_only_matches_fortran`.
+The new `amicphys_after_writeback.npz` is the validation target rather
+than `amicphys_after.npz`: the existing `amicphys_after` dump captures
+`q` *before* the driver's vmr→mmr writeback at `driver.F90:1325`, so
+it always equals `amicphys_before.q` for any sub-process operating in
+vmr space. The post-writeback dump records the actual updated `q`.
 
 ### `per_process_amicphys_off/` — variant with the amicphys sub-processes disabled
 
