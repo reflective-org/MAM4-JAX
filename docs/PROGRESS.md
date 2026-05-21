@@ -6,6 +6,23 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-21 — Milestone 3.6 (PR-G1) — Coag leaf: `getcoags`
+
+- PR: pending (`m3/getcoags-port`)
+- Plan: [`docs/plans/009-getcoags-port.md`](plans/009-getcoags-port.md). First of the 3-PR `coag` split (PR-G1: `getcoags` leaf math; PR-G2: `getcoags_wrapper_f` prep + post-processing; PR-G3: `mam_coag_1subarea` orchestration + wiring + end-to-end test).
+- **Port** in new module `mam4_jax/coag.py` (~250 LOC, half declarations / docstring):
+  - `getcoags(lamda, kfmatac, kfmat, kfmac, knc, dgatk, dgacc, sgatk, sgacc, xxlsgat, xxlsgac)` → 8-tuple `(qs11, qn11, qs22, qn22, qs12, qs21, qn12, qv12)`. Direct line-by-line transcription of the closed-form Whitby coagulation coefficients (Fortran `modal_aero_coag.F90:1177-2858`).
+  - ~14 distinct `esat*`/`esac*` exponentials (powers of `exp(log²σ / 8)`) expressed as repeated `*` chains so JAX trace order matches Fortran ULP-for-ULP.
+  - Whitby correction-factor lookup tables extracted once by `scripts/extract_coag_tables.py` from the upstream `data` declarations into `mam4_jax/_coag_tables.npz` (`bm0`, `bm0ij`, `bm3i`, `bm2ii`, `bm2iitt`, `bm2ij`, `bm2ji`). Indices `n1` / `n2n` / `n2a` reproduce the `max(1, min(10, nint(...)))` clipping.
+- **Validation infrastructure**:
+  - New standalone driver `scripts/reference_drivers/coag_coefficients_driver.F90` sweeping (4 T × 2 P × 5 dgnumA × 6 dgnumB = 240 records) for fixed MAM4-MOM sigmas (1.6 / 1.8) and densities (1770 / 1770). Captures both `getcoags`'s raw 8 outputs AND `getcoags_wrapper_f`'s 8 post-processed outputs (same fixture serves PR-G2).
+  - `expose_internals.patch` extended to make `getcoags` `public` in `modal_aero_coag`.
+  - New build flag `--coag-coefficients`; new capture mode `--mode coag-coefficients` → `tests/reference/coag_coefficients/reference.npz` (54 kB, 26 keys).
+- **Tests** (`tests/test_coag.py`, 1 new test): `test_getcoags_matches_fortran`. **Max rel-err 6.5e-9** across all 8 outputs and 240 records — three orders below ADR-003's 1e-6 budget.
+- **Plot** `docs/figures/getcoags_residuals.png`:
+  - 4×2 grid, one panel per coefficient, JAX-vs-Fortran log-log scatter colored by Whitby table index `n1`. All 8 panels show points sitting on the y=x diagonal across the full ~10-decade dynamic range of each coefficient (`qv12` ~1e-38 to 5e-35, `qn11` ~1e-15 to 1e-12, `qs11` ~1e-32 to 1e-30).
+- Full suite: **55/55 green** (54 + 1 new).
+
 ## 2026-05-21 — Milestone 3.6 (PR-F3) — Newnuc amicphys orchestration
 
 - PR: pending (`m3/newnuc-orchestration`)

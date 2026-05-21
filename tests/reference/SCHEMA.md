@@ -67,7 +67,9 @@ tests/reference/
 │   └── reference.npz
 ├── newnuc_helpers/                 # standalone binary_nuc_vehk2002 + pbl_nuc_wang2008
 │   └── reference.npz
-└── mer07_veh02/                    # standalone mer07_veh02_nuc_mosaic_1box dispatcher
+├── mer07_veh02/                    # standalone mer07_veh02_nuc_mosaic_1box dispatcher
+│   └── reference.npz
+└── coag_coefficients/              # standalone getcoags + getcoags_wrapper_f
     └── reference.npz
 ```
 
@@ -349,6 +351,39 @@ also covered).
 
 JAX port consumes this in `tests/test_newnuc.py` (max rel-err 6.4e-11
 on `binary rateloge`, all others ≤ 1.4e-14).
+
+### `coag_coefficients/reference.npz`
+
+Standalone-driver capture of the Whitby coagulation-coefficient leaf
+`getcoags` AND its wrapper `getcoags_wrapper_f` across a 4D
+(T, P, dgnumA, dgnumB) grid (4×2×5×6 = 240 records). Driver:
+`scripts/reference_drivers/coag_coefficients_driver.F90`. Fixed
+MAM4-MOM defaults: `sg_atk=1.6`, `sg_acc=1.8`, `pdens_atk=pdens_acc=1770 kg/m³`.
+
+Output records both the inputs to `getcoags` (intermediates the wrapper
+computes from physical inputs) and the outputs of both functions, so
+the same fixture serves PR-G1 (`getcoags` validation) AND PR-G2
+(`getcoags_wrapper_f` validation, no new Fortran capture needed).
+
+| Key | dtype | Shape | Meaning |
+| --- | --- | --- | --- |
+| `temp`, `press` | `float64` | `(240,)` | Sweep inputs: T (K), P (Pa). |
+| `dgnumA`, `dgnumB` | `float64` | `(240,)` | Aitken-like / accum-like geometric-mean diameters (m). |
+| `lamda` | `float64` | `(240,)` | Mean free path of air (m), wrapper's prep formula. |
+| `knc` | `float64` | `(240,)` | Near-continuum regime coefficient (m³/s). |
+| `kfmat`, `kfmac`, `kfmatac` | `float64` | `(240,)` | Free-molecular regime coefficients (intramodal Aitken, intramodal accum, Aitken→accum). |
+| `qs11`, `qn11`, `qs22`, `qn22` | `float64` | `(240,)` | `getcoags` outputs: intramodal 2nd / 0th moments for Aitken and accum. |
+| `qs12`, `qs21`, `qn12`, `qv12` | `float64` | `(240,)` | `getcoags` outputs: intermodal 2nd-loss, 2nd-gain, 0th, 3rd moments. |
+| `betaij0`, `betaij2i`, `betaij2j`, `betaij3` | `float64` | `(240,)` | Wrapper outputs: post-processed intermodal coefficients (PR-G2 target). |
+| `betaii0`, `betaii2`, `betajj0`, `betajj2` | `float64` | `(240,)` | Wrapper outputs: post-processed intramodal coefficients (PR-G2 target). |
+
+Output dynamic range is wide (`qv12` ~1e-38 to 5e-35, `qn11` ~1e-15 to
+1e-12, `qs11` ~1e-32 to 1e-30) — written with `1pe27.16e3` format to
+preserve all 16 digits of precision and accommodate 3-digit exponents.
+
+JAX port consumes this in `tests/test_coag.py::test_getcoags_matches_fortran`
+(max rel-err 6.5e-9). PR-G2 will add `test_getcoags_wrapper_f_matches_fortran`
+reading the same `.npz`.
 
 ### `kohler/reference.npz`
 

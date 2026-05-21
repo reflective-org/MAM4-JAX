@@ -109,6 +109,8 @@ NEWNUC_HELPERS_OUT_DIR = REPO_ROOT / "tests" / "reference" / "newnuc_helpers"
 NEWNUC_HELPERS_EXE = RUN_DIR / "newnuc_helpers_driver.exe"
 MER07_VEH02_OUT_DIR = REPO_ROOT / "tests" / "reference" / "mer07_veh02"
 MER07_VEH02_EXE = RUN_DIR / "mer07_veh02_driver.exe"
+COAG_COEFFICIENTS_OUT_DIR = REPO_ROOT / "tests" / "reference" / "coag_coefficients"
+COAG_COEFFICIENTS_EXE = RUN_DIR / "coag_coefficients_driver.exe"
 INDICES_OUT_DIR = REPO_ROOT / "tests" / "reference" / "indices"
 
 TOTAL_DURATION_S = 1800
@@ -165,7 +167,8 @@ def ensure_built(instrumented: bool = False, polysvp: bool = False,
                  skip_soaexch: bool = False,
                  skip_pcarbon_aging: bool = False,
                  newnuc_helpers: bool = False,
-                 mer07_veh02: bool = False) -> None:
+                 mer07_veh02: bool = False,
+                 coag_coefficients: bool = False) -> None:
     """Build the executable. Always rebuilds — the build flag determines
     whether the previous binary is the right flavour."""
     cmd = [str(BUILD_SCRIPT)]
@@ -176,6 +179,7 @@ def ensure_built(instrumented: bool = False, polysvp: bool = False,
     if kohler:              cmd.append("--kohler")
     if newnuc_helpers:      cmd.append("--newnuc-helpers")
     if mer07_veh02:         cmd.append("--mer07-veh02")
+    if coag_coefficients:   cmd.append("--coag-coefficients")
     if no_aitacc_transfer:  cmd.append("--no-aitacc-transfer")
     if skip_soaexch:        cmd.append("--skip-soaexch")
     if skip_pcarbon_aging:  cmd.append("--skip-pcarbon-aging")
@@ -187,6 +191,7 @@ def ensure_built(instrumented: bool = False, polysvp: bool = False,
     if kohler:              flavours.append("kohler")
     if newnuc_helpers:      flavours.append("newnuc-helpers")
     if mer07_veh02:         flavours.append("mer07-veh02")
+    if coag_coefficients:   flavours.append("coag-coefficients")
     if no_aitacc_transfer:  flavours.append("no-aitacc-transfer")
     if skip_soaexch:        flavours.append("skip-soaexch")
     if skip_pcarbon_aging:  flavours.append("skip-pcarbon-aging")
@@ -893,6 +898,78 @@ def run_mer07_veh02() -> list[Path]:
     return [out]
 
 
+def _read_coag_coefficients(path: Path) -> dict[str, np.ndarray]:
+    """Parse the coag-coefficients reference text file.
+
+    Four sections:
+      physical_inputs:   (ntot, 4)   temp press dgnumA dgnumB
+      getcoags_inputs:   (ntot, 5)   lamda knc kfmat kfmac kfmatac
+      getcoags_outputs:  (ntot, 8)   qs11 qn11 qs22 qn22 qs12 qs21 qn12 qv12
+      wrapper_outputs:   (ntot, 8)   betaij0 betaij2i betaij2j betaij3
+                                     betaii0 betaii2  betajj0  betajj2
+    """
+    sections: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in path.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith("%"):
+            current = s.lstrip("%").strip().split()[0]
+            sections[current] = []
+            continue
+        if current is not None:
+            sections[current].append(s)
+
+    def floats(name: str, n_cols: int) -> np.ndarray:
+        rows = [[float(t) for t in ln.split()] for ln in sections[name]]
+        return np.asarray(rows, dtype=np.float64)
+
+    phys = floats("physical_inputs",  4)
+    gi   = floats("getcoags_inputs",  5)
+    go   = floats("getcoags_outputs", 8)
+    wo   = floats("wrapper_outputs",  8)
+
+    return {
+        "temp":     phys[:, 0],
+        "press":    phys[:, 1],
+        "dgnumA":   phys[:, 2],
+        "dgnumB":   phys[:, 3],
+        "lamda":    gi[:, 0],
+        "knc":      gi[:, 1],
+        "kfmat":    gi[:, 2],
+        "kfmac":    gi[:, 3],
+        "kfmatac":  gi[:, 4],
+        "qs11":     go[:, 0],
+        "qn11":     go[:, 1],
+        "qs22":     go[:, 2],
+        "qn22":     go[:, 3],
+        "qs12":     go[:, 4],
+        "qs21":     go[:, 5],
+        "qn12":     go[:, 6],
+        "qv12":     go[:, 7],
+        "betaij0":  wo[:, 0],
+        "betaij2i": wo[:, 1],
+        "betaij2j": wo[:, 2],
+        "betaij3":  wo[:, 3],
+        "betaii0":  wo[:, 4],
+        "betaii2":  wo[:, 5],
+        "betajj0":  wo[:, 6],
+        "betajj2":  wo[:, 7],
+    }
+
+
+def run_coag_coefficients() -> list[Path]:
+    COAG_COEFFICIENTS_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    print("[capture_reference] running coag_coefficients driver ...", flush=True)
+    subprocess.run(["./coag_coefficients_driver.exe"], cwd=RUN_DIR, check=True,
+                   stdout=subprocess.DEVNULL)
+    arrays = _read_coag_coefficients(RUN_DIR / "coag_coefficients_reference.txt")
+    out = COAG_COEFFICIENTS_OUT_DIR / "reference.npz"
+    np.savez(out, **arrays)
+    return [out]
+
+
 # ----- entry point ----------------------------------------------------------
 
 def main() -> int:
@@ -905,7 +982,7 @@ def main() -> int:
                  "instrumented-gasaerexch-with-soaexch-only",
                  "instrumented-gasaerexch-and-newnuc-only",
                  "polysvp", "qsat", "makoh", "kohler", "newnuc-helpers",
-                 "mer07-veh02"),
+                 "mer07-veh02", "coag-coefficients"),
         default="sweep",
     )
     ap.add_argument(
@@ -1016,10 +1093,14 @@ def main() -> int:
         ensure_built(newnuc_helpers=True)
         written = run_newnuc_helpers()
         out_root = NEWNUC_HELPERS_OUT_DIR
-    else:  # mer07-veh02
+    elif args.mode == "mer07-veh02":
         ensure_built(mer07_veh02=True)
         written = run_mer07_veh02()
         out_root = MER07_VEH02_OUT_DIR
+    else:  # coag-coefficients
+        ensure_built(coag_coefficients=True)
+        written = run_coag_coefficients()
+        out_root = COAG_COEFFICIENTS_OUT_DIR
 
     print(f"\n[capture_reference] {len(written)} file(s) written under {out_root}")
     for p in written:
