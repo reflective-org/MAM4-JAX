@@ -49,6 +49,14 @@ tests/reference/
 │   ├── amicphys_before.npz
 │   ├── amicphys_after.npz                # pre vmr→mmr writeback (always = before.q)
 │   └── amicphys_after_writeback.npz      # post vmr→mmr writeback
+├── per_process_gasaerexch_and_newnuc/  # mdo_gasaerexch=1 + mdo_newnuc=1; skip_pcarbon_aging (M3.6 PR-F3)
+│   ├── calcsize_before.npz
+│   ├── calcsize_after.npz
+│   ├── wateruptake_before.npz
+│   ├── wateruptake_after.npz
+│   ├── amicphys_before.npz
+│   ├── amicphys_after.npz
+│   └── amicphys_after_writeback.npz
 ├── polysvp/                        # standalone polysvp T-sweep
 │   └── reference.npz
 ├── qsat/                           # standalone qsat (T, p)-grid
@@ -221,6 +229,14 @@ than `amicphys_after.npz`: the existing `amicphys_after` dump captures
 `q` *before* the driver's vmr→mmr writeback at `driver.F90:1325`, so
 it always equals `amicphys_before.q` for any sub-process operating in
 vmr space. The post-writeback dump records the actual updated `q`.
+
+### `per_process_gasaerexch_and_newnuc/` — gasaerexch + newnuc single-toggle fixture
+
+Captured by `scripts/capture_reference.py --mode instrumented-gasaerexch-and-newnuc-only` with the namelist set to `mdo_gasaerexch=1, mdo_newnuc=1, mdo_rename=mdo_coag=0`, plus the `skip_pcarbon_aging.patch` overlay (consistent with the PR-D/E/F2 pattern).
+
+Why both gasaerexch and newnuc must be on: newnuc consumes `qgas_avg[h2so4]`, which gasaerexch's analytical solver computes internally. With gasaerexch off, `qgas_avg=0` → newnuc early-returns at the `qh2so4_cutoff` guard → no validation surface for newnuc.
+
+Used by M3.6 PR-F3's `test_orchestration_gasaerexch_and_newnuc_matches_fortran`. Same six tags + same `amicphys_after_writeback.npz` rationale as `per_process_gasaerexch/`.
 
 ### `per_process_amicphys_off/` — variant with the amicphys sub-processes disabled
 
