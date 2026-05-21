@@ -6,6 +6,23 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-21 — Milestone 3.6 (PR-F1) — Nucleation leaf parameterizations
+
+- PR: pending (`m3/newnuc-helpers`)
+- Plan: [`docs/plans/006-newnuc-helpers-port.md`](plans/006-newnuc-helpers-port.md).
+- **Scope split**: original `mam_newnuc_1subarea` (~415 LOC) ballooned to ~1265 once the dependency chain into `modal_aero_newnuc.F90` is included (`mer07_veh02_nuc_mosaic_1box` ~580, `binary_nuc_vehk2002` ~193, `pbl_nuc_wang2008` ~77). Owner-approved 3-PR split: this PR covers only the leaf parameterizations (PR-F1), validated standalone; PR-F2 ports the dispatcher; PR-F3 ports the amicphys orchestration.
+- **Ports** in new module `mam4_jax/newnuc.py`:
+  - `binary_nuc_vehk2002(temp, rh, so4vol)` — Vehkamäki 2002 polynomial parameterization. Returns `(ratenucl, rateloge, cnum_h2so4, cnum_tot, radius_cluster)`.
+  - `pbl_nuc_wang2008(so4vol, flagaa, ...)` — Wang 2008 PBL overlay. `flagaa` is a Python int (static at trace time); the early-return path becomes a `jnp.where` mask.
+- **Validation infrastructure**:
+  - Extended `scripts/patches/expose_internals.patch` with a second hunk that makes the two leaf functions public from `modal_aero_newnuc` (they're inside the module's `contains` block).
+  - New standalone driver `scripts/reference_drivers/newnuc_helpers_driver.F90` sweeping 16 × 10 × 12 = 1920 records across (T, RH, [H₂SO₄]); both PBL flagaa branches captured.
+  - Driver writes with `1pe27.16e3` format (wider than makoh/kohler's `es24.16`) to accommodate Vehkamäki's 10-order-of-magnitude dynamic range — `binary ratenucl` can be `~1e-100`, which needs 3 exponent digits + the `e` separator.
+  - New build flag `--newnuc-helpers`; new capture mode `--mode newnuc-helpers` → `tests/reference/newnuc_helpers/reference.npz`.
+- **Tests** (`tests/test_newnuc.py`, 3 tests): binary, PBL flagaa=11, PBL flagaa=12. **Max rel-err**: `binary rateloge` **6.42e-11** (accumulated polynomial roundoff); `binary radius` **1.44e-14**; all others ≤ 4.3e-14. All ~6 orders below ADR-003's 1e-6.
+- **Plot** `docs/figures/newnuc_helpers_residuals.png` — top: Vehkamäki nucleation rate vs [H₂SO₄] log-log across (T=230, 267, 300 K) slices, JAX/Fortran visually indistinguishable; bottom: per-record |rel-err| for all 7 outputs across 1920 records vs the ADR-003 1e-6 line.
+- Full suite: **52/52 green** (49 + 3 new).
+
 ## 2026-05-21 — Milestone 3.6 (PR-E) — Soaexch port (single-substep)
 
 - PR: pending (`m3/soaexch`)

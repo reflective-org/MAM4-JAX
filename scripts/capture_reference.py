@@ -102,6 +102,8 @@ MAKOH_OUT_DIR = REPO_ROOT / "tests" / "reference" / "makoh"
 MAKOH_EXE = RUN_DIR / "makoh_driver.exe"
 KOHLER_OUT_DIR = REPO_ROOT / "tests" / "reference" / "kohler"
 KOHLER_EXE = RUN_DIR / "kohler_driver.exe"
+NEWNUC_HELPERS_OUT_DIR = REPO_ROOT / "tests" / "reference" / "newnuc_helpers"
+NEWNUC_HELPERS_EXE = RUN_DIR / "newnuc_helpers_driver.exe"
 INDICES_OUT_DIR = REPO_ROOT / "tests" / "reference" / "indices"
 
 TOTAL_DURATION_S = 1800
@@ -156,7 +158,8 @@ def ensure_built(instrumented: bool = False, polysvp: bool = False,
                  qsat: bool = False, makoh: bool = False,
                  kohler: bool = False, no_aitacc_transfer: bool = False,
                  skip_soaexch: bool = False,
-                 skip_pcarbon_aging: bool = False) -> None:
+                 skip_pcarbon_aging: bool = False,
+                 newnuc_helpers: bool = False) -> None:
     """Build the executable. Always rebuilds — the build flag determines
     whether the previous binary is the right flavour."""
     cmd = [str(BUILD_SCRIPT)]
@@ -165,6 +168,7 @@ def ensure_built(instrumented: bool = False, polysvp: bool = False,
     if qsat:                cmd.append("--qsat")
     if makoh:               cmd.append("--makoh")
     if kohler:              cmd.append("--kohler")
+    if newnuc_helpers:      cmd.append("--newnuc-helpers")
     if no_aitacc_transfer:  cmd.append("--no-aitacc-transfer")
     if skip_soaexch:        cmd.append("--skip-soaexch")
     if skip_pcarbon_aging:  cmd.append("--skip-pcarbon-aging")
@@ -174,6 +178,7 @@ def ensure_built(instrumented: bool = False, polysvp: bool = False,
     if qsat:                flavours.append("qsat")
     if makoh:               flavours.append("makoh")
     if kohler:              flavours.append("kohler")
+    if newnuc_helpers:      flavours.append("newnuc-helpers")
     if no_aitacc_transfer:  flavours.append("no-aitacc-transfer")
     if skip_soaexch:        flavours.append("skip-soaexch")
     if skip_pcarbon_aging:  flavours.append("skip-pcarbon-aging")
@@ -726,6 +731,83 @@ def run_kohler() -> list[Path]:
     return [out]
 
 
+def _read_newnuc_helpers(path: Path) -> dict[str, np.ndarray]:
+    """Parse the multi-section newnuc helpers reference file.
+
+    Sections:
+      binary_inputs:   (ntot, 3)    temp, rh, so4vol
+      binary_outputs:  (ntot, 5)    ratenucl, rateloge, cnum_h2so4, cnum_tot, radius_cluster
+      pbl11_outputs:   (ntot, 7)    flagaa2 ratenucl rateloge cnum_h2so4 cnum_tot cnum_nh3 radius_cluster
+      pbl12_outputs:   (ntot, 7)    same shape as pbl11
+    """
+    sections: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in path.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith("%"):
+            current = s.lstrip("%").strip().split()[0]
+            sections[current] = []
+            continue
+        if current is not None:
+            sections[current].append(s)
+
+    def floats_2d(name: str, n_cols: int) -> np.ndarray:
+        rows = [[float(t) for t in ln.split()] for ln in sections[name]]
+        return np.asarray(rows, dtype=np.float64)
+
+    def mixed_2d(name: str, n_cols_int: int, n_cols_float: int) -> tuple[np.ndarray, np.ndarray]:
+        ints, floats = [], []
+        for ln in sections[name]:
+            parts = ln.split()
+            ints.append([int(parts[i]) for i in range(n_cols_int)])
+            floats.append([float(parts[i + n_cols_int]) for i in range(n_cols_float)])
+        return (np.asarray(ints,   dtype=np.int32),
+                np.asarray(floats, dtype=np.float64))
+
+    bin_in  = floats_2d("binary_inputs",  3)
+    bin_out = floats_2d("binary_outputs", 5)
+    pbl11_int, pbl11_flt = mixed_2d("pbl11_outputs", 1, 6)
+    pbl12_int, pbl12_flt = mixed_2d("pbl12_outputs", 1, 6)
+
+    return {
+        "temp":                bin_in[:, 0],
+        "rh":                  bin_in[:, 1],
+        "so4vol":              bin_in[:, 2],
+        "binary_ratenucl":     bin_out[:, 0],
+        "binary_rateloge":     bin_out[:, 1],
+        "binary_cnum_h2so4":   bin_out[:, 2],
+        "binary_cnum_tot":     bin_out[:, 3],
+        "binary_radius":       bin_out[:, 4],
+        "pbl11_flagaa2":       pbl11_int[:, 0],
+        "pbl11_ratenucl":      pbl11_flt[:, 0],
+        "pbl11_rateloge":      pbl11_flt[:, 1],
+        "pbl11_cnum_h2so4":    pbl11_flt[:, 2],
+        "pbl11_cnum_tot":      pbl11_flt[:, 3],
+        "pbl11_cnum_nh3":      pbl11_flt[:, 4],
+        "pbl11_radius":        pbl11_flt[:, 5],
+        "pbl12_flagaa2":       pbl12_int[:, 0],
+        "pbl12_ratenucl":      pbl12_flt[:, 0],
+        "pbl12_rateloge":      pbl12_flt[:, 1],
+        "pbl12_cnum_h2so4":    pbl12_flt[:, 2],
+        "pbl12_cnum_tot":      pbl12_flt[:, 3],
+        "pbl12_cnum_nh3":      pbl12_flt[:, 4],
+        "pbl12_radius":        pbl12_flt[:, 5],
+    }
+
+
+def run_newnuc_helpers() -> list[Path]:
+    NEWNUC_HELPERS_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    print("[capture_reference] running newnuc helpers driver ...", flush=True)
+    subprocess.run(["./newnuc_helpers_driver.exe"], cwd=RUN_DIR, check=True,
+                   stdout=subprocess.DEVNULL)
+    arrays = _read_newnuc_helpers(RUN_DIR / "newnuc_helpers_reference.txt")
+    out = NEWNUC_HELPERS_OUT_DIR / "reference.npz"
+    np.savez(out, **arrays)
+    return [out]
+
+
 # ----- entry point ----------------------------------------------------------
 
 def main() -> int:
@@ -736,7 +818,7 @@ def main() -> int:
                  "instrumented-amicphys-off", "instrumented-rename-only",
                  "instrumented-gasaerexch-only",
                  "instrumented-gasaerexch-with-soaexch-only",
-                 "polysvp", "qsat", "makoh", "kohler"),
+                 "polysvp", "qsat", "makoh", "kohler", "newnuc-helpers"),
         default="sweep",
     )
     ap.add_argument(
@@ -829,10 +911,14 @@ def main() -> int:
         ensure_built(makoh=True)
         written = run_makoh()
         out_root = MAKOH_OUT_DIR
-    else:  # kohler
+    elif args.mode == "kohler":
         ensure_built(kohler=True)
         written = run_kohler()
         out_root = KOHLER_OUT_DIR
+    else:  # newnuc-helpers
+        ensure_built(newnuc_helpers=True)
+        written = run_newnuc_helpers()
+        out_root = NEWNUC_HELPERS_OUT_DIR
 
     print(f"\n[capture_reference] {len(written)} file(s) written under {out_root}")
     for p in written:

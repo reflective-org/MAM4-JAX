@@ -55,7 +55,9 @@ tests/reference/
 │   └── reference.npz
 ├── makoh/                          # standalone makoh_cubic / makoh_quartic
 │   └── reference.npz
-└── kohler/                         # standalone modal_aero_kohler (rdry, hygro, s) grid
+├── kohler/                         # standalone modal_aero_kohler (rdry, hygro, s) grid
+│   └── reference.npz
+└── newnuc_helpers/                 # standalone binary_nuc_vehk2002 + pbl_nuc_wang2008
     └── reference.npz
 ```
 
@@ -280,6 +282,33 @@ Hand-picked test cases for the Cardano (`makoh_cubic`) and Ferrari (`makoh_quart
 | `cubic_roots` | `complex128` | `(6, 3)` | Three roots per input (complex-valued; some test cases produce NaN to match Fortran's faithful NaN propagation) |
 | `quartic_inputs` | `float64` | `(6, 4)` | Six quartic-coefficient tuples |
 | `quartic_roots` | `complex128` | `(6, 4)` | Four roots per input |
+
+### `newnuc_helpers/reference.npz`
+
+Standalone-driver capture for the two leaf nucleation parameterizations
+(`binary_nuc_vehk2002` + `pbl_nuc_wang2008`) swept across a 3D
+(T, RH, [H₂SO₄]) grid. Driver: `scripts/reference_drivers/newnuc_helpers_driver.F90`.
+
+Grid: 16 T × 10 RH × 12 so4vol = 1920 records, flattened to 1-D. For
+the Wang 2008 PBL overlay, both `flagaa=11` (first-order) and `flagaa=12`
+(second-order) branches are captured separately, chained after the
+binary call (so the early-return "PBL doesn't beat the prior" path is
+also covered).
+
+| Key | dtype | Shape | Meaning |
+| --- | --- | --- | --- |
+| `temp` | `float64` | `(1920,)` | Temperature (K), 230..300. |
+| `rh`   | `float64` | `(1920,)` | Relative humidity, 0.05..0.95. |
+| `so4vol` | `float64` | `(1920,)` | [H₂SO₄] (molec/cm³), log-spaced 1e4..1e10. |
+| `binary_ratenucl`     | `float64` | `(1920,)` | Binary nucleation rate j (# cm⁻³ s⁻¹). Spans ~10 orders of magnitude. |
+| `binary_rateloge`     | `float64` | `(1920,)` | `log(ratenucl)` (pre-clipping). |
+| `binary_cnum_h2so4`   | `float64` | `(1920,)` | # of H₂SO₄ molecules in the critical nucleus. |
+| `binary_cnum_tot`     | `float64` | `(1920,)` | Total # of molecules in the critical nucleus. |
+| `binary_radius`       | `float64` | `(1920,)` | Critical-cluster radius (nm). |
+| `pbl11_*` / `pbl12_*` | as above + `flagaa2: int32` | `(1920,)` | PBL outputs after the Wang 2008 overlay for `flagaa=11`/`12`. `flagaa2 = 11`/`12` where the PBL path won, else `-1`. |
+
+JAX port consumes this in `tests/test_newnuc.py` (max rel-err 6.4e-11
+on `binary rateloge`, all others ≤ 1.4e-14).
 
 ### `kohler/reference.npz`
 
