@@ -444,6 +444,39 @@ FAC_M2V_AER: np.ndarray = np.asarray(
 )
 
 
+# ---------------------------------------------------------------------------
+# SOA-specific amicphys init constants (M3.6 PR-E).
+# ---------------------------------------------------------------------------
+
+#: Number of primary / secondary organic-aerosol species in amicphys.
+AMICPHYS_NPOA: int = 1
+AMICPHYS_NSOA: int = 1
+
+#: 0-based amicphys-internal iaer indices for POM and SOA aerosol species
+#: (Fortran's iaer_pom, iaer_soa are 1-based; subtract 1).
+AMICPHYS_IAER_POM: int = 2
+AMICPHYS_IAER_SOA: int = 0
+
+#: 0-based mode index for primary-carbon (Fortran npca, 1-based 4).
+AMICPHYS_NPCA: int = 3
+
+#: 0-based mode index for the "ultrafine" mode used as a soaexch
+#: exclusion (Fortran nufi). Set to ``-1`` when absent (MAM4-MOM doesn't
+#: have an ultrafine mode; the Fortran sentinel is ``-999888777``).
+AMICPHYS_NUFI: int = -1
+
+#: Per-mode "aging" flag. 1 means the mode participates in soaexch via
+#: the aging path even without a direct lptr2_soa_a_amode entry.
+MODE_AGING_OPTAA: np.ndarray = np.asarray([0, 0, 0, 1], dtype=np.int32)
+
+#: Per-(mode, nsoa) flag: True if that mode has a secondary-SOA species
+#: pcnst slot. Derived from Fortran's ``lptr2_soa_a_amode > 0`` check —
+#: soaexch only uses the boolean, not the actual pcnst index.
+LPTR2_SOA_A_AMODE_PRESENT: np.ndarray = np.asarray(
+    [[True], [True], [True], [False]], dtype=bool,
+)
+
+
 @dataclass(frozen=True)
 class IndexTables:
     """0-based pcnst index tables for the MAM4 tracer array.

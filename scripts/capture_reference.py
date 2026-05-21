@@ -474,6 +474,14 @@ def _read_amicphys_init(path: Path) -> dict[str, np.ndarray]:
     mw_gas      = floats("mw_gas")       # shape (ngas,)
     vol_molar_gas   = floats("vol_molar_gas")
     accom_coef_gas  = floats("accom_coef_gas")
+    npoa        = scalar_int("npoa")
+    nsoa        = scalar_int("nsoa")
+    iaer_pom    = scalar_int("iaer_pom")
+    iaer_soa    = scalar_int("iaer_soa")
+    npca        = scalar_int("npca")
+    nufi        = scalar_int("nufi")
+    mode_aging_optaa  = ints("mode_aging_optaa")
+    lptr2_soa_a_amode = ints_2d("lptr2_soa_a_amode", ntot_amode, nsoa)
 
     # Convert lmap_* from gas_pcnst-relative 1-based to pcnst-absolute 0-based.
     # Empty slots (Fortran 0) become -1 sentinel.
@@ -506,6 +514,14 @@ def _read_amicphys_init(path: Path) -> dict[str, np.ndarray]:
         "mw_gas":               mw_gas,
         "vol_molar_gas":        vol_molar_gas,
         "accom_coef_gas":       accom_coef_gas,
+        "amicphys_npoa":        np.int32(npoa),
+        "amicphys_nsoa":        np.int32(nsoa),
+        "amicphys_iaer_pom":    np.int32(iaer_pom),
+        "amicphys_iaer_soa":    np.int32(iaer_soa),
+        "amicphys_npca":        np.int32(npca),
+        "amicphys_nufi":        np.int32(nufi),
+        "mode_aging_optaa":     mode_aging_optaa,
+        "lptr2_soa_a_amode":    lptr2_soa_a_amode,
     }
 
 
