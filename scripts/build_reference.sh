@@ -41,6 +41,7 @@ BUILD_MAKOH=0
 BUILD_KOHLER=0
 NO_AITACC_TRANSFER=0
 SKIP_SOAEXCH=0
+SKIP_PCARBON_AGING=0
 for arg in "$@"; do
   case "$arg" in
     --instrumented)         INSTRUMENTED=1 ;;
@@ -49,7 +50,8 @@ for arg in "$@"; do
     --makoh)                BUILD_MAKOH=1 ;;
     --kohler)               BUILD_KOHLER=1 ;;
     --no-aitacc-transfer)   NO_AITACC_TRANSFER=1 ;;
-    --skip-soaexch)         SKIP_SOAEXCH=1 ;;
+    --skip-soaexch)         SKIP_SOAEXCH=1 ; SKIP_PCARBON_AGING=1 ;;
+    --skip-pcarbon-aging)   SKIP_PCARBON_AGING=1 ;;
     *) echo "Unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -61,6 +63,11 @@ fi
 
 if [[ "$SKIP_SOAEXCH" == "1" && "$INSTRUMENTED" != "1" ]]; then
   echo "Error: --skip-soaexch must be combined with --instrumented" >&2
+  exit 2
+fi
+
+if [[ "$SKIP_PCARBON_AGING" == "1" && "$INSTRUMENTED" != "1" ]]; then
+  echo "Error: --skip-pcarbon-aging must be combined with --instrumented" >&2
   exit 2
 fi
 
@@ -137,6 +144,10 @@ if [[ "$SKIP_SOAEXCH" == "1" ]]; then
   echo ""
   echo "Applying gasaerexch_skip_soaexch overlay..."
   ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/gasaerexch_skip_soaexch.patch" )
+fi
+
+if [[ "$SKIP_PCARBON_AGING" == "1" ]]; then
+  echo ""
   echo "Applying skip_pcarbon_aging overlay..."
   ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/skip_pcarbon_aging.patch" )
 fi

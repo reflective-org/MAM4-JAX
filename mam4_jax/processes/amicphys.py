@@ -63,6 +63,154 @@ from ..constants import RGAS
 
 
 # ---------------------------------------------------------------------------
+# SOA exchange (M3.6 PR-E)
+# ---------------------------------------------------------------------------
+
+# Numerical constants from `mam_soaexch_1subarea`
+# (modal_aero_amicphys.F90:3656-3666).
+_A_MIN1            = 1.0e-20
+_G_MIN1            = 1.0e-20
+_DELH_VAP_SOA      = 156.0e3         # J / mol (heat of vaporization of SOA gas)
+_P0_SOA_298        = 1.0e-10         # atm (eq. vapor pressure at 298 K)
+_ALPHA_ASTEM       = 0.05            # adaptive time-step parameter
+_FLAG_PCARBON_OPOA_ZERO = True       # set opoa_frac=0 for primary-carbon mode
+_PSTD              = 101325.0        # Pa
+# Note: the Fortran sub-routine declares `rgas = 8.3144 J/K/mol`. The
+# updated 08-28-2019 line uses `r_universal/1.e3` instead so we match
+# that (RGAS in mam4_jax.constants is J/K/kmole — divide by 1000).
+
+
+def _mam_soaexch_1subarea(qgas_cur, qgas_avg, qaer_cur,
+                          dtsubstep, temp, pmid, uptkaer):
+    """Port of ``mam_soaexch_1subarea`` (``modal_aero_amicphys.F90:3589-3918``).
+
+    **Non-adaptive (single-substep) variant** — assumes ``dtmax * tmpa
+    <= alpha_astem`` so the Fortran's while-loop exits after one
+    iteration. A runtime assertion in the calling test trips loudly if
+    this ever fails. PR-E2 (TBD) will add adaptive sub-stepping via
+    ``jax.lax.while_loop``; per the math, single-substep suffices for
+    the box-model fixture (with `sum(uptkaer_h2so4) ≈ 1e-3 /s` and SOA
+    scaled at 0.81×, `dtmax*tmpa < 1` while `alpha_astem = 0.05` is
+    much larger relative to the threshold... — see plan 005).
+
+    Operates on the amicphys-local view per (col, level). Inputs:
+    ``qgas_cur, qgas_avg`` shape ``(..., AMICPHYS_NGAS)``;
+    ``qaer_cur`` shape ``(..., AMICPHYS_NAER, NTOT_AMODE)``;
+    ``uptkaer`` shape ``(..., AMICPHYS_NGAS, NTOT_AMODE)``.
+    ``temp, pmid, dtsubstep`` are scalars or batched scalars.
+
+    Returns updated ``(qgas_cur, qgas_avg, qaer_cur)``. ``qnum_cur`` and
+    ``qwtr_cur`` are declared inout in the Fortran but never written, so
+    we don't take or return them.
+
+    Simplifications relative to Fortran for MAM4-MOM:
+    * ``nsoa = 1``: collapse the per-species loop to scalar operations.
+    * ``ntot_soamode = 4``: SOA can condense onto all four modes
+      (accum/aitken/coarse via `lptr2_soa_a_amode > 0`; pcarbon via
+      `mode_aging_optaa = 1`). Hard-coded via `LPTR2_SOA_A_AMODE_PRESENT`.
+    * ``nufi = -1``: no ultrafine mode to skip.
+    * ``opoa_frac = 0.1`` everywhere except primary_carbon (= 0.0).
+    """
+    ll = 0                                    # single SOA species
+    iaer_soa = data.AMICPHYS_IAER_SOA         # 0
+    iaer_pom = data.AMICPHYS_IAER_POM         # 2
+
+    # opoa_frac per mode: 0.1 except 0 for pcarbon.
+    opoa_frac_per_mode = jnp.full(data.NTOT_AMODE, 0.1, dtype=jnp.float64)
+    if _FLAG_PCARBON_OPOA_ZERO and data.AMICPHYS_NPCA >= 0:
+        opoa_frac_per_mode = opoa_frac_per_mode.at[data.AMICPHYS_NPCA].set(0.0)
+
+    # Equilibrium gas pressure at the local temperature.
+    r_univ_J_per_K_per_mol = RGAS / 1.0e3
+    p0_soa = _P0_SOA_298 * jnp.exp(
+        -(_DELH_VAP_SOA / r_univ_J_per_K_per_mol) *
+        (1.0 / temp - 1.0 / 298.0)
+    )
+    g0_soa = _PSTD * p0_soa / pmid           # (...,)
+
+    # qxxx_prv saved before solver.
+    qgas_prv = qgas_cur[..., ll]             # (...,)
+    qaer_prv = qaer_cur[..., iaer_soa, :]    # (..., NTOT_AMODE)
+
+    # skip_soamode: per-mode boolean — True if this mode does NOT
+    # participate in SOA exchange this substep (uptake too small).
+    uptkaer_ll = uptkaer[..., ll, :]                       # (..., NTOT_AMODE)
+    eligible = jnp.asarray(data.LPTR2_SOA_A_AMODE_PRESENT[:, ll]) | \
+               (jnp.asarray(data.MODE_AGING_OPTAA) > 0)    # (NTOT_AMODE,)
+    skip_mode = (uptkaer_ll <= 1.0e-15) | (~eligible)
+    uptkaer_soag = jnp.where(skip_mode, 0.0, uptkaer_ll)
+
+    # Load g_soa, a_soa, tot_soa, a_opoa.
+    g_soa = jnp.maximum(qgas_prv, 0.0)                     # (...,)
+    a_soa = jnp.where(skip_mode, 0.0, jnp.maximum(qaer_prv, 0.0))
+    tot_soa = g_soa + jnp.sum(a_soa, axis=-1)              # (...,)
+
+    qaer_pom = qaer_cur[..., iaer_pom, :]                  # (..., NTOT_AMODE)
+    a_opoa = jnp.where(
+        skip_mode, 0.0,
+        opoa_frac_per_mode * jnp.maximum(qaer_pom, 0.0),
+    )
+
+    # Initial sat / g_star / phi for the time-step check.
+    a_ooa_sum = a_opoa + a_soa                             # (..., NTOT_AMODE)
+    sat = g0_soa[..., None] / jnp.maximum(a_ooa_sum, _A_MIN1)
+    g_star = sat * a_soa
+    phi = (g_soa[..., None] - g_star) / jnp.maximum(
+        jnp.maximum(g_soa[..., None], g_star), _G_MIN1,
+    )
+    phi = jnp.where(skip_mode, 0.0, phi)
+    tmpa_check = jnp.sum(uptkaer_soag * jnp.abs(phi), axis=-1)   # (...,)
+
+    # Single-substep assumption: dtmax * tmpa <= alpha_astem.
+    dtcur = dtsubstep                                      # = dtmax = dtfull
+    # The runtime assertion is checked by the caller (jax tracing
+    # forbids data-dependent control flow in pure functions). The
+    # `tmpa_check` value is the input to that assertion.
+
+    # Step 1: explicit estimate of new a_soa using "old" g_soa.
+    beta = dtcur * uptkaer_soag                            # (..., NTOT_AMODE)
+    del_g_soa = g_soa[..., None] - g_star
+    a_soa_tmp = jnp.where(del_g_soa > 0.0,
+                          a_soa + beta * del_g_soa, a_soa)
+    a_ooa_sum_step1 = a_opoa + a_soa_tmp
+    sat_step1 = jnp.where(
+        del_g_soa > 0.0,
+        g0_soa[..., None] / jnp.maximum(a_ooa_sum_step1, _A_MIN1),
+        sat,
+    )
+
+    # Step 2: semi-implicit solve. Math: gather sums over modes, then
+    # solve a single scalar implicit equation per (col, level) for the
+    # new g_soa.
+    denom = 1.0 + beta * sat_step1                         # (..., NTOT_AMODE)
+    safe_denom = jnp.where(skip_mode, 1.0, denom)          # avoid /0 for skipped
+    tmpa_sum = jnp.sum(jnp.where(skip_mode, 0.0, a_soa / safe_denom), axis=-1)
+    tmpb_sum = jnp.sum(jnp.where(skip_mode, 0.0, beta  / safe_denom), axis=-1)
+
+    g_soa_new = (tot_soa - tmpa_sum) / (1.0 + tmpb_sum)
+    g_soa_new = jnp.maximum(0.0, g_soa_new)                # (...,)
+
+    a_soa_new = jnp.where(
+        skip_mode,
+        qaer_prv,                                          # untouched
+        (a_soa + beta * g_soa_new[..., None]) / safe_denom,
+    )
+
+    # Pack back. Single-substep means qgas_avg = (qgas_prv + g_soa_new) / 2,
+    # then max(0, .). Fortran accumulates `dtcur*(qgas_prv + 0.5*tmpc)`
+    # and divides by `dtsum_qgas_avg = dtcur` → just (qgas_prv + g_soa_new) / 2.
+    qgas_avg_new = jnp.maximum(
+        0.0, qgas_prv + 0.5 * (g_soa_new - qgas_prv),
+    )
+
+    qgas_cur_out = qgas_cur.at[..., ll].set(g_soa_new)
+    qgas_avg_out = qgas_avg.at[..., ll].set(qgas_avg_new)
+    qaer_cur_out = qaer_cur.at[..., iaer_soa, :].set(a_soa_new)
+
+    return qgas_cur_out, qgas_avg_out, qaer_cur_out
+
+
+# ---------------------------------------------------------------------------
 # Gasaerexch leaf helpers (M3.6 PR-D)
 # ---------------------------------------------------------------------------
 
@@ -387,6 +535,11 @@ def _mam_gasaerexch_1subarea(qgas, qaer, qnum, qwtr,
     igas_soa, igas_h2so4 = 0, 1
     iaer_h2so4 = igas_h2so4   # by Fortran convention (iaer = igas for SOA / SO4)
 
+    # qgas_avg accumulator — soaexch (PR-E) writes the SOA gas average
+    # here; the H2SO4 analytical solver further down writes its own
+    # entry. The Fortran initializes this to 0 at line 3372.
+    qgas_avg = jnp.zeros_like(qgas)
+
     # Stage A: gas diffusivity, mean free path, uptake rate (per mode)
     # for H2SO4 — only the H2SO4 path uses the per-mode quadrature; SOA is
     # scaled off it by the cam5.1.00 ratio.
@@ -410,6 +563,15 @@ def _mam_gasaerexch_1subarea(qgas, qaer, qnum, qwtr,
     uptkaer_h2so4 = uptkrate_per_mode * (qnum * aircon[..., None])  # (..., NTOT_AMODE)
     # SOA scales as 0.81 × H2SO4 (cam5.1.00 convention, Fortran line 3407).
     uptkaer_soa = uptkaer_h2so4 * 0.81
+
+    # SOA exchange — runs *before* the H2SO4 analytical solver, matching
+    # Fortran's `call mam_soaexch_1subarea(...)` at line 3430. Single
+    # substep — relies on dtmax*tmpa <= alpha_astem on this fixture
+    # (see plan 005 §"Scope decisions").
+    uptkaer_stacked = jnp.stack([uptkaer_soa, uptkaer_h2so4], axis=-2)
+    qgas, qgas_avg, qaer = _mam_soaexch_1subarea(
+        qgas, qgas_avg, qaer, deltat, temp, pmid, uptkaer_stacked,
+    )
 
     # Stage B: analytical solver for H2SO4 condensation.
     # qgas_prv = qgas (saved before the solver).
