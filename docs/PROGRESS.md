@@ -6,6 +6,26 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-20 — Milestone 3.6 (PR-D) — Gasaerexch port (H₂SO₄ solver, no SOA)
+
+- PR: pending (`m3/gasaerexch-no-soa`)
+- Plan: [`docs/plans/004-gasaerexch-no-soa-port.md`](plans/004-gasaerexch-no-soa-port.md).
+- **Leaf helpers** ported in `mam4_jax/processes/amicphys.py`:
+  - `_mean_molecular_speed(T, MW)` → `sqrt(8 R T / (π MW))`.
+  - `_gas_diffusivity(T, p_atm, MW, vm)` → Fuller-Schettler-Giddings.
+  - `_gas_aer_uptkrates_1box1gas(...)` → two-point Gauss-Hermite quadrature on the Fuchs-Sutugin uptake kernel. ~150 LOC.
+- **Gasaerexch body** (~150 LOC) — analytical solver path only. SOA exchange and the RK4 branch are out of scope (PR-E for SOA; RK4 unused in box-model build).
+- **New constants** in `mam4_jax/data.py` (captured by extending the amicphys init dump): `VMDRY`, `MW_GAS`, `VOL_MOLAR_GAS`, `ACCOM_COEF_GAS`. Plus `ADV_MASS` + `MWDRY` + `MMR_TO_VMR` / `VMR_TO_MMR` (driver-side mmr↔vmr factors). The two conversion factors are stored *independently* (not as `1/MMR_TO_VMR`) so JAX's round-trip ULP drift matches Fortran's separately-rounded `mwdry/adv_mass` and `adv_mass/mwdry`.
+- **Fortran-side overlays** for a 1:1 validation surface (all under `scripts/patches/`):
+  - `gasaerexch_skip_soaexch.patch` — replaces the `mam_soaexch_1subarea` call (line 3430) with a no-op so the SOA gas tracer doesn't diverge.
+  - `skip_pcarbon_aging.patch` — removes the `mam_pcarbon_aging_1subarea` call inside `mam_amicphys_1subarea_clear` (line 2555). Pcarbon aging transfers so4 mass from pcarbon to accum; without it, JAX matches at 1e-6 on every modified tracer.
+  - `amicphys_after_writeback.patch` — adds a new dump tag `amicphys_after_writeback` after the driver's vmr→mmr writeback at `driver.F90:1325`. The existing `amicphys_after` dump records `q` *before* the writeback, so it equals `amicphys_before.q` for any sub-process operating in vmr space — previous orchestration tests (PR-A all-off, PR-C rename-only) inadvertently passed on this trivial identity.
+- **New capture mode** `instrumented-gasaerexch-only` (`mdo_gasaerexch=1, others=0` + SOA/pcarbon-aging overlays) → `tests/reference/per_process_gasaerexch_only/`.
+- **Validation** (`tests/test_amicphys.py`): new `test_orchestration_gasaerexch_only_matches_fortran`. Max rel-err **7.78e-16** (machine ε) on the 5 gasaerexch-modified tracers (`q[6]=H₂SO₄`, `q[7]=SO₂`, `q[10]=accum.so4`, `q[18]=aitken.so4`, `q[25]=coarse.so4`) across 60 timesteps. The size fields (`dgncur_a`, `dgncur_awet`, `qaerwat`, `wetdens`) use 1e-3 tolerance because Fortran's `update_aerosol_props` re-runs wateruptake inside the cond sub-stepping loop — Phase A doesn't implement that re-uptake.
+- Plot: `docs/figures/gasaerexch_residuals.png` — top panel: H₂SO₄ gas growth + so4 mass per active mode; bottom panel: per-(timestep, tracer) rel-err vs. ADR-003 1e-6 tolerance and float64 ε. All modified tracers sit at machine ε.
+- **Scope correction worth pinning**: original `PLANS.md` listed `mam_gasaerexch_1subarea` at ~305 LOC but didn't account for `mam_soaexch_1subarea` (~330 LOC) called from inside it. Owner-approved split (2026-05-20): now 5 sub-PRs in M3.6 (foundation + gasaerexch + soaexch + newnuc + coag) instead of 4.
+- Full suite: **49/49 green**.
+
 ## 2026-05-20 — Milestone 3.6 (PR-C) — Foundation + wire rename into orchestration
 
 - PR: pending (`m3/amicphys-foundation`)
