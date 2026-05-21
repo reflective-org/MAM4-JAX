@@ -57,6 +57,7 @@ Sweep mode writes 12 NetCDF files (~1.7 MB total) under `tests/reference/sweep/`
 | `makoh` | Standalone `makoh_cubic` / `makoh_quartic` driver over hand-picked polynomial test cases. | `scripts/reference_drivers/makoh_driver.F90` | `tests/reference/makoh/reference.npz` |
 | `kohler` | Standalone `modal_aero_kohler` driver across a (rdry, hygro, s) grid. | `scripts/reference_drivers/kohler_driver.F90` | `tests/reference/kohler/reference.npz` |
 | `newnuc-helpers` | Standalone `binary_nuc_vehk2002` + `pbl_nuc_wang2008` driver across a (T, RH, [H₂SO₄]) grid; both PBL flagaa branches captured. | `scripts/reference_drivers/newnuc_helpers_driver.F90` | `tests/reference/newnuc_helpers/reference.npz` |
+| `mer07-veh02` | Standalone `mer07_veh02_nuc_mosaic_1box` dispatcher driver across a 5D (T, RH, zm, [H₂SO₄], H₂SO₄ uptake rate) grid covering 5 regimes (subcutoff / low-rate / active no-PBL / active PBL / gas-limited). | `scripts/reference_drivers/mer07_veh02_driver.F90` | `tests/reference/mer07_veh02/reference.npz` |
 
 `--nstep` applies to the two `instrumented*` modes. Defaults: `1` for `instrumented`, `60` for `instrumented-no-aitacc`. Values outside the canonical sweep `(1, 2, 4, 9, 18, 30, 60, 120, 180, 360, 900, 1800)` print a warning but still run. The standalone-driver modes (`polysvp`, `qsat`, `makoh`, `kohler`) have no `--nstep` knob — they sweep their own input grids.
 

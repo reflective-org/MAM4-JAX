@@ -476,6 +476,21 @@ LPTR2_SOA_A_AMODE_PRESENT: np.ndarray = np.asarray(
     [[True], [True], [True], [False]], dtype=bool,
 )
 
+#: Host-code molecular weight of sulfate aerosol (g/mol). Set in
+#: ``modal_aero_amicphys_init`` from ``mwhost_aer(iaer_so4)``. For
+#: MAM4-MOM the host treats sulfate as ammonium bisulfate (mw = 115)
+#: even though the actual sulfuric-acid mw is 96 — newnuc's dispatcher
+#: applies a ``voldry_clus * (mw_so4a_host / mw_so4a)`` correction
+#: (modal_aero_newnuc.F90:874).
+MW_SO4A_HOST: float = 115.0
+#: Host-code molecular weight of ammonium aerosol (g/mol). For
+#: MAM4-MOM ``iaer_nh4 <= 0``, so the Fortran falls back to
+#: ``mw_nh4a_host = mw_so4a_host``.
+MW_NH4A_HOST: float = 115.0
+#: Host-code dry density of sulfate aerosol (kg/m³). Matches
+#: ``dens_aer(iaer_so4)`` in amicphys init.
+DENS_SO4A_HOST: float = 1770.0
+
 
 @dataclass(frozen=True)
 class IndexTables:

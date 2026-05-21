@@ -9,7 +9,7 @@
  
  implicit none
  
-@@ -6098,4 +6098,73 @@
+@@ -6098,4 +6098,76 @@
        end if ! ( masterproc )
  
  
@@ -77,6 +77,9 @@
 +         do jm = 1, ntot_amode
 +            write(unit_aa,'(*(i0,1x))') (lptr2_soa_a_amode(jm, ia), ia=1, nsoa)
 +         end do
++         write(unit_aa,'(/a,1x,1pe23.15)') '% mw_so4a_host', mw_so4a_host
++         write(unit_aa,'(/a,1x,1pe23.15)') '% mw_nh4a_host', mw_nh4a_host
++         write(unit_aa,'(/a,1x,1pe23.15)') '% dens_so4a_host', dens_so4a_host
 +         close(unit_aa)
 +      end block
 +!==> MAM4-JAX end

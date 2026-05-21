@@ -57,7 +57,9 @@ tests/reference/
 │   └── reference.npz
 ├── kohler/                         # standalone modal_aero_kohler (rdry, hygro, s) grid
 │   └── reference.npz
-└── newnuc_helpers/                 # standalone binary_nuc_vehk2002 + pbl_nuc_wang2008
+├── newnuc_helpers/                 # standalone binary_nuc_vehk2002 + pbl_nuc_wang2008
+│   └── reference.npz
+└── mer07_veh02/                    # standalone mer07_veh02_nuc_mosaic_1box dispatcher
     └── reference.npz
 ```
 
@@ -282,6 +284,28 @@ Hand-picked test cases for the Cardano (`makoh_cubic`) and Ferrari (`makoh_quart
 | `cubic_roots` | `complex128` | `(6, 3)` | Three roots per input (complex-valued; some test cases produce NaN to match Fortran's faithful NaN propagation) |
 | `quartic_inputs` | `float64` | `(6, 4)` | Six quartic-coefficient tuples |
 | `quartic_roots` | `complex128` | `(6, 4)` | Four roots per input |
+
+### `mer07_veh02/reference.npz`
+
+Standalone-driver capture of the newnuc dispatcher (`mer07_veh02_nuc_mosaic_1box`) across a 5D (T, RH, zm, [H₂SO₄], H₂SO₄ uptake rate) grid (6×5×3×8×3 = 2160 records). Five regimes intentionally covered: subcutoff (qh2so4 below cutoff), low-rate (above cutoff but rateloge < -13.82), active no-PBL (z>pblh), active PBL (z<pblh), gas-limited (freduce < 1). Driver: `scripts/reference_drivers/mer07_veh02_driver.F90`. Fixed `pblh=1000m`, `press=1e5 Pa`, `qnh3=0` (no NH₃ in MAM4-MOM).
+
+| Key | dtype | Shape | Meaning |
+| --- | --- | --- | --- |
+| `temp` | `float64` | `(2160,)` | Temperature (K). |
+| `rh`   | `float64` | `(2160,)` | Relative humidity (0–1). |
+| `zm`   | `float64` | `(2160,)` | Midpoint altitude (m). |
+| `qh2so4` | `float64` | `(2160,)` | H₂SO₄ gas mixing ratio (mol/mol-air), log-spaced 1e-17..1e-10. |
+| `uptkrate` | `float64` | `(2160,)` | H₂SO₄ uptake rate to aerosol (1/s). |
+| `isize_nuc` | `int32` | `(2160,)` | Size bin index (always 1 for `nsize=1`). |
+| `qnuma_del` | `float64` | `(2160,)` | New particle number (#/mol-air). |
+| `qso4a_del` | `float64` | `(2160,)` | Aerosol SO₄ mass delta (mol/mol-air, ≥ 0). |
+| `qnh4a_del` | `float64` | `(2160,)` | Aerosol NH₄ mass delta (mol/mol-air, always 0). |
+| `qh2so4_del` | `float64` | `(2160,)` | Gas H₂SO₄ delta (mol/mol-air, ≤ 0). |
+| `qnh3_del` | `float64` | `(2160,)` | Gas NH₃ delta (mol/mol-air, always 0). |
+| `dens_nh4so4a` | `float64` | `(2160,)` | Dry density of new aerosol (kg/m³, always 1770 = `_DENS_SULFACID`). |
+| `dnclusterdt` | `float64` | `(2160,)` | Cluster nucleation rate (#/m³/s) — set BEFORE the freduce gate, so non-zero in more records than `qnuma_del`. |
+
+JAX port consumes this in `tests/test_newnuc.py::test_mer07_veh02_dispatcher_matches_fortran` (max rel-err 2.27e-12).
 
 ### `newnuc_helpers/reference.npz`
 
