@@ -71,6 +71,18 @@ The point of this file is to keep the *decided to skip for now* knowledge out of
 - **Why:** Validation is the priority; CPU `float64` is the easiest path to a clean Fortran diff. Sharding decisions belong in Milestone 6 once correctness is established.
 - **Resurface when:** Milestone 6.
 
+## Adaptive sub-stepping in `_mam_soaexch_1subarea` (PR-E2)
+
+- **Status:** deferred to a follow-up PR (call it PR-E2) only if needed.
+- **Why:** PR-E (M3.6 PR-E, 2026-05-21) ported soaexch under the single-substep assumption (`dtcur = dtfull`). On the box-model fixture, `dtmax * tmpa <= alpha_astem` always holds — verified empirically by max rel-err 4.77e-15 vs Fortran (which does the full adaptive stepping). A fixture with larger gas concentrations or longer timesteps could push `tmpa` past the threshold, requiring multiple substeps.
+- **Resurface when:** the orchestration test `test_orchestration_gasaerexch_matches_fortran` ever fails on a new fixture, OR when adding multi-column/multi-level support pushes us out of the trivial regime, OR as part of Milestone 7 (diffrax migration) which provides adaptive stepping for free.
+
+## Diffrax migration for the handwritten solvers (Milestone 7)
+
+- **Status:** captured as Milestone 7 in `docs/PLANS.md` (proposed).
+- **Why:** the handwritten H₂SO₄ analytical solver (PR-D), soaexch step-1/step-2 semi-implicit (PR-E), and any future coupled-ODE work in coag (PR-G) are good candidates for replacement by [`diffrax`](https://github.com/patrick-kidger/diffrax) (JIT/grad/vmap-clean, better stiff-system numerics, adaptive stepping for free). Adding diffrax now would change Fortran-vs-JAX output by ~1 ULP (different solver tolerances) which complicates the 1e-6 bit-validation baseline.
+- **Resurface when:** all four M3.6 sub-processes are ported and bit-validated. Owner approval at that point opens the milestone.
+
 ---
 
 *When adding a new deferred item: state what, why, and the condition that would bring it back.*

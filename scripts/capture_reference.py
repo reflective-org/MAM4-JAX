@@ -91,6 +91,9 @@ PER_PROCESS_RENAME_ONLY_OUT_DIR  = REPO_ROOT / "tests" / "reference" / "per_proc
 PER_PROCESS_GASAEREXCH_ONLY_OUT_DIR = (
     REPO_ROOT / "tests" / "reference" / "per_process_gasaerexch_only"
 )
+PER_PROCESS_GASAEREXCH_OUT_DIR = (
+    REPO_ROOT / "tests" / "reference" / "per_process_gasaerexch"
+)
 POLYSVP_OUT_DIR = REPO_ROOT / "tests" / "reference" / "polysvp"
 POLYSVP_EXE = RUN_DIR / "polysvp_driver.exe"
 QSAT_OUT_DIR = REPO_ROOT / "tests" / "reference" / "qsat"
@@ -152,7 +155,8 @@ NAMELIST_TEMPLATE = dedent("""\
 def ensure_built(instrumented: bool = False, polysvp: bool = False,
                  qsat: bool = False, makoh: bool = False,
                  kohler: bool = False, no_aitacc_transfer: bool = False,
-                 skip_soaexch: bool = False) -> None:
+                 skip_soaexch: bool = False,
+                 skip_pcarbon_aging: bool = False) -> None:
     """Build the executable. Always rebuilds — the build flag determines
     whether the previous binary is the right flavour."""
     cmd = [str(BUILD_SCRIPT)]
@@ -163,6 +167,7 @@ def ensure_built(instrumented: bool = False, polysvp: bool = False,
     if kohler:              cmd.append("--kohler")
     if no_aitacc_transfer:  cmd.append("--no-aitacc-transfer")
     if skip_soaexch:        cmd.append("--skip-soaexch")
+    if skip_pcarbon_aging:  cmd.append("--skip-pcarbon-aging")
     flavours = []
     if instrumented:        flavours.append("instrumented")
     if polysvp:             flavours.append("polysvp")
@@ -171,6 +176,7 @@ def ensure_built(instrumented: bool = False, polysvp: bool = False,
     if kohler:              flavours.append("kohler")
     if no_aitacc_transfer:  flavours.append("no-aitacc-transfer")
     if skip_soaexch:        flavours.append("skip-soaexch")
+    if skip_pcarbon_aging:  flavours.append("skip-pcarbon-aging")
     flavours = flavours or ["baseline"]
     print(f"[capture_reference] building {'+'.join(flavours)} executable(s) ...")
     subprocess.run(cmd, check=True)
@@ -474,6 +480,14 @@ def _read_amicphys_init(path: Path) -> dict[str, np.ndarray]:
     mw_gas      = floats("mw_gas")       # shape (ngas,)
     vol_molar_gas   = floats("vol_molar_gas")
     accom_coef_gas  = floats("accom_coef_gas")
+    npoa        = scalar_int("npoa")
+    nsoa        = scalar_int("nsoa")
+    iaer_pom    = scalar_int("iaer_pom")
+    iaer_soa    = scalar_int("iaer_soa")
+    npca        = scalar_int("npca")
+    nufi        = scalar_int("nufi")
+    mode_aging_optaa  = ints("mode_aging_optaa")
+    lptr2_soa_a_amode = ints_2d("lptr2_soa_a_amode", ntot_amode, nsoa)
 
     # Convert lmap_* from gas_pcnst-relative 1-based to pcnst-absolute 0-based.
     # Empty slots (Fortran 0) become -1 sentinel.
@@ -506,15 +520,27 @@ def _read_amicphys_init(path: Path) -> dict[str, np.ndarray]:
         "mw_gas":               mw_gas,
         "vol_molar_gas":        vol_molar_gas,
         "accom_coef_gas":       accom_coef_gas,
+        "amicphys_npoa":        np.int32(npoa),
+        "amicphys_nsoa":        np.int32(nsoa),
+        "amicphys_iaer_pom":    np.int32(iaer_pom),
+        "amicphys_iaer_soa":    np.int32(iaer_soa),
+        "amicphys_npca":        np.int32(npca),
+        "amicphys_nufi":        np.int32(nufi),
+        "mode_aging_optaa":     mode_aging_optaa,
+        "lptr2_soa_a_amode":    lptr2_soa_a_amode,
     }
 
 
 def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
                      amicphys_off: bool = False,
                      rename_only: bool = False,
-                     gasaerexch_only: bool = False) -> list[Path]:
+                     gasaerexch_only: bool = False,
+                     gasaerexch: bool = False) -> list[Path]:
     dt = TOTAL_DURATION_S // nstep
-    if gasaerexch_only:
+    if gasaerexch:
+        out_dir = PER_PROCESS_GASAEREXCH_OUT_DIR
+        flavour = "instrumented-gasaerexch-with-soaexch-only"
+    elif gasaerexch_only:
         out_dir = PER_PROCESS_GASAEREXCH_ONLY_OUT_DIR
         flavour = "instrumented-gasaerexch-only"
     elif rename_only:
@@ -544,7 +570,7 @@ def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
         write_namelist(dt, nstep,
                        mdo_gasaerexch=0, mdo_rename=1,
                        mdo_newnuc=0, mdo_coag=0)
-    elif gasaerexch_only:
+    elif gasaerexch_only or gasaerexch:
         write_namelist(dt, nstep,
                        mdo_gasaerexch=1, mdo_rename=0,
                        mdo_newnuc=0, mdo_coag=0)
@@ -559,7 +585,7 @@ def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
     # Index tables (written once at init, before the time loop). Only the
     # canonical full-physics run writes the canonical indices.
     if (not no_aitacc_transfer and not amicphys_off
-            and not rename_only and not gasaerexch_only):
+            and not rename_only and not gasaerexch_only and not gasaerexch):
         indices_txt = RUN_DIR / "mam4_indices.txt"
         if not indices_txt.is_file():
             raise RuntimeError(f"expected indices dump missing: {indices_txt}")
@@ -709,6 +735,7 @@ def main() -> int:
         choices=("sweep", "instrumented", "instrumented-no-aitacc",
                  "instrumented-amicphys-off", "instrumented-rename-only",
                  "instrumented-gasaerexch-only",
+                 "instrumented-gasaerexch-with-soaexch-only",
                  "polysvp", "qsat", "makoh", "kohler"),
         default="sweep",
     )
@@ -775,6 +802,21 @@ def main() -> int:
                   f"{NSTEP_SWEEP}", file=sys.stderr)
         written = run_instrumented(nstep, gasaerexch_only=True)
         out_root = PER_PROCESS_GASAEREXCH_ONLY_OUT_DIR
+    elif args.mode == "instrumented-gasaerexch-with-soaexch-only":
+        # Like instrumented-gasaerexch-only but WITHOUT the
+        # gasaerexch_skip_soaexch.patch (we still apply skip_pcarbon_aging
+        # because pcarbon aging is a separate sub-process outside M3.6).
+        # The build script's --skip-soaexch flag applies both patches; we
+        # need only the pcarbon one here, so we don't pass --skip-soaexch.
+        # Instead we apply skip_pcarbon_aging directly via a new build flag.
+        # (TODO: split build_reference.sh's --skip-soaexch into two flags.)
+        ensure_built(instrumented=True, skip_pcarbon_aging=True)
+        nstep = args.nstep if args.nstep is not None else 60
+        if nstep not in NSTEP_SWEEP:
+            print(f"[capture_reference] warning: --nstep={nstep} is outside the canonical sweep "
+                  f"{NSTEP_SWEEP}", file=sys.stderr)
+        written = run_instrumented(nstep, gasaerexch=True)
+        out_root = PER_PROCESS_GASAEREXCH_OUT_DIR
     elif args.mode == "polysvp":
         ensure_built(polysvp=True)
         written = run_polysvp()

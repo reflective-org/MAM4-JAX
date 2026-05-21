@@ -115,33 +115,38 @@ def test_orchestration_rename_only_matches_fortran(rename_only_captured) -> None
         )
 
 
-GASAEREXCH_ONLY_REF_DIR = (
-    Path(__file__).resolve().parent / "reference" / "per_process_gasaerexch_only"
+GASAEREXCH_REF_DIR = (
+    Path(__file__).resolve().parent / "reference" / "per_process_gasaerexch"
 )
 
 
 @pytest.fixture(scope="module")
-def gasaerexch_only_captured() -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
-    """Single-toggle Fortran capture: `mdo_gasaerexch=1, others=0`
-    with the `mam_soaexch_1subarea` call also skipped (M3.6 PR-D).
+def gasaerexch_captured() -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Single-toggle Fortran capture: `mdo_gasaerexch=1, others=0`.
 
-    Use `amicphys_after_writeback.npz` for `q`/`qqcw` because the
-    pre-writeback dump records `q` before the driver's vmr→mmr update —
-    those values are still pre-amicphys and don't reflect the changes
-    gasaerexch made in vmr space.
+    Includes the full gasaerexch path (both `mam_soaexch_1subarea` for
+    SOA exchange AND the H₂SO₄ analytical solver). Only the separate
+    `mam_pcarbon_aging_1subarea` sub-process is skipped via overlay
+    (out of M3.6 scope). Replaces the PR-D `per_process_gasaerexch_only`
+    fixture (which additionally skipped soaexch).
+
+    Use `amicphys_after_writeback.npz` for `q`/`qqcw` (the existing
+    `amicphys_after` dump captures `q` before the driver's vmr→mmr
+    writeback — see PR-D PROGRESS entry for context).
     """
     before = {k: np.asarray(v)
-              for k, v in np.load(GASAEREXCH_ONLY_REF_DIR / "amicphys_before.npz").items()}
+              for k, v in np.load(GASAEREXCH_REF_DIR / "amicphys_before.npz").items()}
     aw     = {k: np.asarray(v) for k, v in np.load(
-                GASAEREXCH_ONLY_REF_DIR / "amicphys_after_writeback.npz").items()}
+                GASAEREXCH_REF_DIR / "amicphys_after_writeback.npz").items()}
     return before, aw
 
 
-def test_orchestration_gasaerexch_only_matches_fortran(gasaerexch_only_captured) -> None:
+def test_orchestration_gasaerexch_matches_fortran(gasaerexch_captured) -> None:
     """JAX `amicphys(state, mdo_gasaerexch=1, others=0)` reproduces the
-    Fortran single-toggle gasaerexch-only fixture (with SOA skipped).
+    Fortran gasaerexch+soaexch fixture (no skip patches besides pcarbon
+    aging) at 1e-6 on `q`/`qqcw` (M3.6 PR-E).
     """
-    before, aw = gasaerexch_only_captured
+    before, aw = gasaerexch_captured
     state = _build_state(before)
     new_state = amicphys(state,
                          mdo_gasaerexch=1, mdo_rename=0,

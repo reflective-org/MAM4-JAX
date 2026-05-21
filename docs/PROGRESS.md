@@ -6,6 +6,23 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-21 — Milestone 3.6 (PR-E) — Soaexch port (single-substep)
+
+- PR: pending (`m3/soaexch`)
+- Plan: [`docs/plans/005-soaexch-port.md`](plans/005-soaexch-port.md).
+- **Port** `_mam_soaexch_1subarea` in `mam4_jax/processes/amicphys.py` (~200 LOC of JAX) — non-adaptive variant: assumes `dtcur = dtfull` so the Fortran's `do while (tcur < dtfull)` loop exits after one iteration. Empirically validates on the box-model fixture; if a future fixture ever needs adaptive stepping, the validation test will fail loudly and that triggers PR-E2 (adaptive `jax.lax.while_loop`).
+- Wired **unconditionally** into `_mam_gasaerexch_1subarea` at the position matching Fortran line 3430 — no `do_soaexch` flag, matches the Fortran API exactly. The H₂SO₄ analytical solver (PR-D) still runs after soaexch on the H₂SO₄ entries it owns; SOA and H₂SO₄ touch disjoint qaer/qgas slots so the order doesn't matter for correctness.
+- **New init-dump constants** (extending `scripts/patches/amicphys_init_dump.patch`): `npoa`, `nsoa`, `iaer_pom`, `iaer_soa`, `npca`, `nufi`, `mode_aging_optaa(ntot_amode)`, `lptr2_soa_a_amode(ntot_amode, nsoa)`. The dump patch also extends `modal_aero_amicphys_init`'s `use modal_aero_data, only:` list with `lptr2_soa_a_amode` (it wasn't in scope before). Added to `data.py` as `AMICPHYS_{NPOA,NSOA,IAER_POM,IAER_SOA,NPCA,NUFI}`, `MODE_AGING_OPTAA`, `LPTR2_SOA_A_AMODE_PRESENT` (boolean form — Fortran only uses the `> 0` check). Parity test in `tests/test_scaffolding.py`.
+- **Validation surface restructured:**
+  - **DELETE**: `tests/reference/per_process_gasaerexch_only/` (PR-D fixture with soaexch skipped — no longer useful since JAX now runs soaexch).
+  - **NEW**: `tests/reference/per_process_gasaerexch/` from `--mode instrumented-gasaerexch-with-soaexch-only` (`mdo_gasaerexch=1, others=0`, **without** `gasaerexch_skip_soaexch.patch`, **with** `skip_pcarbon_aging.patch`).
+  - **DROP**: `test_orchestration_gasaerexch_only_matches_fortran` (PR-D's test).
+  - **NEW**: `test_orchestration_gasaerexch_matches_fortran` validates JAX `amicphys(mdo_gasaerexch=1, others=0)` against the new fixture. **Max rel-err 4.77e-15** (machine ε) across the 4 SOA tracers (`q[9]=SOA gas`, `q[12]=accum SOA mass`, `q[19]=aitken SOA mass`, `q[28]=coarse SOA mass`).
+- **Build script change**: `scripts/build_reference.sh` gains a separate `--skip-pcarbon-aging` flag. Previously `--skip-soaexch` bundled both skips; now they're independent. `--skip-soaexch` still implies `--skip-pcarbon-aging` for back-compat with the PR-D-era fixture-regen workflow.
+- **Forward-looking** (no code change in this PR): added **Milestone 7 — Diffrax migration (proposed)** to `docs/PLANS.md`. Captures the future direction to replace the handwritten solvers (PR-D H₂SO₄ analytical, this PR's soaexch step-1/step-2, eventual coag) with [`diffrax`](https://github.com/patrick-kidger/diffrax)-based solvers. Sequenced after M3.6 done so we have a stable bit-comparable baseline first.
+- Plot: `docs/figures/soaexch_residuals.png` — top panel: SOA gas drops one order of magnitude over 60 steps as it condenses onto aerosols; accum and aitken pick up the mass. Bottom panel: per-(timestep, SOA-tracer) rel-err vs. ADR-003 — sits at machine ε.
+- Full suite: **49/49 green**.
+
 ## 2026-05-20 — Milestone 3.6 (PR-D) — Gasaerexch port (H₂SO₄ solver, no SOA)
 
 - PR: pending (`m3/gasaerexch-no-soa`)

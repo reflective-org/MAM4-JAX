@@ -41,14 +41,14 @@ tests/reference/
 │   ├── amicphys_after.npz
 │   ├── rename_before.npz
 │   └── rename_after.npz
-├── per_process_gasaerexch_only/    # mdo_gasaerexch=1; soaexch + pcarbon-aging skipped via patches
+├── per_process_gasaerexch/         # mdo_gasaerexch=1; pcarbon-aging skipped via patch (M3.6 PR-E)
 │   ├── calcsize_before.npz
 │   ├── calcsize_after.npz
 │   ├── wateruptake_before.npz
 │   ├── wateruptake_after.npz
 │   ├── amicphys_before.npz
 │   ├── amicphys_after.npz                # pre vmr→mmr writeback (always = before.q)
-│   └── amicphys_after_writeback.npz      # post vmr→mmr writeback (where gasaerexch changes appear)
+│   └── amicphys_after_writeback.npz      # post vmr→mmr writeback
 ├── polysvp/                        # standalone polysvp T-sweep
 │   └── reference.npz
 ├── qsat/                           # standalone qsat (T, p)-grid
@@ -101,6 +101,12 @@ The same `indices/reference.npz` also carries the amicphys-internal mapping/conv
 | `fcvt_num`, `fcvt_wtr` | scalar | Same, for number and aerosol-water tracers. |
 | `mwdry` | scalar | Mean molecular weight of dry air. |
 | `adv_mass` | `(gas_pcnst,)` | Per-constituent molecular weight. Combined with `mwdry`, gives the driver-side `mmr → vmr` factor `mwdry/adv_mass`. |
+| `vmdry`, `mw_gas`, `vol_molar_gas`, `accom_coef_gas` | scalar / `(ngas,)` | Gas-property constants used by gasaerexch's helpers (M3.6 PR-D). |
+| `amicphys_npoa`, `amicphys_nsoa` | scalar | Number of primary / secondary organic-aerosol species (M3.6 PR-E). |
+| `amicphys_iaer_pom`, `amicphys_iaer_soa` | scalar | 1-based amicphys-internal iaer indices for POM and SOA. |
+| `amicphys_npca`, `amicphys_nufi` | scalar | 1-based mode indices for primary-carbon and ultrafine. Either may be `-999888777` (Fortran's "absent" sentinel) — MAM4-MOM has no ultrafine. |
+| `mode_aging_optaa` | `(ntot_amode,)` | Per-mode aging flag; `1` means the mode participates in SOA aging. |
+| `lptr2_soa_a_amode` | `(ntot_amode, nsoa)` | Per-(mode, soa-spec) pcnst index. soaexch only uses the boolean `> 0` form. Fortran's sentinel `-999888777` indicates absent. |
 
 Cross-check: `pcnst_lmap_num` must equal `numptr_amode` (different Fortran tables, same physical mapping). Enforced by `test_amicphys_init_tables_match_npz_reference`.
 
@@ -193,23 +199,19 @@ Empirical note: with gasaerexch off, `qaer_delsub_grow4rnam` is identically zero
 
 Same six tags + rename hook as `per_process/`. Schemas are identical (`q` etc. for the outer dumps; `qnum_cur`/`qaer_cur`/... for `rename_*`).
 
-### `per_process_gasaerexch_only/` — single-toggle gasaerexch-only fixture
+### `per_process_gasaerexch/` — single-toggle gasaerexch (incl. soaexch) fixture
 
-Captured by `scripts/capture_reference.py --mode instrumented-gasaerexch-only`
-with the namelist set to `mdo_gasaerexch=1, mdo_rename=mdo_newnuc=mdo_coag=0`
-plus two additional Fortran-side patches:
+Captured by `scripts/capture_reference.py --mode instrumented-gasaerexch-with-soaexch-only`
+with the namelist set to `mdo_gasaerexch=1, mdo_rename=mdo_newnuc=mdo_coag=0`,
+plus only the `scripts/patches/skip_pcarbon_aging.patch` overlay (which
+skips the `mam_pcarbon_aging_1subarea` call inside
+`mam_amicphys_1subarea_clear` — pcarbon aging is a separate sub-process
+outside M3.6 scope). SOA exchange runs as in the unmodified Fortran.
 
-- `scripts/patches/gasaerexch_skip_soaexch.patch` — skips the
-  `mam_soaexch_1subarea` call inside `mam_gasaerexch_1subarea` so the
-  SOA gas tracer doesn't diverge between Fortran (which would otherwise
-  run SOA exchange) and JAX (which doesn't port it until PR-E).
-- `scripts/patches/skip_pcarbon_aging.patch` — skips the
-  `mam_pcarbon_aging_1subarea` call inside `mam_amicphys_1subarea_clear`.
-  Without this, the Fortran transfers gasaerexch-deposited so4 mass
-  from pcarbon to accum, which JAX doesn't track (the aging port is
-  out of scope for M3.6).
+Used by M3.6 PR-E's `tests/test_amicphys.py::test_orchestration_gasaerexch_matches_fortran`.
+Replaces the deleted `per_process_gasaerexch_only/` fixture (which
+additionally skipped soaexch, used by PR-D before soaexch was ported).
 
-Used by M3.6 PR-D's `tests/test_amicphys.py::test_orchestration_gasaerexch_only_matches_fortran`.
 The new `amicphys_after_writeback.npz` is the validation target rather
 than `amicphys_after.npz`: the existing `amicphys_after` dump captures
 `q` *before* the driver's vmr→mmr writeback at `driver.F90:1325`, so

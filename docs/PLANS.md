@@ -63,7 +63,7 @@ When a milestone is in progress, its subtasks become the working task list. As s
    - 5b. [x] `mam_rename_1subarea` (~323 LOC) — Aitken → accum mode-transfer. Ported in `mam4_jax/processes/amicphys.py` against the amicphys-local view (`qnum_cur`, `qaer_cur`, `qaer_delsub_grow4rnam`, `qwtr_cur`, `fac_m2v_aer`). Validated against `tests/reference/per_process/rename_{before,after}.npz` captured via the new `scripts/patches/rename_hook.patch` overlay. Max rel-err: qnum 2.5e-9, qaer 7.0e-10 across all 60 timesteps. The orchestration shell's call to rename is deferred to PR-C — wiring requires the state-dict ↔ amicphys-local-view unpacking that lands alongside `_mam_gasaerexch_1subarea`. Plot: `docs/figures/rename_residuals.png`. Plan: `docs/plans/002-rename-port.md`.
    - 5c. [x] **Foundation + wire rename**: state-dict ↔ amicphys-local-view unpacking layer (`_unpack_state_to_amicphys_view`, `_repack_amicphys_view_to_state` in `mam4_jax/processes/amicphys.py`) using a two-stage conversion (driver-side mmr→vmr via `MWDRY/ADV_MASS` + amicphys-internal vmr→local via `FCVT_*`). Wires `_mam_rename_1subarea` into the orchestration shell. Validated via new single-toggle Fortran capture `tests/reference/per_process_rename_only/` and the new test `test_orchestration_rename_only_matches_fortran` (rel-err < 1e-12 across 60 steps). Empirical finding: with gasaerexch off, the Fortran rename's optaa=40 guard trips and rename is a no-op every step, so the orchestration test is a full unpack/repack passthrough check. Plan: `docs/plans/003-foundation-rename-wiring.md`. **Scope expansion (2026-05-20):** reading `mam_gasaerexch_1subarea`'s source revealed it calls `mam_soaexch_1subarea` (~330 LOC) plus `gas_aer_uptkrates_1box1gas` (~148 LOC), so the original 4-PR remainder is now a 5-PR remainder.
    - 5d. [x] `mam_gasaerexch_1subarea` proper (~306 LOC) — H₂SO₄ analytical solver + leaf helpers (`gas_diffusivity`, `mean_molecular_speed`, `gas_aer_uptkrates_1box1gas`). Ported in `mam4_jax/processes/amicphys.py`. Wired into the orchestration via PR-C's unpack/repack scaffold. Validated against `tests/reference/per_process_gasaerexch_only/amicphys_after_writeback.npz` (single-toggle Fortran capture with SOA and pcarbon-aging both skipped via overlays). Max rel-err **7.8e-16** (machine ε) on the 5 gasaerexch-modified tracers across 60 timesteps. Plot: `docs/figures/gasaerexch_residuals.png`. Plan: `docs/plans/004-gasaerexch-no-soa-port.md`.
-   - 5e. [ ] `mam_soaexch_1subarea` (~330 LOC) — secondary-organic-aerosol condensation/evaporation (called from gasaerexch's body).
+   - 5e. [x] `mam_soaexch_1subarea` (~330 LOC) — secondary-organic-aerosol condensation/evaporation (called from gasaerexch's body). Ported in `mam4_jax/processes/amicphys.py` under the single-substep assumption (`dtcur = dtfull`; adaptive sub-stepping deferred to a follow-up PR-E2 if a fixture ever triggers it). Wired unconditionally into `_mam_gasaerexch_1subarea`. Validated against the new `tests/reference/per_process_gasaerexch/` fixture (no `gasaerexch_skip_soaexch.patch`, only `skip_pcarbon_aging.patch`) — max rel-err **4.77e-15** (machine ε) on the 4 SOA tracers across 60 timesteps. Plot: `docs/figures/soaexch_residuals.png`. Plan: `docs/plans/005-soaexch-port.md`.
    - 5f. [ ] `mam_newnuc_1subarea` (~415 LOC) — binary H₂SO₄–H₂O nucleation.
    - 5g. [ ] `mam_coag_1subarea` (~437 LOC) — Brownian coagulation kernels.
 
@@ -97,6 +97,27 @@ Each port lands as its own PR following the validation workflow in `CLAUDE.md` (
 - Differentiability audit (which processes admit autodiff cleanly).
 
 Each optimization lands as its own PR with a before/after correctness check (still `1e-6`) and a benchmark.
+
+---
+
+## Milestone 7 — Diffrax migration (proposed)
+
+**Status:** proposed (owner-introduced 2026-05-21 during M3.6 PR-E planning).
+
+Migrate the handwritten ODE solvers we've been writing to [`diffrax`](https://github.com/patrick-kidger/diffrax), the JAX-native ODE/SDE library. Affects:
+
+- H₂SO₄ analytical solver in PR-D (`_mam_gasaerexch_1subarea`'s three-branch `tmp_kxt` / Taylor / exp formula).
+- SOA exchange step-1/step-2 semi-implicit solver in PR-E (`_mam_soaexch_1subarea`).
+- Adaptive sub-stepping in PR-E2 (when triggered) — diffrax provides this for free.
+- Coupled ODE systems in PR-G (`_mam_coag_1subarea`, if it has any).
+
+**Pros.** JIT/grad/vmap-clean; better numerics on stiff systems (Kvaerno5, KenCarp4); adaptive stepping for free; standard diagnostics/error estimators.
+
+**Cons.** Adds runtime dependency (~3 MB); per-step output may differ from Fortran by ~1 ULP because the solver choice and tolerances differ; cross-validation against Fortran at 1e-6 becomes trickier on stiff problems.
+
+**Sequencing.** After M3.6 done — having a stable bit-comparable baseline against Fortran first lets us measure the diffrax delta cleanly. May fold into Milestone 6 (Phase B optimization) or land as its own milestone, TBD when we're ready to plan it.
+
+**Out of scope today.** Spec-level decisions (which solver family, which tolerances, how to validate against Fortran) — those happen when this milestone is approved to "in progress".
 
 ---
 

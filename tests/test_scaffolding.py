@@ -153,6 +153,18 @@ def test_amicphys_init_tables_match_npz_reference() -> None:
     np.testing.assert_array_equal(ref["vol_molar_gas"],  data.VOL_MOLAR_GAS)
     np.testing.assert_array_equal(ref["accom_coef_gas"], data.ACCOM_COEF_GAS)
 
+    # SOA-specific constants (M3.6 PR-E — for soaexch).
+    assert int(ref["amicphys_npoa"]) == data.AMICPHYS_NPOA
+    assert int(ref["amicphys_nsoa"]) == data.AMICPHYS_NSOA
+    # Fortran 1-based → 0-based: subtract 1.
+    assert int(ref["amicphys_iaer_pom"]) - 1 == data.AMICPHYS_IAER_POM
+    assert int(ref["amicphys_iaer_soa"]) - 1 == data.AMICPHYS_IAER_SOA
+    assert int(ref["amicphys_npca"])     - 1 == data.AMICPHYS_NPCA
+    np.testing.assert_array_equal(ref["mode_aging_optaa"], data.MODE_AGING_OPTAA)
+    # Boolean form of lptr2_soa_a_amode (only the > 0 check is used in soaexch).
+    lptr2_present = ref["lptr2_soa_a_amode"] > 0
+    np.testing.assert_array_equal(lptr2_present, data.LPTR2_SOA_A_AMODE_PRESENT)
+
 
 def test_get_number_returns_slice() -> None:
     import jax.numpy as jnp

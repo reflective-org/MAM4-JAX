@@ -1,6 +1,15 @@
 --- a/modal_aero_amicphys.F90
 +++ b/modal_aero_amicphys.F90
-@@ -6098,4 +6098,61 @@
+@@ -5501,7 +5501,7 @@
+     modeptr_accum, modeptr_aitken, modeptr_pcarbon, modeptr_ufine, &
+     modeptr_maccum, modeptr_maitken, &
+     nspec_amode, &
+-    numptr_amode, numptrcw_amode, sigmag_amode
++    numptr_amode, numptrcw_amode, sigmag_amode, lptr2_soa_a_amode
+ 
+ implicit none
+ 
+@@ -6098,4 +6098,73 @@
        end if ! ( masterproc )
  
  
@@ -56,6 +65,18 @@
 +         write(unit_aa,'(*(1pe23.15,1x))') (vol_molar_gas(ia), ia=1, ngas)
 +         write(unit_aa,'(/a)') '% accom_coef_gas (shape: ngas)'
 +         write(unit_aa,'(*(1pe23.15,1x))') (accom_coef_gas(ia), ia=1, ngas)
++         write(unit_aa,'(/a,1x,i0)') '% npoa', npoa
++         write(unit_aa,'(/a,1x,i0)') '% nsoa', nsoa
++         write(unit_aa,'(/a,1x,i0)') '% iaer_pom', iaer_pom
++         write(unit_aa,'(/a,1x,i0)') '% iaer_soa', iaer_soa
++         write(unit_aa,'(/a,1x,i0)') '% npca', npca
++         write(unit_aa,'(/a,1x,i0)') '% nufi', nufi
++         write(unit_aa,'(/a)') '% mode_aging_optaa (shape: ntot_amode)'
++         write(unit_aa,'(*(i0,1x))') (mode_aging_optaa(jm), jm=1, ntot_amode)
++         write(unit_aa,'(/a)') '% lptr2_soa_a_amode (shape: ntot_amode x nsoa; gas_pcnst-relative)'
++         do jm = 1, ntot_amode
++            write(unit_aa,'(*(i0,1x))') (lptr2_soa_a_amode(jm, ia), ia=1, nsoa)
++         end do
 +         close(unit_aa)
 +      end block
 +!==> MAM4-JAX end
