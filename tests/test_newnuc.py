@@ -12,9 +12,14 @@ import jax.numpy as jnp
 import numpy as np
 
 import mam4_jax  # noqa: F401  - enables jax_enable_x64
-from mam4_jax.newnuc import binary_nuc_vehk2002, pbl_nuc_wang2008
+from mam4_jax.newnuc import (
+    binary_nuc_vehk2002, pbl_nuc_wang2008, mer07_veh02_nuc_mosaic_1box,
+)
 
 REF = Path(__file__).resolve().parent / "reference" / "newnuc_helpers" / "reference.npz"
+REF_DISPATCHER = (
+    Path(__file__).resolve().parent / "reference" / "mer07_veh02" / "reference.npz"
+)
 RTOL = 1e-6
 # Some of the captured outputs include `1.79e308` (Fortran's huge(real8))
 # alongside `0.0` (when nucleation rate underflows). Atol absorbs the
@@ -94,3 +99,54 @@ def test_pbl_nuc_wang2008_flagaa12_matches_fortran() -> None:
                                rtol=RTOL, atol=ATOL, err_msg="cnum_nh3 mismatch")
     np.testing.assert_allclose(np.asarray(radius),     d["pbl12_radius"],
                                rtol=RTOL, atol=ATOL, err_msg="radius mismatch")
+
+
+def test_mer07_veh02_dispatcher_matches_fortran() -> None:
+    """Validate the dispatcher (M3.6 PR-F2) against the standalone driver
+    sweep — 2160 records covering subcutoff, low-rate, active no-PBL,
+    active PBL, and gas-limited regimes."""
+    d = {k: np.asarray(v) for k, v in np.load(REF_DISPATCHER).items()}
+
+    # Aitken-mode bounds for MAM4-MOM (matches the Fortran driver).
+    dplom_sect = 0.0087e-6
+    dphim_sect = 0.0520e-6
+
+    out = mer07_veh02_nuc_mosaic_1box(
+        dtnuc=30.0,
+        temp=jnp.asarray(d["temp"]),
+        rh=jnp.asarray(d["rh"]),
+        press=1.0e5,
+        zm=jnp.asarray(d["zm"]),
+        pblh=1000.0,
+        qh2so4_cur=jnp.asarray(d["qh2so4"]),
+        qh2so4_avg=jnp.asarray(d["qh2so4"]),
+        h2so4_uptkrate=jnp.asarray(d["uptkrate"]),
+        dplom_sect=dplom_sect,
+        dphim_sect=dphim_sect,
+        newnuc_method_flagaa=11,
+    )
+    (isize_nuc, qnuma_del, qso4a_del, qnh4a_del,
+     qh2so4_del, qnh3_del, dens_nh4so4a, dnclusterdt) = out
+
+    # isize_nuc is always 1 (nsize=1).
+    np.testing.assert_array_equal(np.asarray(isize_nuc), d["isize_nuc"])
+
+    # NH₃-related outputs are always zero.
+    np.testing.assert_array_equal(np.asarray(qnh3_del),  d["qnh3_del"])
+    np.testing.assert_array_equal(np.asarray(qnh4a_del), d["qnh4a_del"])
+
+    # dens_nh4so4a is always 1770 (pure sulfuric acid).
+    np.testing.assert_array_equal(np.asarray(dens_nh4so4a), d["dens_nh4so4a"])
+
+    # The physics outputs need rel-err < 1e-6.
+    for name, jax_arr, ref_arr in [
+        ("qnuma_del",   qnuma_del,   d["qnuma_del"]),
+        ("qso4a_del",   qso4a_del,   d["qso4a_del"]),
+        ("qh2so4_del",  qh2so4_del,  d["qh2so4_del"]),
+        ("dnclusterdt", dnclusterdt, d["dnclusterdt"]),
+    ]:
+        np.testing.assert_allclose(
+            np.asarray(jax_arr), ref_arr,
+            rtol=RTOL, atol=ATOL,
+            err_msg=f"{name} mismatch",
+        )

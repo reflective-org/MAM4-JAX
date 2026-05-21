@@ -104,6 +104,8 @@ KOHLER_OUT_DIR = REPO_ROOT / "tests" / "reference" / "kohler"
 KOHLER_EXE = RUN_DIR / "kohler_driver.exe"
 NEWNUC_HELPERS_OUT_DIR = REPO_ROOT / "tests" / "reference" / "newnuc_helpers"
 NEWNUC_HELPERS_EXE = RUN_DIR / "newnuc_helpers_driver.exe"
+MER07_VEH02_OUT_DIR = REPO_ROOT / "tests" / "reference" / "mer07_veh02"
+MER07_VEH02_EXE = RUN_DIR / "mer07_veh02_driver.exe"
 INDICES_OUT_DIR = REPO_ROOT / "tests" / "reference" / "indices"
 
 TOTAL_DURATION_S = 1800
@@ -159,7 +161,8 @@ def ensure_built(instrumented: bool = False, polysvp: bool = False,
                  kohler: bool = False, no_aitacc_transfer: bool = False,
                  skip_soaexch: bool = False,
                  skip_pcarbon_aging: bool = False,
-                 newnuc_helpers: bool = False) -> None:
+                 newnuc_helpers: bool = False,
+                 mer07_veh02: bool = False) -> None:
     """Build the executable. Always rebuilds — the build flag determines
     whether the previous binary is the right flavour."""
     cmd = [str(BUILD_SCRIPT)]
@@ -169,6 +172,7 @@ def ensure_built(instrumented: bool = False, polysvp: bool = False,
     if makoh:               cmd.append("--makoh")
     if kohler:              cmd.append("--kohler")
     if newnuc_helpers:      cmd.append("--newnuc-helpers")
+    if mer07_veh02:         cmd.append("--mer07-veh02")
     if no_aitacc_transfer:  cmd.append("--no-aitacc-transfer")
     if skip_soaexch:        cmd.append("--skip-soaexch")
     if skip_pcarbon_aging:  cmd.append("--skip-pcarbon-aging")
@@ -179,6 +183,7 @@ def ensure_built(instrumented: bool = False, polysvp: bool = False,
     if makoh:               flavours.append("makoh")
     if kohler:              flavours.append("kohler")
     if newnuc_helpers:      flavours.append("newnuc-helpers")
+    if mer07_veh02:         flavours.append("mer07-veh02")
     if no_aitacc_transfer:  flavours.append("no-aitacc-transfer")
     if skip_soaexch:        flavours.append("skip-soaexch")
     if skip_pcarbon_aging:  flavours.append("skip-pcarbon-aging")
@@ -493,6 +498,9 @@ def _read_amicphys_init(path: Path) -> dict[str, np.ndarray]:
     nufi        = scalar_int("nufi")
     mode_aging_optaa  = ints("mode_aging_optaa")
     lptr2_soa_a_amode = ints_2d("lptr2_soa_a_amode", ntot_amode, nsoa)
+    mw_so4a_host      = scalar_float("mw_so4a_host")
+    mw_nh4a_host      = scalar_float("mw_nh4a_host")
+    dens_so4a_host    = scalar_float("dens_so4a_host")
 
     # Convert lmap_* from gas_pcnst-relative 1-based to pcnst-absolute 0-based.
     # Empty slots (Fortran 0) become -1 sentinel.
@@ -533,6 +541,9 @@ def _read_amicphys_init(path: Path) -> dict[str, np.ndarray]:
         "amicphys_nufi":        np.int32(nufi),
         "mode_aging_optaa":     mode_aging_optaa,
         "lptr2_soa_a_amode":    lptr2_soa_a_amode,
+        "mw_so4a_host":         np.float64(mw_so4a_host),
+        "mw_nh4a_host":         np.float64(mw_nh4a_host),
+        "dens_so4a_host":       np.float64(dens_so4a_host),
     }
 
 
@@ -808,6 +819,68 @@ def run_newnuc_helpers() -> list[Path]:
     return [out]
 
 
+def _read_mer07_veh02(path: Path) -> dict[str, np.ndarray]:
+    """Parse the mer07_veh02 reference text file.
+
+    Two sections:
+      inputs:  (ntot, 5)   temp rh zm qh2so4 uptkrate
+      outputs: (ntot, 8)   isize_nuc(int) qnuma_del qso4a_del qnh4a_del
+                           qh2so4_del qnh3_del dens_nh4so4a dnclusterdt
+    """
+    sections: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in path.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith("%"):
+            current = s.lstrip("%").strip().split()[0]
+            sections[current] = []
+            continue
+        if current is not None:
+            sections[current].append(s)
+
+    inputs = np.asarray(
+        [[float(t) for t in ln.split()] for ln in sections["inputs"]],
+        dtype=np.float64,
+    )
+    outputs_int = []
+    outputs_flt = []
+    for ln in sections["outputs"]:
+        parts = ln.split()
+        outputs_int.append([int(parts[0])])
+        outputs_flt.append([float(parts[i + 1]) for i in range(7)])
+    outputs_int = np.asarray(outputs_int, dtype=np.int32)
+    outputs_flt = np.asarray(outputs_flt, dtype=np.float64)
+
+    return {
+        "temp":         inputs[:, 0],
+        "rh":           inputs[:, 1],
+        "zm":           inputs[:, 2],
+        "qh2so4":       inputs[:, 3],
+        "uptkrate":     inputs[:, 4],
+        "isize_nuc":    outputs_int[:, 0],
+        "qnuma_del":    outputs_flt[:, 0],
+        "qso4a_del":    outputs_flt[:, 1],
+        "qnh4a_del":    outputs_flt[:, 2],
+        "qh2so4_del":   outputs_flt[:, 3],
+        "qnh3_del":     outputs_flt[:, 4],
+        "dens_nh4so4a": outputs_flt[:, 5],
+        "dnclusterdt":  outputs_flt[:, 6],
+    }
+
+
+def run_mer07_veh02() -> list[Path]:
+    MER07_VEH02_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    print("[capture_reference] running mer07_veh02 driver ...", flush=True)
+    subprocess.run(["./mer07_veh02_driver.exe"], cwd=RUN_DIR, check=True,
+                   stdout=subprocess.DEVNULL)
+    arrays = _read_mer07_veh02(RUN_DIR / "mer07_veh02_reference.txt")
+    out = MER07_VEH02_OUT_DIR / "reference.npz"
+    np.savez(out, **arrays)
+    return [out]
+
+
 # ----- entry point ----------------------------------------------------------
 
 def main() -> int:
@@ -818,7 +891,8 @@ def main() -> int:
                  "instrumented-amicphys-off", "instrumented-rename-only",
                  "instrumented-gasaerexch-only",
                  "instrumented-gasaerexch-with-soaexch-only",
-                 "polysvp", "qsat", "makoh", "kohler", "newnuc-helpers"),
+                 "polysvp", "qsat", "makoh", "kohler", "newnuc-helpers",
+                 "mer07-veh02"),
         default="sweep",
     )
     ap.add_argument(
@@ -915,10 +989,14 @@ def main() -> int:
         ensure_built(kohler=True)
         written = run_kohler()
         out_root = KOHLER_OUT_DIR
-    else:  # newnuc-helpers
+    elif args.mode == "newnuc-helpers":
         ensure_built(newnuc_helpers=True)
         written = run_newnuc_helpers()
         out_root = NEWNUC_HELPERS_OUT_DIR
+    else:  # mer07-veh02
+        ensure_built(mer07_veh02=True)
+        written = run_mer07_veh02()
+        out_root = MER07_VEH02_OUT_DIR
 
     print(f"\n[capture_reference] {len(written)} file(s) written under {out_root}")
     for p in written:

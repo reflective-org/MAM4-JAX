@@ -6,6 +6,25 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-21 — Milestone 3.6 (PR-F2) — Newnuc dispatcher (`mer07_veh02_nuc_mosaic_1box`)
+
+- PR: pending (`m3/mer07-veh02-dispatcher`)
+- Plan: [`docs/plans/007-mer07-veh02-dispatcher-port.md`](plans/007-mer07-veh02-dispatcher-port.md). Wraps PR-F1's leaf parameterizations with unit conversion, Kerminen-Kulmala 2002 size correction, grown-particle composition logic, and final `qh2so4_del / qso4a_del / qnuma_del` accounting.
+- **Port** (`mam4_jax/newnuc.py`, ~150 LOC):
+  - `mer07_veh02_nuc_mosaic_1box(dtnuc, temp, rh, press, zm, pblh, qh2so4_cur, qh2so4_avg, h2so4_uptkrate, dplom_sect, dphim_sect, newnuc_method_flagaa=11)` → 8-tuple matching Fortran's output order.
+  - MAM4-MOM-specific simplifications (all in scope per plan 007): no ternary (no NH₃), `nsize=1` hardcoded (amicphys never passes >1), no NH₃-aware composition (`tmp_n3=1` always).
+  - Fortran early-returns (the rate-too-low gate at line 856 and the freduce gate at line 1033) expressed as `jnp.where` masks so the function stays JIT-friendly.
+- **Validation infrastructure**:
+  - New standalone driver `scripts/reference_drivers/mer07_veh02_driver.F90` sweeping a 5D grid (6 T × 5 RH × 3 zm × 8 qh2so4 × 3 uptkrate = 2160 records) covering all 5 regimes: subcutoff / low-rate / active no-PBL / active PBL / gas-limited.
+  - Reuses the existing `expose_internals.patch` overlay (which already exposes `mer07_veh02_nuc_mosaic_1box`).
+  - New build flag `--mer07-veh02`; new capture mode `--mode mer07-veh02` → `tests/reference/mer07_veh02/reference.npz`.
+  - Extended amicphys init dump to capture `mw_so4a_host` (=115), `mw_nh4a_host` (=115; falls back to so4a_host when no NH4), `dens_so4a_host` (=1770). Hardcoded the pure-`parameter` dispatcher constants (`_ACCOM_COEF_H2SO4=0.65`, `_DENS_{AMMSULF,AMMBISULF,SULFACID}=1770`, etc.) directly in `newnuc.py` since they never vary at runtime.
+- **Tests** (`tests/test_newnuc.py`, 1 new test): `test_mer07_veh02_dispatcher_matches_fortran`. **Max rel-err 2.27e-12** on all 4 physics outputs (`qnuma_del`, `qso4a_del`, `qh2so4_del`, `dnclusterdt`) across 2160 records. Integer / zero outputs (`isize_nuc`=1, `qnh3_del`=0, `qnh4a_del`=0, `dens_nh4so4a`=1770) checked bit-exact.
+- **Plot** `docs/figures/mer07_veh02_residuals.png`:
+  - Top: `dnclusterdt` vs `qh2so4` for three (T, z) slices. Inside the PBL (z=100m, z=800m) Wang 2008 dominates and the rate is nearly constant at ~1e16 #/m³/s regardless of T. Above PBL (z=1500m) only binary nucleation fires, dramatically suppressed at warm T until qh2so4 gets high enough.
+  - Bottom: per-record rel-err for all 4 physics outputs at ~1e-15 to 1e-12, ~6 orders below ADR-003.
+- Full suite: **53/53 green** (52 + 1 new).
+
 ## 2026-05-21 — Milestone 3.6 (PR-F1) — Nucleation leaf parameterizations
 
 - PR: pending (`m3/newnuc-helpers`)

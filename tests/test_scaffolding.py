@@ -165,6 +165,11 @@ def test_amicphys_init_tables_match_npz_reference() -> None:
     lptr2_present = ref["lptr2_soa_a_amode"] > 0
     np.testing.assert_array_equal(lptr2_present, data.LPTR2_SOA_A_AMODE_PRESENT)
 
+    # Host molecular weights and density (M3.6 PR-F2 — for newnuc dispatcher).
+    assert float(ref["mw_so4a_host"])   == data.MW_SO4A_HOST
+    assert float(ref["mw_nh4a_host"])   == data.MW_NH4A_HOST
+    assert float(ref["dens_so4a_host"]) == data.DENS_SO4A_HOST
+
 
 def test_get_number_returns_slice() -> None:
     import jax.numpy as jnp
