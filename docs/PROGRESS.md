@@ -6,6 +6,19 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-21 — Milestone 3.6 (PR-G2) — Coag wrapper: `getcoags_wrapper_f`
+
+- PR: pending (folded into PR #23 on `m3/getcoags-port` per owner direction)
+- Plan: [`docs/plans/010-getcoags-wrapper-port.md`](plans/010-getcoags-wrapper-port.md). Second of the 3-PR `coag` split; composes PR-G1's `getcoags` with prep math + CMAQ→MIRAGE2 post-processing.
+- **Port** in `mam4_jax/coag.py` (~70 new LOC):
+  - `getcoags_wrapper_f(airtemp, airprs, dgatk, dgacc, sgatk, sgacc, xxlsgat, xxlsgac, pdensat, pdensac)` → 8-tuple `(betaij0, betaij2i, betaij2j, betaij3, betaii0, betaii2, betajj0, betajj2)`. Direct transcription of Fortran `modal_aero_coag.F90:999-1129`.
+  - Prep: `lamda` (mean free path, U.S. Std Atm 1962), `amu` (dynamic viscosity), `knc`, `kfmat`, `kfmac`, `kfmatac` from the boltz/density formulas.
+  - Composes PR-G1's `getcoags`, then divides the 2nd/3rd-moment outputs by `(dg² · exp(2 log²σ))` / `(dg³ · exp(4.5 log²σ))` factors and clamps each beta to `≥ 0`.
+- **Constants**: added `PSTD = 101325.0 Pa` and `TMELT = 273.15 K` to `mam4_jax/constants.py` (from `shr_const_mod.F90`; first JAX consumers).
+- **Validation**: reused the PR-G1 fixture (`tests/reference/coag_coefficients/reference.npz` already carries the 8 beta keys). New test `test_getcoags_wrapper_f_matches_fortran` — 7/8 outputs at machine ε; `betaij2j` inherits PR-G1's 6.5e-9 (it's `qs21 / dumatk2`). Worst rel-err **6.5e-9** across 240 records.
+- **Plot** `docs/figures/getcoags_wrapper_residuals.png` (sibling of PR-G1's figure): same 4×2 layout, beta coefficients. Plot script `scripts/plot_getcoags_residuals.py` extended to render both figures in one run.
+- Full suite: **56/56 green** (55 + 1 new).
+
 ## 2026-05-21 — Milestone 3.6 (PR-G1) — Coag leaf: `getcoags`
 
 - PR: pending (`m3/getcoags-port`)

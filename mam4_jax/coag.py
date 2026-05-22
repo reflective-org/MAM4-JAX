@@ -5,24 +5,23 @@ JAX port of the leaf coagulation routines from
 process-level entry point :mod:`mam4_jax.processes.coag` (today a
 ``NotImplementedError`` stub) will compose in PR-G3.
 
-**Current contents (M3.6 PR-G1):**
+**Current contents (M3.6 PR-G1 + PR-G2):**
 
 * :func:`getcoags` — closed-form Whitby-style coagulation coefficients
   (Fortran lines 1177–2858). Returns the 8 inter- and intramodal
   zeroeth / second / third-moment coefficients used by
   ``modal_aero_coag_sub``.
+* :func:`getcoags_wrapper_f` — the wrapper (Fortran lines 999–1129)
+  that preps ``lamda`` / ``knc`` / ``kfmat*`` from ``(T, P, densities)``,
+  calls :func:`getcoags`, and post-processes the 8 raw outputs into
+  the 8 ``betaij*`` / ``betaii*`` / ``betajj*`` coefficients consumed
+  by ``mam_coag_1subarea``.
 
-The function is a line-by-line transcription of the Fortran. The
+Both functions are line-by-line transcriptions of the Fortran. The
 correction-factor lookup tables (``bm0``, ``bm0ij``, ``bm3i``,
 ``bm2ii``, ``bm2iitt``, ``bm2ij``, ``bm2ji``) live alongside this
 module as ``_coag_tables.npz`` — extracted once from the upstream
 Fortran ``data`` declarations by ``scripts/extract_coag_tables.py``.
-
-PR-G2 will add :func:`getcoags_wrapper_f` (the wrapper that preps
-``lamda`` / ``knc`` / ``kfmat*`` from T, P and densities, then calls
-``getcoags`` and post-processes the 8 raw outputs into the 8
-``betaij*`` / ``betaii*`` / ``betajj*`` coefficients consumed by
-``mam_coag_1subarea``).
 """
 from __future__ import annotations
 
@@ -30,6 +29,8 @@ from pathlib import Path
 
 import jax.numpy as jnp
 import numpy as np
+
+from .constants import BOLTZ, PSTD, TMELT
 
 # ---------------------------------------------------------------------------
 # Lookup tables
@@ -306,3 +307,82 @@ def getcoags(lamda, kfmatac, kfmat, kfmac, knc,
     qs22 = coagacac2 * bm2iitt_n2a
 
     return qs11, qn11, qs22, qn22, qs12, qs21, qn12, qv12
+
+
+# ---------------------------------------------------------------------------
+# getcoags_wrapper_f — prep + post-processing around getcoags
+# ---------------------------------------------------------------------------
+
+
+def getcoags_wrapper_f(airtemp, airprs,
+                       dgatk, dgacc, sgatk, sgacc,
+                       xxlsgat, xxlsgac,
+                       pdensat, pdensac):
+    """Wrap :func:`getcoags` with input prep and CMAQ→MIRAGE2 conversion.
+
+    Direct transcription of ``modal_aero_coag.F90:getcoags_wrapper_f``
+    lines 999–1129. Computes the four free-molecular / near-continuum
+    regime coefficients from ``(airtemp, airprs, pdensat, pdensac)``,
+    calls :func:`getcoags`, then divides the raw second/third-moment
+    outputs by the appropriate ``exp(k·log²σ)·d^p`` factors and clamps
+    to ``≥ 0``.
+
+    Parameters
+    ----------
+    airtemp, airprs
+        Air temperature (K) and pressure (Pa).
+    dgatk, dgacc
+        Aitken / accumulation geometric-mean diameters (m).
+    sgatk, sgacc
+        Aitken / accumulation geometric standard deviations (-).
+    xxlsgat, xxlsgac
+        ``log(sgatk)``, ``log(sgacc)``.
+    pdensat, pdensac
+        Aitken / accumulation modal particle density (kg/m³).
+
+    Returns
+    -------
+    (betaij0, betaij2i, betaij2j, betaij3, betaii0, betaii2, betajj0, betajj2)
+        Post-processed coagulation coefficients consumed by
+        ``mam_coag_1subarea``.
+    """
+    t0 = TMELT + 15.0
+    sqrt_temp = jnp.sqrt(airtemp)
+
+    # Mean free path — U.S. Standard Atmosphere 1962, table I.2.8.
+    lamda = 6.6328e-8 * PSTD * airtemp / (t0 * airprs)
+
+    # Dynamic viscosity — U.S. Standard Atmosphere 1962, page 14.
+    amu = 1.458e-6 * airtemp * sqrt_temp / (airtemp + 110.4)
+
+    knc     = _TWO3RDS * BOLTZ * airtemp / amu
+    kfmat   = jnp.sqrt(3.0 * BOLTZ * airtemp / pdensat)
+    kfmac   = jnp.sqrt(3.0 * BOLTZ * airtemp / pdensac)
+    kfmatac = jnp.sqrt(6.0 * BOLTZ * airtemp / (pdensat + pdensac))
+
+    # getcoags returns (qs11, qn11, qs22, qn22, qs12, qs21, qn12, qv12)
+    # which the Fortran wrapper stores as
+    #   (batat(2), batat(1), bacac(2), bacac(1),
+    #    batac(2), bacat(2), batac(1), c3ij).
+    qs11, qn11, qs22, qn22, qs12, qs21, qn12, qv12 = getcoags(
+        lamda, kfmatac, kfmat, kfmac, knc,
+        dgatk, dgacc, sgatk, sgacc, xxlsgat, xxlsgac,
+    )
+
+    # CMAQ → MIRAGE2 conversion factors.
+    dumacc2 = (dgacc * dgacc) * jnp.exp(2.0 * xxlsgac * xxlsgac)
+    dumatk2 = (dgatk * dgatk) * jnp.exp(2.0 * xxlsgat * xxlsgat)
+    dumatk3 = (dgatk * dgatk * dgatk) * jnp.exp(4.5 * xxlsgat * xxlsgat)
+
+    betaii0  = jnp.maximum(0.0, qn11)          # batat(1)
+    betajj0  = jnp.maximum(0.0, qn22)          # bacac(1)
+    betaij0  = jnp.maximum(0.0, qn12)          # batac(1)
+    betaij3  = jnp.maximum(0.0, qv12 / dumatk3)
+
+    betajj2  = jnp.maximum(0.0, qs22 / dumacc2)
+    betaii2  = jnp.maximum(0.0, qs11 / dumatk2)
+    betaij2i = jnp.maximum(0.0, qs12 / dumatk2)  # batac(2)
+    betaij2j = jnp.maximum(0.0, qs21 / dumatk2)  # bacat(2)
+
+    return (betaij0, betaij2i, betaij2j, betaij3,
+            betaii0, betaii2, betajj0, betajj2)
