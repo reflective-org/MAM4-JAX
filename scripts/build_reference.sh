@@ -72,10 +72,11 @@ if [[ "$SKIP_SOAEXCH" == "1" && "$INSTRUMENTED" != "1" ]]; then
   exit 2
 fi
 
-if [[ "$SKIP_PCARBON_AGING" == "1" && "$INSTRUMENTED" != "1" ]]; then
-  echo "Error: --skip-pcarbon-aging must be combined with --instrumented" >&2
-  exit 2
-fi
+# --skip-pcarbon-aging modifies amicphys to no-op the pcarbon-aging
+# call; the change is independent of the instrumentation overlay.
+# M5's sweep-no-pcarbon-aging mode applies it to a baseline (non-
+# instrumented) build, so the previous "must be combined with
+# --instrumented" constraint has been lifted.
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC_DIR="$REPO_ROOT/mam4-original-src-code"

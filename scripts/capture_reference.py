@@ -84,6 +84,9 @@ EXE = RUN_DIR / "mam_box_test.exe"
 BUILD_SCRIPT = REPO_ROOT / "scripts" / "build_reference.sh"
 
 SWEEP_OUT_DIR = REPO_ROOT / "tests" / "reference" / "sweep"
+SWEEP_NO_PCA_OUT_DIR = (
+    REPO_ROOT / "tests" / "reference" / "sweep_no_pcarbon_aging"
+)
 PER_PROCESS_OUT_DIR = REPO_ROOT / "tests" / "reference" / "per_process"
 PER_PROCESS_NO_AITACC_OUT_DIR = REPO_ROOT / "tests" / "reference" / "per_process_no_aitacc"
 PER_PROCESS_AMICPHYS_OFF_OUT_DIR = REPO_ROOT / "tests" / "reference" / "per_process_amicphys_off"
@@ -221,13 +224,14 @@ def write_namelist(dt: int, nstep: int, *,
     ))
 
 
-def run_one_baseline(nstep: int) -> Path:
+def run_one_baseline(nstep: int, *, out_dir: Path = SWEEP_OUT_DIR,
+                     flavour: str = "sweep") -> Path:
     dt = TOTAL_DURATION_S // nstep
     write_namelist(dt, nstep)
-    print(f"[capture_reference] sweep dt={dt:>4}s nstep={nstep:<5} ...", flush=True)
+    print(f"[capture_reference] {flavour} dt={dt:>4}s nstep={nstep:<5} ...", flush=True)
     subprocess.run(["./mam_box_test.exe"], cwd=RUN_DIR, check=True,
                    stdout=subprocess.DEVNULL)
-    dest = SWEEP_OUT_DIR / f"mam_dt{dt}_ndt{nstep}.nc"
+    dest = out_dir / f"mam_dt{dt}_ndt{nstep}.nc"
     shutil.copy2(RUN_DIR / "mam_output.nc", dest)
     return dest
 
@@ -998,7 +1002,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument(
         "--mode",
-        choices=("sweep", "instrumented", "instrumented-no-aitacc",
+        choices=("sweep", "sweep-no-pcarbon-aging",
+                 "instrumented", "instrumented-no-aitacc",
                  "instrumented-amicphys-off", "instrumented-rename-only",
                  "instrumented-gasaerexch-only",
                  "instrumented-gasaerexch-with-soaexch-only",
@@ -1023,6 +1028,17 @@ def main() -> int:
         SWEEP_OUT_DIR.mkdir(parents=True, exist_ok=True)
         written = [run_one_baseline(n) for n in NSTEP_SWEEP]
         out_root = SWEEP_OUT_DIR
+    elif args.mode == "sweep-no-pcarbon-aging":
+        # 12-point convergence sweep with skip_pcarbon_aging.patch
+        # applied at build time. Matches the JAX port's M3.6 scope
+        # (pcarbon aging deferred); same rationale as the
+        # instrumented-full-minus-pcarbon-aging mode added in M4 PR-A.
+        ensure_built(skip_pcarbon_aging=True)
+        SWEEP_NO_PCA_OUT_DIR.mkdir(parents=True, exist_ok=True)
+        written = [run_one_baseline(n, out_dir=SWEEP_NO_PCA_OUT_DIR,
+                                    flavour="sweep-no-pcarbon-aging")
+                   for n in NSTEP_SWEEP]
+        out_root = SWEEP_NO_PCA_OUT_DIR
     elif args.mode == "instrumented":
         ensure_built(instrumented=True)
         nstep = args.nstep if args.nstep is not None else 1

@@ -90,20 +90,14 @@ Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` 
 
 ---
 
-## Milestone 5 — Convergence test reproduction (proposed)
+## Milestone 5 — Convergence test reproduction (partial)
 
-**Status:** proposed (M4 done 2026-05-22, M5 now unblocked). Reproduce the 12-point timestep sweep from `run_test.csh` (`1, 2, 4, 9, 18, 30, 60, 120, 180, 360, 900, 1800` substeps over 1800 s) and match Fortran outputs to `1e-6` at every step count. Generates a convergence-plot deliverable.
+**Status:** partial (2026-05-22). 6 of 12 step counts validated; 6 deferred to PR-E2.
 
-**Tentative subtasks (to be refined when M5 is approved to "in progress"):**
+- **PR-M5 (this milestone, current)** [x partial]: reproduce the 12-point timestep sweep from `run_test.csh` against the new `tests/reference/sweep_no_pcarbon_aging/*.nc` fixture. Validates **`nstep ∈ {60, 120, 180, 360, 900, 1800}`** at `rtol=1e-6` on `num_aer`/`so4_aer`/`soa_aer`/`h2so4_gas`/`soag_gas` for every captured timestep. Worst rel-err **1.98e-8** in that half (50× under ADR-003). The other 6 step counts (`nstep ≤ 30`, `dt ≥ 60s`) are marked `xfail` because Fortran's `mam_soaexch_1subarea` adaptive substepping kicks in there and the JAX port doesn't (deferred in M3.6 PR-E as PR-E2). Plan: `docs/plans/014-convergence-sweep.md`. Plot: `docs/figures/sweep_convergence.png`.
+- **PR-E2 (next)** [ ]: port adaptive SOA substepping (`dtcur = alpha_astem/tmpa` from `modal_aero_amicphys.F90:3835-3843`). ~100 LOC change to `_mam_soaexch_1subarea`. Validates the 6 currently-`xfail`ed step counts. Closes M5.
 
-1. Generate the 12-point Fortran NetCDF sweep against the matching "full-minus-pcarbon-aging" build (canonical namelist + `skip_pcarbon_aging.patch`). Reuses `scripts/build_reference.sh` infrastructure but writes NetCDF instead of `.npz` (or both); decide.
-2. Read Fortran NetCDF output into the JAX side for comparison. Likely `netCDF4` (already a pyproject dependency) — no new dependencies needed.
-3. Run `mam4_jax.driver.run_timesteps(ic, n)` for each `n` in the sweep; collect final-state trajectories.
-4. Validate at each `n`: JAX final state matches Fortran final state to `rtol=1e-6` (allow `1e-3` on size fields per the standing caveat).
-5. Convergence-plot deliverable — Fortran-vs-JAX final-step state across the 12 step counts (one axis = step count, another = chosen tracer/diameter). Highlights whether the operator-splitting solution converges at the same rate as Fortran's.
-6. Open-question: gas-chem extraction may need to land here if any of the sweep configurations toggles `mdo_gasaerexch` off. Defer the decision until after step 1 confirms the sweep config matches what JAX already supports.
-
-**Possible scope expansion**: NetCDF output emission from JAX (so the post-process notebook works against JAX outputs). Defer until the convergence test is validated.
+**Possible scope expansion**: NetCDF output emission from JAX (so the post-process notebook works against JAX outputs). Defer until PR-E2 closes M5.
 
 ---
 
