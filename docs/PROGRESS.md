@@ -6,6 +6,22 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-22 — Milestone 5 — Convergence sweep reproduction (partial). **M5 partially complete.**
+
+- PR: pending (`m5/convergence-sweep`)
+- Plan: [`docs/plans/014-convergence-sweep.md`](plans/014-convergence-sweep.md). Reproduces Fortran's 12-point timestep sweep over the canonical `(1, 2, 4, 9, 18, 30, 60, 120, 180, 360, 900, 1800)` step counts against the JAX driver.
+- **Scope decision (2026-05-22)**: empirical finding during M5 planning revealed a sharp threshold at `nstep = 60` (`deltat = 30s`). For `nstep ≥ 60`, JAX matches Fortran at machine ε; for `nstep ≤ 30`, the SOA exchange's adaptive substepping (`mam_soaexch_1subarea:3835-3843`, `dtcur = alpha_astem/tmpa`) fires in Fortran but JAX assumes single-substep (deferred in M3.6 PR-E as PR-E2 per `docs/DEFERRED.md`). Owner-approved decision: validate `nstep ≥ 60` now, open PR-E2 separately for adaptive substepping, then re-run M5 to close all 12.
+- **New capture mode** `--mode sweep-no-pcarbon-aging` in `scripts/capture_reference.py`: 12 NetCDF runs with `skip_pcarbon_aging.patch` applied (matches JAX's M3.6 scope). Output → `tests/reference/sweep_no_pcarbon_aging/mam_dt<DT>_ndt<N>.nc`. `scripts/build_reference.sh` constraint relaxed to allow `--skip-pcarbon-aging` without `--instrumented`.
+- **Tests** (`tests/test_sweep.py`, parametrized):
+  - `test_sweep_matches_fortran[60..1800]` (6 step counts): JAX `run_timesteps` reproduces Fortran NetCDF's `num_aer`/`so4_aer`/`soa_aer`/`h2so4_gas`/`soag_gas` at `rtol=1e-6, atol=1e-20` for every captured timestep. `dgn_a` at `rtol=1e-3` (size-field caveat). **Worst rel-err 1.98e-8** across the 6 step counts.
+  - `test_sweep_xfail_without_adaptive_soa_substep[1..30]` (6 step counts): explicitly `xfail`ed with the PR-E2 deferral reason. Quoted in pytest output so the gap stays visible. When PR-E2 lands, the assertions flip to expect passing and `nstep ∈ {1, 2, 4, 9, 18, 30}` moves into `NSTEP_OK`.
+- **Plot** `docs/figures/sweep_convergence.png`:
+  - Top-left: per-mode final-step number-density vs `nstep`, Fortran solid / JAX dashed. 4 mode colors.
+  - Top-right: final-step H₂SO₄ gas vs `nstep`.
+  - Bottom: worst rel-err per `nstep` (semilog) with ADR-003 1e-6 reference, plus shaded "PR-E2 deferred" region for `nstep ≤ 30`. The sharp threshold at `nstep = 60` is the central visual finding.
+- Full suite: **67 passed, 6 xfailed** (61 pre-existing + 6 new pass + 6 new xfail).
+- **Next**: PR-E2 (adaptive SOA substepping) closes out the remaining 6 step counts. Then M6 (audit + JAX-idiom optimization) or M7 (diffrax migration) — both unblocked.
+
 ## 2026-05-22 — Milestone 4 (PR-M4-B) — 60-step trajectory test + size-distribution figure. **M4 complete.**
 
 - PR: pending (`m4/driver-trajectory`)
