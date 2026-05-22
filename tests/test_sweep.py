@@ -5,14 +5,18 @@ For each ``(deltat, nstep)`` in the canonical sweep, drive
 and compare the per-step trajectory against the matching Fortran NetCDF
 in ``tests/reference/sweep_no_pcarbon_aging/``.
 
-**Restricted to nstep >= 60.** At nstep <= 30 (i.e. ``deltat >= 60s``)
-Fortran's ``mam_soaexch_1subarea`` (``modal_aero_amicphys.F90:3835-3843``)
-triggers adaptive substepping (``dtcur = alpha_astem/tmpa``) — multiple
-smaller integration steps within one amicphys call. The JAX port
-assumes single-substep (``dtcur = dtfull``); see ``docs/DEFERRED.md``
-entry for SOA adaptive substepping. Reproducing the small-``nstep``
-half of the sweep requires the deferred PR-E2 port — separate PR, not
-M5's scope.
+**On ``main``: restricted to nstep >= 60.** At nstep <= 30 (i.e.
+``deltat >= 60s``) Fortran's ``mam_soaexch_1subarea``
+(``modal_aero_amicphys.F90:3835-3843``) triggers adaptive substepping
+(``dtcur = alpha_astem/tmpa``) — multiple smaller integration steps
+within one amicphys call. The ``main``-branch JAX port assumes
+single-substep (``dtcur = dtfull``). **Permanently deferred on
+``main`` per ADR-013** (``docs/KEY_DECISIONS.md``): adaptive
+substepping is solely the ``diffrax`` branch's job, since diffrax's
+standard adaptive controller provides it natively. The 6
+small-``nstep`` cases here are marked ``xfail`` and should flip to
+expected-pass on the ``diffrax`` branch with the test file
+structurally identical to ``main`` — only the solver differs.
 
 The 60-step fixture used by M4 PR-B stayed below Fortran's adaptive-
 substep trigger because ``deltat = 30s`` is small relative to the SOA
@@ -176,14 +180,16 @@ def test_sweep_matches_fortran(initial_state, nstep: int) -> None:
 @pytest.mark.parametrize("nstep", NSTEP_DEFER)
 def test_sweep_xfail_without_adaptive_soa_substep(initial_state, nstep: int) -> None:
     """At nstep <= 30 (``deltat >= 60s``) Fortran's SOA exchange
-    triggers adaptive substepping. The JAX port assumes single-substep
-    so it diverges. Documented as deferred (PR-E2) in
-    ``docs/DEFERRED.md``; this test asserts the gap is *exactly* on the
-    expected tracers so we notice if something else also breaks.
+    triggers adaptive substepping. The ``main``-branch JAX port assumes
+    single-substep so it diverges. **Permanently deferred on ``main``**
+    per ADR-013 (``docs/KEY_DECISIONS.md``); resolved on the long-lived
+    ``diffrax`` branch where diffrax's standard adaptive controller
+    provides substepping for free.
 
-    Marked ``xfail`` rather than removed so the gap remains visible in
-    pytest output. When PR-E2 lands, flip the assertion to expect
-    passing and move ``nstep`` into ``NSTEP_OK``.
+    Marked ``xfail`` so the gap remains visible in pytest output and the
+    per-nstep rel-err is quoted in the xfail message. These cases will
+    flip to expected-pass on the ``diffrax`` branch (with the test file
+    structurally identical to ``main`` — only the solver differs).
     """
     deltat = TOTAL_DURATION_S // nstep
     state = _build_state(initial_state, deltat=float(deltat))
@@ -201,6 +207,7 @@ def test_sweep_xfail_without_adaptive_soa_substep(initial_state, nstep: int) -> 
     rel = np.abs(j_num - f_num) / np.maximum(np.abs(f_num), 1e-300)
 
     pytest.xfail(
-        f"nstep={nstep} (dt={deltat}s) — adaptive SOA substepping "
-        f"(PR-E2) not yet ported. Worst num_aer rel-err: {rel.max():.2e}."
+        f"nstep={nstep} (dt={deltat}s) — adaptive SOA substepping. "
+        f"Permanently deferred on main per ADR-013; the `diffrax` "
+        f"branch closes this. Worst num_aer rel-err: {rel.max():.2e}."
     )

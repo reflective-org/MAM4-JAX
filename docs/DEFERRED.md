@@ -71,17 +71,20 @@ The point of this file is to keep the *decided to skip for now* knowledge out of
 - **Why:** Validation is the priority; CPU `float64` is the easiest path to a clean Fortran diff. Sharding decisions belong in Milestone 6 once correctness is established.
 - **Resurface when:** Milestone 6.
 
-## Adaptive sub-stepping in `_mam_soaexch_1subarea` (PR-E2)
+## Adaptive sub-stepping in `_mam_soaexch_1subarea` (permanently deferred on `main`; resolved on `diffrax` branch per ADR-013)
 
-- **Status:** deferred to a follow-up PR (call it PR-E2) only if needed.
-- **Why:** PR-E (M3.6 PR-E, 2026-05-21) ported soaexch under the single-substep assumption (`dtcur = dtfull`). On the box-model fixture, `dtmax * tmpa <= alpha_astem` always holds — verified empirically by max rel-err 4.77e-15 vs Fortran (which does the full adaptive stepping). A fixture with larger gas concentrations or longer timesteps could push `tmpa` past the threshold, requiring multiple substeps.
-- **Resurface when:** the orchestration test `test_orchestration_gasaerexch_matches_fortran` ever fails on a new fixture, OR when adding multi-column/multi-level support pushes us out of the trivial regime, OR as part of Milestone 7 (diffrax migration) which provides adaptive stepping for free.
+- **Status:** **permanently deferred on `main`** (decision 2026-05-22, ADR-013). Resolved on the long-lived `diffrax` branch where diffrax's standard adaptive controller provides substepping for free.
+- **Why:** M5 (12-point convergence sweep, 2026-05-22) confirmed Fortran's adaptive substepping fires at `dt ≥ 60s`, causing 6 of 12 sweep cases to diverge from `main`'s JAX port at up to 1.3e-1 rel-err. The original plan was a handwritten PR-E2 to close the gap. Owner reframing (2026-05-22): the migration to diffrax (Milestone 7) provides adaptive substepping natively, so handwritten substepping in `main` would duplicate work that diffrax replaces. Instead, M7 lives on a parallel `diffrax` branch and resolves these cases there.
+- **What this means on `main`:**
+  - `tests/test_sweep.py::test_sweep_xfail_without_adaptive_soa_substep[1..30]` stays `xfail` indefinitely on `main`. Docstring points at the diffrax branch.
+  - No PR-E2 is planned for `main`.
+- **Resurface when:** the project reverses course on ADR-013, OR a downstream need forces small-`dt` accuracy in `main` specifically (e.g., a multi-column fixture where Fortran's substepping fires at a `dt` where it doesn't on the box-model). Until then, `diffrax` is the resolution path.
 
 ## Diffrax migration for the handwritten solvers (Milestone 7)
 
-- **Status:** captured as Milestone 7 in `docs/PLANS.md` (proposed).
-- **Why:** the handwritten H₂SO₄ analytical solver (PR-D), soaexch step-1/step-2 semi-implicit (PR-E), and any future coupled-ODE work in coag (PR-G) are good candidates for replacement by [`diffrax`](https://github.com/patrick-kidger/diffrax) (JIT/grad/vmap-clean, better stiff-system numerics, adaptive stepping for free). Adding diffrax now would change Fortran-vs-JAX output by ~1 ULP (different solver tolerances) which complicates the 1e-6 bit-validation baseline.
-- **Resurface when:** all four M3.6 sub-processes are ported and bit-validated. Owner approval at that point opens the milestone.
+- **Status:** in progress on the long-lived `diffrax` branch (parallel to `main`) per ADR-013. See `docs/PLANS.md` Milestone 7 for sub-PR scope.
+- **Why:** the handwritten H₂SO₄ analytical solver (PR-D), soaexch step-1/step-2 semi-implicit (PR-E), and coag's analytical solvers (PR-G) are good candidates for replacement by [`diffrax`](https://github.com/patrick-kidger/diffrax) (JIT/grad/vmap-clean, better stiff-system numerics, adaptive stepping for free). Migrating on `main` would change Fortran-vs-JAX output by ~1 ULP (different solver tolerances), which complicates the 1e-6 bit-validation baseline; ADR-013 resolves this by keeping diffrax on its own branch where the baseline is "match `main` within ADR-003" instead of "match Fortran".
+- **Resurface in `main` only if:** ADR-013 is revisited.
 
 ---
 

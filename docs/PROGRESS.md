@@ -6,6 +6,17 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-22 — Strategic: dual-branch direction (ADR-013)
+
+- Owner reframing: skip handwritten adaptive SOA substepping (PR-E2) on `main`. Adaptive substepping is solely the diffrax migration's responsibility, on a long-lived `diffrax` branch parallel to `main`. The two branches stay structurally similar so they can be compared side-by-side.
+- New **ADR-013** captures the rationale (`docs/KEY_DECISIONS.md`).
+- M5 sweep stays at 6/12 step counts on `main` indefinitely. The 6 `xfail`ed cases (`tests/test_sweep.py::test_sweep_xfail_without_adaptive_soa_substep`) get docstrings pointing at the diffrax branch as the resolution.
+- M7 (diffrax migration) was previously "proposed"; now in progress on the long-lived `diffrax` branch with sub-PRs landing into that branch (not into `main`).
+- `docs/PLANS.md` M5 wording updated to "partial-and-final on `main`"; M7 wording updated to dual-branch model. `docs/DEFERRED.md` adaptive-substep entry rewritten as "permanently deferred on `main`".
+- No code or tests changed (the 6 passed + 6 xfailed baseline carries over verbatim).
+
+---
+
 ## 2026-05-22 — Milestone 5 — Convergence sweep reproduction (partial). **M5 partially complete.**
 
 - PR: pending (`m5/convergence-sweep`)
