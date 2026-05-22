@@ -6,6 +6,24 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-22 — Milestone 4 (PR-M4-A) — Operator-splitting driver scaffold
+
+- PR: pending (`m4/driver-scaffold`)
+- Plan: [`docs/plans/012-driver-scaffold.md`](plans/012-driver-scaffold.md). First of a two-PR split for M4. PR-M4-A scaffolds the driver module + 1-step wiring test; PR-M4-B will add the 60-step trajectory test + the mode-by-mode size-distribution comparison figure (the figure the owner explicitly asked about).
+- **Port** (`mam4_jax/driver.py`, ~120 LOC including docstrings):
+  - `run_step(state) -> new_state`: one operator-splitting timestep. Sequence: `calcsize → wateruptake → cloud_chem_simple_sub (no-op) → amicphys`. Mirrors `driver.F90:1080-1367`'s `main_time_loop` for the MAM4-MOM box-model fixture.
+  - `run_timesteps(state, n_steps) -> trajectory`: plain Python `for` loop returning a stacked-snapshot dict (leading axis = `n_steps`). `jax.lax.scan` deferred to M6 per ADR-004.
+  - `cloud_chem_simple_sub`: no-op for the box-model fixture (`cldn=0` → Fortran's `if (cld > 1e-6)` gate at `driver.F90:1263` never fires). Stubbed so the operator-splitting sequence reads correctly.
+  - **Gas-chem placement**: keeps the `qgas_netprod_h2so4 = 1e-16` term inside `_mam_gasaerexch_1subarea`'s H₂SO₄ analytical solver (where it lives today) rather than lifting it to the driver layer. Fortran's structural extraction would force operator-splitting between gas-chem and gasaerexch and require reworking the validated PR-D analytical solver — out of M4-A scope. Documented in the module docstring as a follow-up if M5's namelist sweeps ever need it.
+- **Validation infrastructure**:
+  - New `--mode instrumented-full-minus-pcarbon-aging` in `scripts/capture_reference.py`: all `mdo_*=1` (canonical full-physics namelist) but with `skip_pcarbon_aging.patch` applied at build time. Matches the JAX port's M3.6 scope (pcarbon aging deferred). Output → `tests/reference/per_process_full_minus_pcarbon_aging/`.
+  - The canonical `per_process/` fixture (pcarbon aging ON) would diverge from JAX on every step's Aitken/pcarbon tracers by ~20% — well above ADR-003's 1e-6 budget. The new fixture removes that confound.
+- **Tests** (`tests/test_driver.py`, 3 new tests):
+  - `test_run_step_one_step_matches_fortran`: JAX `run_step` on `calcsize_before[0]` reproduces Fortran's `amicphys_after_writeback[0]` at **max rel-err 2.5e-9** on `q` (3 orders below ADR-003); `qqcw` is identically zero. Size fields at 1e-3 (same Fortran mid-substep re-uptake caveat).
+  - `test_run_timesteps_shapes`: smoke test for the `for`-loop wiring — trajectory leading-axis size matches `n_steps`, step-0 snapshot equals `run_step` output.
+  - `test_run_timesteps_rejects_zero`: matches Fortran's `do nstep = 1, nstop` convention.
+- Full suite: **60/60 green** (57 + 3 new). No figure in this PR — that's M4-B's deliverable.
+
 ## 2026-05-22 — Milestone 3.6 (PR-G3) — Coag orchestration. **M3.6 complete.**
 
 - PR: pending (`m3/coag-orchestration`)

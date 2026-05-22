@@ -79,9 +79,14 @@ Each port lands as its own PR following the validation workflow in `CLAUDE.md` (
 
 ---
 
-## Milestone 4 — Operator-splitting time loop (proposed)
+## Milestone 4 — Operator-splitting time loop (in progress)
 
-**Status:** proposed. Requires Milestones 1–3 complete for at least the processes the loop calls. Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` is deferred to Milestone 6.
+**Status:** in progress (2026-05-22). M3.6 complete; M4 splits into two PRs.
+
+- **PR-M4-A** [x]: scaffold `mam4_jax/driver.py` with `run_step` and `run_timesteps`; 1-step test against a new `instrumented-full-minus-pcarbon-aging` Fortran capture (max rel-err **2.5e-9** on `q`). Cloud-chem stubbed as a no-op (box-model fixture has `cldn=0`); gas-chem term stays inside gasaerexch's analytical solver (no operator-splitting refactor). Plan: `docs/plans/012-driver-scaffold.md`.
+- **PR-M4-B** [ ]: 60-step trajectory test against the same fixture (step-by-step rel-err < 1e-6 across the full 1800 s integration); mode-by-mode size-distribution comparison figure (Fortran solid / JAX dashed for 4 modes' number-density and dry diameter over 60 steps). Completes M4.
+
+Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` is deferred to Milestone 6.
 
 ---
 
