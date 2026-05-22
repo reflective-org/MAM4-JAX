@@ -6,6 +6,28 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-22 — Milestone 3.6 (PR-G3) — Coag orchestration. **M3.6 complete.**
+
+- PR: pending (`m3/coag-orchestration`)
+- Plan: [`docs/plans/011-coag-orchestration-port.md`](plans/011-coag-orchestration-port.md). Final piece of the 3-PR coag split — wires PR-G2's `getcoags_wrapper_f` into the amicphys orchestration. **Completes M3.6.** Only M4 (operator-splitting time loop) and beyond remain.
+- **Port** (`mam4_jax/processes/amicphys.py`, ~140 LOC of new code):
+  - `_mam_coag_1subarea(qnum, qaer, qwtr, dgn_a, dgn_awet, wetdens, temp, pmid, deltat)` → `(qnum, qaer)`.
+  - For each of 3 active MAM4-MOM coag pairs (Aitken→accum, pcarbon→accum, Aitken→pcarbon) calls PR-G2's `getcoags_wrapper_f`, converts m³/s → kmol-air/s by multiplying by `aircon = pmid/(RGAS·temp)`.
+  - **Number cascade** (Fortran lines 4823-4880, MAM4-MOM-trimmed): accum (analytical), pcarbon (depends on accum mid-step average), Aitken (depends on accum + pcarbon mid-step averages). Two-branch `if (tmpa < 1e-5)` reformulated as `jnp.where` with safe-division so the dead branch never NaNs.
+  - **Mass transfer** (Fortran lines 4955-5008, MAM4-MOM-trimmed): mass out of Aitken splits between accum and pcarbon proportional to the two `bij3` rates; mass out of pcarbon goes entirely into accum; accum is the terminal sink. `if (tmpc > epsilonx2)` guards reformulated as multiply-by-`jnp.where(have_coag, 1-exp(-tmpc), 0)`.
+- **Wiring changes**:
+  - Stub at `_mam_coag_1subarea` replaced; call site at `_amicphys_1subarea_clear` now passes the amicphys local-view arrays + state's `dgncur_a`/`dgncur_awet`/`wetdens`.
+  - Added `PCARBON_MODE_IDX`, `N_COAGPAIR`, `MODEFRM_COAGPAIR`, `MODETOO_COAGPAIR` to `mam4_jax/data.py`. Coarse mode (index 2) never enters coag — correct, Brownian rates negligible at super-µm diameters.
+- **MAM4-MOM-specific simplifications**: marine-organics modes absent (`nmait < 0`, `nmacc < 0`) so all `if (nmait > 0) / if (nmacc > 0)` Fortran blocks are dead code and omitted (~50 LOC saved). `qaer_del_coag_in` (pcarbon-aging input) is not accumulated — matching capture applies `skip_pcarbon_aging.patch`.
+- **Validation infrastructure**:
+  - New `--mode instrumented-coag-only` in `scripts/capture_reference.py`: namelist `mdo_coag=1, others=0` plus `skip_pcarbon_aging.patch` (consistent with PR-D/E/F3 pattern). Output → `tests/reference/per_process_coag/`. **No new Fortran patch** beyond reusing existing infrastructure.
+- **Tests** (`tests/test_amicphys.py`, 1 new test): `test_orchestration_coag_only_matches_fortran`. **Max rel-err 4.1e-13** across all 33 aerosol-slot tracers and 60 timesteps — 7 orders below ADR-003's 1e-6 budget. Gas-tracer slots (`LMAP_GAS = [6, 9]`) excluded from comparison: driver.F90:1249's gas-chem stub adds `vmr += 1e-16·dt` to H₂SO₄ *outside* amicphys, captured in Fortran's writeback but not applied by JAX (which has no driver layer). Coag itself doesn't touch gases, so gas slots aren't part of coag's validation surface. The matching gasaerexch test absorbs this term via the H₂SO₄ analytical solver's `qgas_netprod_otrproc`. Size fields use 1e-3 tolerance (same caveat as PR-D/E/F3).
+- **Plot** `docs/figures/coag_orchestration_residuals.png`:
+  - Top: per-mode number-density time series — Aitken/pcarbon/accum — over 60 steps. JAX (dashed) overlays Fortran (solid) cleanly across the integration; Aitken+pcarbon shrink while accum gains as coag funnels number into the larger mode.
+  - Bottom: per-(step, tracer) rel-err for all 33 aerosol slots — most bands sit at machine ε; worst trace tops out at ~4e-13.
+- Full suite: **57/57 green** (56 + 1 new).
+- **M3.6 (amicphys) is now done.** Next: M4 (time loop) — wire calcsize → wateruptake → amicphys per timestep over 1800 s and reproduce Fortran's 12-point convergence sweep at rel-err < 1e-6.
+
 ## 2026-05-21 — Milestone 3.6 (PR-G2) — Coag wrapper: `getcoags_wrapper_f`
 
 - PR: pending (folded into PR #23 on `m3/getcoags-port` per owner direction)

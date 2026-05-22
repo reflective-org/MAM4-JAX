@@ -498,7 +498,12 @@ def _mam_amicphys_1subarea_clear(state: dict[str, Any], *,
             state["zmid"], state["pblh"], state["relhum"],
         )
     if mdo_coag:
-        state = _mam_coag_1subarea(state)    # noqa: still a stub
+        # M3.6 PR-G3 — Brownian inter/intramodal coagulation.
+        qnum, qaer = _mam_coag_1subarea(
+            qnum, qaer, qwtr,
+            state["dgncur_a"], state["dgncur_awet"], state["wetdens"],
+            state["t"], state["pmid"], state["deltat"],
+        )
 
     return _repack_amicphys_view_to_state(state, qgas, qaer, qnum, qwtr)
 
@@ -926,10 +931,173 @@ def _mam_newnuc_1subarea(qgas_cur, qgas_avg, qnum_cur, qaer_cur, qwtr_cur,
     return qgas_cur, qnum_cur, qaer_cur
 
 
-def _mam_coag_1subarea(state: dict[str, Any]) -> dict[str, Any]:
-    """Stub: M3.6 PR-E will port the Brownian coagulation kernels.
+_EPS_FLOAT64 = float(np.finfo(np.float64).eps)
+_EPSILONX2  = 2.0 * _EPS_FLOAT64
 
-    Port target: ``modal_aero_amicphys.F90`` ``mam_coag_1subarea``
-    (lines 4670–5106, ~437 LOC).
+
+def _mam_coag_1subarea(qnum_cur, qaer_cur, qwtr_cur,
+                       dgn_a, dgn_awet, wetdens,
+                       temp, pmid, deltat):
+    """Port of ``mam_coag_1subarea`` (``modal_aero_amicphys.F90:4670-5106``).
+
+    Inter- and intramodal Brownian coagulation for the three active
+    MAM4-MOM coag pairs (Aitken→accum, pcarbon→accum, Aitken→pcarbon).
+
+    MAM4-MOM-specific simplifications (relative to the full 5-mode Fortran):
+
+    * No marine-organics modes (``nmait`` and ``nmacc`` absent) — all
+      ``if (nmait > 0)`` / ``if (nmacc > 0)`` blocks are dead code and
+      omitted. Coag-pair count is 3 instead of up to 10.
+    * Coarse mode never enters coag (correct — Brownian rates negligible
+      at super-µm diameters).
+    * ``qaer_del_coag_in`` (pcarbon-aging input) is not accumulated —
+      the matching reference capture applies
+      ``scripts/patches/skip_pcarbon_aging.patch`` so pcarbon aging is
+      a no-op there too.
+    * Diagnostic-output blocks (``CAMBOX_ACTIVATE_THIS`` guards) omitted.
+
+    Branch reformulations for JAX:
+
+    * Fortran's ``if (tmpa < 1e-5)`` / ``else`` two-branch number-loss
+      formula → ``jnp.where`` with safe-division (``jnp.where`` on
+      ``tmpa`` to avoid 0-division in the dead branch).
+    * Fortran's ``if (tmpc > epsilonx2)`` mass-transfer guard → multiply
+      by ``jnp.where(have_coag, 1 - exp(-tmpc), 0)``; the dead branch
+      contributes zero to all `qaer` updates.
+
+    ``qwtr_cur`` is ``intent(inout)`` in the Fortran but never modified;
+    pass-through unchanged.
+
+    Returns updated ``(qnum_cur, qaer_cur)``.
     """
-    return state
+    from ..coag import getcoags_wrapper_f
+
+    nait = data.AITKEN_MODE_IDX
+    nacc = data.ACCUM_MODE_IDX
+    npca = data.PCARBON_MODE_IDX
+
+    qnum_a = jnp.maximum(0.0, qnum_cur)
+    qaer_a = jnp.maximum(0.0, qaer_cur)
+    qnum_b = qnum_a
+    qaer_b = qaer_a
+
+    # Air molar concentration (kmol/m³). RGAS is in J/K/kmole.
+    aircon = pmid / (RGAS * temp)
+
+    sigmag = jnp.asarray(data.SIGMAG_AMODE)
+    alnsg  = jnp.asarray(data.ALNSG_AMODE)
+
+    # Coag coefficients per pair (Fortran lines 4758-4809).
+    # MAM4-MOM has 3 active pairs:
+    #   ip=0: aitken  → accum
+    #   ip=1: pcarbon → accum
+    #   ip=2: aitken  → pcarbon
+    bij0 = [None] * data.N_COAGPAIR
+    bij3 = [None] * data.N_COAGPAIR
+    bii0 = [None] * data.N_COAGPAIR
+    bjj0 = [None] * data.N_COAGPAIR
+    for ip in range(data.N_COAGPAIR):
+        mfrm = data.MODEFRM_COAGPAIR[ip]
+        mtoo = data.MODETOO_COAGPAIR[ip]
+        (ij0, _ij2i, _ij2j, ij3,
+         ii0, _ii2,  jj0,  _jj2) = getcoags_wrapper_f(
+            temp, pmid,
+            dgn_awet[..., mfrm], dgn_awet[..., mtoo],
+            sigmag[mfrm],        sigmag[mtoo],
+            alnsg[mfrm],         alnsg[mtoo],
+            wetdens[..., mfrm],  wetdens[..., mtoo],
+        )
+        # Convert m³/s → kmol-air/s (Fortran lines 4805-4808).
+        bij0[ip] = ij0 * aircon
+        bij3[ip] = ij3 * aircon
+        bii0[ip] = ii0 * aircon
+        bjj0[ip] = jj0 * aircon
+
+    # ----- Number cascade (Fortran lines 4823-4880) -----
+    # Accum: analytical 1/(1+β_jj·dt·N) solution. Only depends on
+    # accum-mode self-coag (bjj0[ip=0], from the aitken→accum pair).
+    qnum_a_nacc = qnum_a[..., nacc]
+    qnum_b_nacc = qnum_a_nacc / (
+        1.0 + bjj0[0] * deltat * qnum_a_nacc
+    )
+    qnum_c_nacc = 0.5 * (qnum_a_nacc + qnum_b_nacc)
+    qnum_b = qnum_b.at[..., nacc].set(qnum_b_nacc)
+
+    # Pcarbon: depends on accum mid-step average.
+    qnum_b_npca = _coag_number_loss_two_branch(
+        tmpa=jnp.maximum(0.0, deltat * bij0[1] * qnum_c_nacc),
+        tmpb=jnp.maximum(0.0, deltat * bii0[1]),
+        tmpn=qnum_a[..., npca],
+    )
+    qnum_c_npca = 0.5 * (qnum_a[..., npca] + qnum_b_npca)
+    qnum_b = qnum_b.at[..., npca].set(qnum_b_npca)
+
+    # Aitken: depends on accum + pcarbon mid-step averages.
+    tmpa_ait = bij0[0] * qnum_c_nacc + bij0[2] * qnum_c_npca
+    qnum_b_nait = _coag_number_loss_two_branch(
+        tmpa=jnp.maximum(0.0, deltat * tmpa_ait),
+        tmpb=jnp.maximum(0.0, deltat * bii0[0]),
+        tmpn=qnum_a[..., nait],
+    )
+    qnum_b = qnum_b.at[..., nait].set(qnum_b_nait)
+    qnum_c_nait = 0.5 * (qnum_a[..., nait] + qnum_b_nait)  # noqa: F841
+
+    # ----- Mass transfer out of aitken (Fortran lines 4955-5008, MAM4-MOM
+    # branch with npca > 0, nmacc < 0 = lines 4988-5007) -----
+    tmp1_ait = jnp.maximum(0.0, bij3[0] * qnum_c_nacc)      # ait → acc
+    tmp2_ait = jnp.maximum(0.0, bij3[2] * qnum_c_npca)      # ait → pca
+    tmpa_ait_mass = tmp1_ait + tmp2_ait
+    tmpc_ait = deltat * tmpa_ait_mass
+
+    have_coag_ait = tmpc_ait > _EPSILONX2
+    safe_tmpa     = jnp.where(have_coag_ait, tmpa_ait_mass, 1.0)
+    tmp_xf_ait    = jnp.where(have_coag_ait, 1.0 - jnp.exp(-tmpc_ait), 0.0)
+    frac_to_pca   = tmp2_ait / safe_tmpa
+    frac_to_acc   = 1.0 - frac_to_pca
+
+    # qaer_a[..., :, nait] has shape (..., naer); broadcast tmp_xf_ait
+    # (which has the leading shape from temp/pmid) to match.
+    tmp_dq_ait = tmp_xf_ait[..., None] * qaer_a[..., :, nait]
+    qaer_b = qaer_b.at[..., :, nait].add(-tmp_dq_ait)
+    qaer_b = qaer_b.at[..., :, nacc].add(tmp_dq_ait * frac_to_acc[..., None])
+    qaer_b = qaer_b.at[..., :, npca].add(tmp_dq_ait * frac_to_pca[..., None])
+
+    # ----- Mass transfer out of pcarbon (Fortran lines 5068-5082) -----
+    tmpc_pca = jnp.maximum(0.0, bij3[1] * qnum_c_nacc)
+    tmpc_pca = deltat * tmpc_pca
+    have_coag_pca = tmpc_pca > _EPSILONX2
+    tmp_xf_pca    = jnp.where(have_coag_pca, 1.0 - jnp.exp(-tmpc_pca), 0.0)
+    tmp_dq_pca    = tmp_xf_pca[..., None] * qaer_a[..., :, npca]
+    qaer_b = qaer_b.at[..., :, npca].add(-tmp_dq_pca)
+    qaer_b = qaer_b.at[..., :, nacc].add(tmp_dq_pca)
+
+    # Accum mode: no mass transfer out (it is the terminal sink).
+
+    return qnum_b, qaer_b
+
+
+def _coag_number_loss_two_branch(tmpa, tmpb, tmpn):
+    """Closed-form number-loss with Fortran's two-branch guard.
+
+    Fortran (line 4834-4841 / 4872-4878):
+        if (tmpa < 1e-5) then
+            qnum = tmpn / (1 + (tmpa + tmpb*tmpn)*(1 + 0.5*tmpa))
+        else
+            c = exp(-tmpa)
+            qnum = tmpn*c / (1 + (tmpb*tmpn/tmpa)*(1 - c))
+        end if
+
+    JAX-ified with safe-division so the dead branch never NaNs.
+    """
+    small = tmpa < 1.0e-5
+    # Branch A — Taylor expansion of the exact form, safe at tmpa ≈ 0.
+    qnum_a_branch = tmpn / (
+        1.0 + (tmpa + tmpb * tmpn) * (1.0 + 0.5 * tmpa)
+    )
+    # Branch B — exact form with safe denominator on the dead branch.
+    safe_tmpa = jnp.where(small, 1.0, tmpa)
+    c = jnp.where(small, 1.0, jnp.exp(-tmpa))
+    qnum_b_branch = (tmpn * c) / (
+        1.0 + (tmpb * tmpn / safe_tmpa) * (1.0 - c)
+    )
+    return jnp.where(small, qnum_a_branch, qnum_b_branch)

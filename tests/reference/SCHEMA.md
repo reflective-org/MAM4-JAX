@@ -57,6 +57,14 @@ tests/reference/
 │   ├── amicphys_before.npz
 │   ├── amicphys_after.npz
 │   └── amicphys_after_writeback.npz
+├── per_process_coag/                # mdo_coag=1, others=0; skip_pcarbon_aging (M3.6 PR-G3)
+│   ├── calcsize_before.npz
+│   ├── calcsize_after.npz
+│   ├── wateruptake_before.npz
+│   ├── wateruptake_after.npz
+│   ├── amicphys_before.npz
+│   ├── amicphys_after.npz
+│   └── amicphys_after_writeback.npz
 ├── polysvp/                        # standalone polysvp T-sweep
 │   └── reference.npz
 ├── qsat/                           # standalone qsat (T, p)-grid
@@ -239,6 +247,31 @@ Captured by `scripts/capture_reference.py --mode instrumented-gasaerexch-and-new
 Why both gasaerexch and newnuc must be on: newnuc consumes `qgas_avg[h2so4]`, which gasaerexch's analytical solver computes internally. With gasaerexch off, `qgas_avg=0` → newnuc early-returns at the `qh2so4_cutoff` guard → no validation surface for newnuc.
 
 Used by M3.6 PR-F3's `test_orchestration_gasaerexch_and_newnuc_matches_fortran`. Same six tags + same `amicphys_after_writeback.npz` rationale as `per_process_gasaerexch/`.
+
+### `per_process_coag/` — single-toggle coag fixture (M3.6 PR-G3)
+
+Captured by `scripts/capture_reference.py --mode instrumented-coag-only`
+with the namelist set to `mdo_coag=1, mdo_gasaerexch=mdo_rename=mdo_newnuc=0`,
+plus the `skip_pcarbon_aging.patch` overlay (pcarbon aging is a
+separate sub-process out of M3.6 scope; same pattern as PR-D/E/F3).
+Coag operates on the current state's `dgncur_a`/`dgncur_awet`/`wetdens`
+(set by calcsize + wateruptake upstream of amicphys); unlike newnuc,
+it does not need gasaerexch outputs.
+
+Used by `tests/test_amicphys.py::test_orchestration_coag_only_matches_fortran`.
+
+Gas-tracer slots (`LMAP_GAS = [6, 9]` — H₂SO₄, SOAG) are **excluded**
+from the JAX-vs-Fortran comparison in this fixture. `driver.F90:1249`
+adds `vmr += 1e-16·dt` to H₂SO₄ *outside* amicphys, which Fortran's
+writeback dump records but the JAX coag orchestration (no driver layer)
+doesn't apply. Coag itself never touches gases, so gas slots aren't
+part of coag's validation surface. The matching `gasaerexch` test
+absorbs the same term via the H₂SO₄ analytical solver's
+`qgas_netprod_otrproc`.
+
+Same six tags + `amicphys_after_writeback.npz` (validation target —
+same writeback rationale as `per_process_gasaerexch/` and
+`per_process_gasaerexch_and_newnuc/`).
 
 ### `per_process_amicphys_off/` — variant with the amicphys sub-processes disabled
 
