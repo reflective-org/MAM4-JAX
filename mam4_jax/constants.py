@@ -41,3 +41,9 @@ EPSQS: float = MWWV / MWDAIR        # ~0.6219 (h2o:dry-air mw ratio)
 HLATV: float = LATVAP
 HLATF: float = LATICE
 RGASV: float = RH2O
+
+# Reference state (shr_const_pstd, shr_const_tkfrz). `tmelt` in
+# physconst.F90 is a runtime-overridable copy of shr_const_tkfrz; the
+# box-model namelist never overrides it, so it always equals 273.15 K.
+PSTD: float = 101325.0              # Pa  (shr_const_pstd, standard pressure)
+TMELT: float = 273.15               # K   (shr_const_tkfrz, freezing T of fresh water)

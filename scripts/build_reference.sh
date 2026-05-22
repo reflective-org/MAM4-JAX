@@ -41,6 +41,7 @@ BUILD_MAKOH=0
 BUILD_KOHLER=0
 BUILD_NEWNUC_HELPERS=0
 BUILD_MER07_VEH02=0
+BUILD_COAG_COEFFICIENTS=0
 NO_AITACC_TRANSFER=0
 SKIP_SOAEXCH=0
 SKIP_PCARBON_AGING=0
@@ -53,6 +54,7 @@ for arg in "$@"; do
     --kohler)               BUILD_KOHLER=1 ;;
     --newnuc-helpers)       BUILD_NEWNUC_HELPERS=1 ;;
     --mer07-veh02)          BUILD_MER07_VEH02=1 ;;
+    --coag-coefficients)    BUILD_COAG_COEFFICIENTS=1 ;;
     --no-aitacc-transfer)   NO_AITACC_TRANSFER=1 ;;
     --skip-soaexch)         SKIP_SOAEXCH=1 ; SKIP_PCARBON_AGING=1 ;;
     --skip-pcarbon-aging)   SKIP_PCARBON_AGING=1 ;;
@@ -156,7 +158,7 @@ if [[ "$SKIP_PCARBON_AGING" == "1" ]]; then
   ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/skip_pcarbon_aging.patch" )
 fi
 
-if [[ "$BUILD_MAKOH" == "1" || "$BUILD_KOHLER" == "1" || "$BUILD_NEWNUC_HELPERS" == "1" || "$BUILD_MER07_VEH02" == "1" ]]; then
+if [[ "$BUILD_MAKOH" == "1" || "$BUILD_KOHLER" == "1" || "$BUILD_NEWNUC_HELPERS" == "1" || "$BUILD_MER07_VEH02" == "1" || "$BUILD_COAG_COEFFICIENTS" == "1" ]]; then
   echo ""
   echo "Applying expose_internals overlay..."
   ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/expose_internals.patch" )
@@ -224,4 +226,8 @@ fi
 
 if [[ "$BUILD_MER07_VEH02" == "1" ]]; then
   build_ref_driver mer07_veh02
+fi
+
+if [[ "$BUILD_COAG_COEFFICIENTS" == "1" ]]; then
+  build_ref_driver coag_coefficients
 fi

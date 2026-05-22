@@ -6,6 +6,36 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-21 — Milestone 3.6 (PR-G2) — Coag wrapper: `getcoags_wrapper_f`
+
+- PR: pending (folded into PR #23 on `m3/getcoags-port` per owner direction)
+- Plan: [`docs/plans/010-getcoags-wrapper-port.md`](plans/010-getcoags-wrapper-port.md). Second of the 3-PR `coag` split; composes PR-G1's `getcoags` with prep math + CMAQ→MIRAGE2 post-processing.
+- **Port** in `mam4_jax/coag.py` (~70 new LOC):
+  - `getcoags_wrapper_f(airtemp, airprs, dgatk, dgacc, sgatk, sgacc, xxlsgat, xxlsgac, pdensat, pdensac)` → 8-tuple `(betaij0, betaij2i, betaij2j, betaij3, betaii0, betaii2, betajj0, betajj2)`. Direct transcription of Fortran `modal_aero_coag.F90:999-1129`.
+  - Prep: `lamda` (mean free path, U.S. Std Atm 1962), `amu` (dynamic viscosity), `knc`, `kfmat`, `kfmac`, `kfmatac` from the boltz/density formulas.
+  - Composes PR-G1's `getcoags`, then divides the 2nd/3rd-moment outputs by `(dg² · exp(2 log²σ))` / `(dg³ · exp(4.5 log²σ))` factors and clamps each beta to `≥ 0`.
+- **Constants**: added `PSTD = 101325.0 Pa` and `TMELT = 273.15 K` to `mam4_jax/constants.py` (from `shr_const_mod.F90`; first JAX consumers).
+- **Validation**: reused the PR-G1 fixture (`tests/reference/coag_coefficients/reference.npz` already carries the 8 beta keys). New test `test_getcoags_wrapper_f_matches_fortran` — 7/8 outputs at machine ε; `betaij2j` inherits PR-G1's 6.5e-9 (it's `qs21 / dumatk2`). Worst rel-err **6.5e-9** across 240 records.
+- **Plot** `docs/figures/getcoags_wrapper_residuals.png` (sibling of PR-G1's figure): same 4×2 layout, beta coefficients. Plot script `scripts/plot_getcoags_residuals.py` extended to render both figures in one run.
+- Full suite: **56/56 green** (55 + 1 new).
+
+## 2026-05-21 — Milestone 3.6 (PR-G1) — Coag leaf: `getcoags`
+
+- PR: pending (`m3/getcoags-port`)
+- Plan: [`docs/plans/009-getcoags-port.md`](plans/009-getcoags-port.md). First of the 3-PR `coag` split (PR-G1: `getcoags` leaf math; PR-G2: `getcoags_wrapper_f` prep + post-processing; PR-G3: `mam_coag_1subarea` orchestration + wiring + end-to-end test).
+- **Port** in new module `mam4_jax/coag.py` (~250 LOC, half declarations / docstring):
+  - `getcoags(lamda, kfmatac, kfmat, kfmac, knc, dgatk, dgacc, sgatk, sgacc, xxlsgat, xxlsgac)` → 8-tuple `(qs11, qn11, qs22, qn22, qs12, qs21, qn12, qv12)`. Direct line-by-line transcription of the closed-form Whitby coagulation coefficients (Fortran `modal_aero_coag.F90:1177-2858`).
+  - ~14 distinct `esat*`/`esac*` exponentials (powers of `exp(log²σ / 8)`) expressed as repeated `*` chains so JAX trace order matches Fortran ULP-for-ULP.
+  - Whitby correction-factor lookup tables extracted once by `scripts/extract_coag_tables.py` from the upstream `data` declarations into `mam4_jax/_coag_tables.npz` (`bm0`, `bm0ij`, `bm3i`, `bm2ii`, `bm2iitt`, `bm2ij`, `bm2ji`). Indices `n1` / `n2n` / `n2a` reproduce the `max(1, min(10, nint(...)))` clipping.
+- **Validation infrastructure**:
+  - New standalone driver `scripts/reference_drivers/coag_coefficients_driver.F90` sweeping (4 T × 2 P × 5 dgnumA × 6 dgnumB = 240 records) for fixed MAM4-MOM sigmas (1.6 / 1.8) and densities (1770 / 1770). Captures both `getcoags`'s raw 8 outputs AND `getcoags_wrapper_f`'s 8 post-processed outputs (same fixture serves PR-G2).
+  - `expose_internals.patch` extended to make `getcoags` `public` in `modal_aero_coag`.
+  - New build flag `--coag-coefficients`; new capture mode `--mode coag-coefficients` → `tests/reference/coag_coefficients/reference.npz` (54 kB, 26 keys).
+- **Tests** (`tests/test_coag.py`, 1 new test): `test_getcoags_matches_fortran`. **Max rel-err 6.5e-9** across all 8 outputs and 240 records — three orders below ADR-003's 1e-6 budget.
+- **Plot** `docs/figures/getcoags_residuals.png`:
+  - 4×2 grid, one panel per coefficient, JAX-vs-Fortran log-log scatter colored by Whitby table index `n1`. All 8 panels show points sitting on the y=x diagonal across the full ~10-decade dynamic range of each coefficient (`qv12` ~1e-38 to 5e-35, `qn11` ~1e-15 to 1e-12, `qs11` ~1e-32 to 1e-30).
+- Full suite: **55/55 green** (54 + 1 new).
+
 ## 2026-05-21 — Milestone 3.6 (PR-F3) — Newnuc amicphys orchestration
 
 - PR: pending (`m3/newnuc-orchestration`)

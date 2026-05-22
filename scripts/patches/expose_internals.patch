@@ -20,3 +20,14 @@
  
  
  ! !PUBLIC DATA MEMBERS:
+--- a/modal_aero_coag.F90
++++ b/modal_aero_coag.F90
+@@ -19,7 +19,7 @@
+   private
+   save
+ 
+ ! !PUBLIC MEMBER FUNCTIONS:
+-  public :: modal_aero_coag_sub, modal_aero_coag_init, getcoags_wrapper_f
++  public :: modal_aero_coag_sub, modal_aero_coag_init, getcoags_wrapper_f, getcoags
+ 
+ ! !PUBLIC DATA MEMBERS:
