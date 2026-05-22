@@ -219,6 +219,42 @@ VOLTONUMBHI_AMODE: np.ndarray = 1.0 / (_DUMFAC * _DGNUMHI ** 3)
 AITKEN_MODE_IDX: int = 1   # MODE_NAMES[1] == "aitken"
 ACCUM_MODE_IDX:  int = 0   # MODE_NAMES[0] == "accum"
 
+#: 0-based mode index for primary-carbon mode in this MAM4-MOM build
+#: (Fortran's ``npca``).
+PCARBON_MODE_IDX: int = 3  # MODE_NAMES[3] == "primary_carbon"
+
+
+# ---------------------------------------------------------------------------
+# Coagulation-pair table for MAM4-MOM (Fortran amicphys init at
+# modal_aero_amicphys.F90:5974-6012). The init loop iterates over 11
+# possible pairs and emits the ones whose mode indices are all positive.
+# For MAM4-MOM (``nait, nacc, npca`` active; ``nmait, nmacc`` absent),
+# exactly 3 pairs survive:
+#
+#   ip=1: aitken  → accum
+#   ip=2: pcarbon → accum
+#   ip=3: aitken  → pcarbon   (aging path; eventually coarsens to accum)
+#
+# Coarse mode never participates (correct — Brownian coag negligible
+# for super-µm diameters).
+# ---------------------------------------------------------------------------
+
+N_COAGPAIR: int = 3
+
+#: Source mode index of each coag pair (0-based).
+MODEFRM_COAGPAIR: tuple[int, ...] = (
+    AITKEN_MODE_IDX,   # ip 1: aitken → accum
+    PCARBON_MODE_IDX,  # ip 2: pcarbon → accum
+    AITKEN_MODE_IDX,   # ip 3: aitken → pcarbon
+)
+
+#: Destination mode index of each coag pair (0-based).
+MODETOO_COAGPAIR: tuple[int, ...] = (
+    ACCUM_MODE_IDX,    # ip 1
+    ACCUM_MODE_IDX,    # ip 2
+    PCARBON_MODE_IDX,  # ip 3
+)
+
 
 def _build_aitacc_pairs() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Match Aitken-mode slots against accum-mode slots by species type.

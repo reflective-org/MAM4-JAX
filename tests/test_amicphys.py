@@ -194,6 +194,71 @@ def test_orchestration_gasaerexch_and_newnuc_matches_fortran(
         )
 
 
+COAG_REF_DIR = (
+    Path(__file__).resolve().parent / "reference" / "per_process_coag"
+)
+
+
+@pytest.fixture(scope="module")
+def coag_captured() -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Single-toggle Fortran capture: `mdo_coag=1, others=0` with
+    `skip_pcarbon_aging.patch`.
+
+    Coag operates on the current state's `dgncur_a`, `dgncur_awet`,
+    `wetdens` (set by calcsize + wateruptake upstream of amicphys); it
+    does not need gasaerexch outputs, unlike newnuc.
+    """
+    before = {k: np.asarray(v) for k, v in np.load(
+        COAG_REF_DIR / "amicphys_before.npz").items()}
+    aw     = {k: np.asarray(v) for k, v in np.load(
+        COAG_REF_DIR / "amicphys_after_writeback.npz").items()}
+    return before, aw
+
+
+def test_orchestration_coag_only_matches_fortran(coag_captured) -> None:
+    """JAX `amicphys(state, mdo_coag=1, others=0)` reproduces the
+    Fortran coag-only fixture at 1e-6 on the aerosol-tracer slots of
+    `q` and `qqcw` (M3.6 PR-G3 wiring test). **Closes M3.6.**
+
+    Gas-tracer slots (``LMAP_GAS``) are excluded from the comparison.
+    Coag does not touch gases, but ``driver.F90:1249`` applies a
+    ``vmr += 1e-16*dt`` gas-chem stub to H₂SO₄ *outside* amicphys, and
+    that increment is captured in the Fortran writeback dump. The
+    matching ``gasaerexch`` test absorbs this in the H₂SO₄ analytical
+    solver (``_mam_gasaerexch_1subarea`` line ~594); coag-only has no
+    such mechanism because gasaerexch is off, so the gas-chem-added
+    H₂SO₄ shows up only in Fortran. The cleanest fix is to limit the
+    coag test to coag's actual validation surface — the aerosol-tracer
+    slots.
+    """
+    import mam4_jax.data as _data  # noqa
+    gas_slots = set(int(i) for i in _data.LMAP_GAS)
+
+    before, aw = coag_captured
+    state = _build_state(before)
+    new_state = amicphys(state,
+                         mdo_gasaerexch=0, mdo_rename=0,
+                         mdo_newnuc=0, mdo_coag=1)
+
+    pcnst = before["q"].shape[-1]
+    aerosol_slots = [i for i in range(pcnst) if i not in gas_slots]
+
+    for key in ("q", "qqcw"):
+        np.testing.assert_allclose(
+            np.asarray(new_state[key])[..., aerosol_slots],
+            aw[key][..., aerosol_slots],
+            rtol=1e-6, atol=1e-20,
+            err_msg=f"coag-only orchestration diverged on {key!r} "
+                    "(aerosol slots)",
+        )
+    for key in ("dgncur_a", "dgncur_awet", "qaerwat", "wetdens"):
+        np.testing.assert_allclose(
+            np.asarray(new_state[key]), aw[key],
+            rtol=1e-3, atol=1e-15,
+            err_msg=f"coag-only orchestration drifted on {key!r}",
+        )
+
+
 def test_orchestration_gasaerexch_matches_fortran(gasaerexch_captured) -> None:
     """JAX `amicphys(state, mdo_gasaerexch=1, others=0)` reproduces the
     Fortran gasaerexch+soaexch fixture (no skip patches besides pcarbon
