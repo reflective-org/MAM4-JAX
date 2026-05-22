@@ -90,14 +90,14 @@ Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` 
 
 ---
 
-## Milestone 5 — Convergence test reproduction (partial)
+## Milestone 5 — Convergence test reproduction (partial, accepted as final-on-main)
 
-**Status:** partial (2026-05-22). 6 of 12 step counts validated; 6 deferred to PR-E2.
+**Status:** partial-and-final on `main` (2026-05-22). 6 of 12 step counts validated; the remaining 6 are permanently `xfail` on `main` per ADR-013.
 
-- **PR-M5 (this milestone, current)** [x partial]: reproduce the 12-point timestep sweep from `run_test.csh` against the new `tests/reference/sweep_no_pcarbon_aging/*.nc` fixture. Validates **`nstep ∈ {60, 120, 180, 360, 900, 1800}`** at `rtol=1e-6` on `num_aer`/`so4_aer`/`soa_aer`/`h2so4_gas`/`soag_gas` for every captured timestep. Worst rel-err **1.98e-8** in that half (50× under ADR-003). The other 6 step counts (`nstep ≤ 30`, `dt ≥ 60s`) are marked `xfail` because Fortran's `mam_soaexch_1subarea` adaptive substepping kicks in there and the JAX port doesn't (deferred in M3.6 PR-E as PR-E2). Plan: `docs/plans/014-convergence-sweep.md`. Plot: `docs/figures/sweep_convergence.png`.
-- **PR-E2 (next)** [ ]: port adaptive SOA substepping (`dtcur = alpha_astem/tmpa` from `modal_aero_amicphys.F90:3835-3843`). ~100 LOC change to `_mam_soaexch_1subarea`. Validates the 6 currently-`xfail`ed step counts. Closes M5.
+- **PR-M5 (final on main)** [x partial]: reproduces the 12-point timestep sweep from `run_test.csh` against `tests/reference/sweep_no_pcarbon_aging/*.nc`. Validates **`nstep ∈ {60, 120, 180, 360, 900, 1800}`** at `rtol=1e-6` on `num_aer`/`so4_aer`/`soa_aer`/`h2so4_gas`/`soag_gas` for every captured timestep. Worst rel-err **1.98e-8** in that half (50× under ADR-003). The other 6 step counts (`nstep ≤ 30`, `dt ≥ 60s`) are marked `xfail` because Fortran's `mam_soaexch_1subarea` adaptive substepping kicks in there and the `main` JAX port doesn't (per ADR-013 the handwritten port is intentionally skipped; resolution lives on the `diffrax` branch). Plan: `docs/plans/014-convergence-sweep.md`. Plot: `docs/figures/sweep_convergence.png`.
+- ~~PR-E2 (handwritten adaptive substepping)~~ — **CANCELLED** per ADR-013. Adaptive substepping is the `diffrax` branch's job, not `main`'s.
 
-**Possible scope expansion**: NetCDF output emission from JAX (so the post-process notebook works against JAX outputs). Defer until PR-E2 closes M5.
+**Possible scope expansion (still `main`)**: NetCDF output emission from JAX (so the post-process notebook works against JAX outputs). Defer indefinitely — only useful if a downstream tool needs it.
 
 ---
 
@@ -116,22 +116,29 @@ Each optimization lands as its own PR with a before/after correctness check (sti
 
 ---
 
-## Milestone 7 — Diffrax migration (proposed)
+## Milestone 7 — Diffrax migration (long-lived `diffrax` branch)
 
-**Status:** proposed (owner-introduced 2026-05-21 during M3.6 PR-E planning).
+**Status:** owner-introduced 2026-05-21; promoted to dual-branch strategy 2026-05-22 (see ADR-013).
 
-Migrate the handwritten ODE solvers we've been writing to [`diffrax`](https://github.com/patrick-kidger/diffrax), the JAX-native ODE/SDE library. Affects:
+**Branching model.** M7 lives on a separate long-lived `diffrax` branch parallel to `main`, *not* as a sequence of PRs into `main`. Rationale and invariants in ADR-013. Summary:
 
-- H₂SO₄ analytical solver in PR-D (`_mam_gasaerexch_1subarea`'s three-branch `tmp_kxt` / Taylor / exp formula).
-- SOA exchange step-1/step-2 semi-implicit solver in PR-E (`_mam_soaexch_1subarea`).
-- Adaptive sub-stepping in PR-E2 (when triggered) — diffrax provides this for free.
-- Coupled ODE systems in PR-G (`_mam_coag_1subarea`, if it has any).
+- `main` keeps handwritten solvers (current state), including the 6 `nstep ≤ 30` `xfail`s on the convergence sweep.
+- `diffrax` branch replaces handwritten solvers with diffrax equivalents; dynamic substepping comes from diffrax's standard adaptive controller. The 6 `xfail`ed cases are expected to pass on this branch.
+- Both branches stay structurally similar (same module layout, function names, state-dict contract, test fixtures).
 
-**Pros.** JIT/grad/vmap-clean; better numerics on stiff systems (Kvaerno5, KenCarp4); adaptive stepping for free; standard diagnostics/error estimators.
+**Solvers in scope.** Each is a separate sub-PR within the `diffrax` branch:
 
-**Cons.** Adds runtime dependency (~3 MB); per-step output may differ from Fortran by ~1 ULP because the solver choice and tolerances differ; cross-validation against Fortran at 1e-6 becomes trickier on stiff problems.
+- H₂SO₄ analytical solver in `_mam_gasaerexch_1subarea` (the three-branch `tmp_kxt` / Taylor / exp formula at `processes/amicphys.py:603-622`).
+- SOA exchange step-1/step-2 semi-implicit solver in `_mam_soaexch_1subarea` — this is where adaptive substepping resolves the `nstep ≤ 30` gap.
+- Coag's analytical number-loss and exp-decay mass transfer in `_mam_coag_1subarea` (if a stiffer fixture ever motivates revisiting the closed-form).
 
-**Sequencing.** After M3.6 done — having a stable bit-comparable baseline against Fortran first lets us measure the diffrax delta cleanly. May fold into Milestone 6 (Phase B optimization) or land as its own milestone, TBD when we're ready to plan it.
+**Pros.** JIT/grad/vmap-clean; better numerics on stiff systems (Kvaerno5, KenCarp4); adaptive stepping for free; standard diagnostics/error estimators; resolves the M5 `nstep ≤ 30` gap on the `diffrax` branch without polluting `main`.
+
+**Cons.** Adds runtime dependency (~3 MB on the `diffrax` branch only). Per-step output may differ from Fortran by ~1 ULP because the solver choice and tolerances differ; cross-validation against Fortran at 1e-6 becomes trickier on stiff problems.
+
+**Sequencing.** Each handwritten solver is replaced one at a time on the `diffrax` branch with a per-solver PR (into the `diffrax` branch, not `main`). The test suite from `main` is reused unchanged — `tests/test_sweep.py`'s currently-`xfail`ed cases should flip to expected-pass.
+
+**Out of scope on `main`.** The previously-planned handwritten "PR-E2" (adaptive SOA substepping ported to `main`) is cancelled per ADR-013.
 
 **Out of scope today.** Spec-level decisions (which solver family, which tolerances, how to validate against Fortran) — those happen when this milestone is approved to "in progress".
 

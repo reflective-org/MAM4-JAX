@@ -139,4 +139,25 @@ Status values: **Accepted**, **Proposed**, **Superseded by ADR-NNN**.
 
 ---
 
+## ADR-013 — Dual-branch strategy: `main` keeps handwritten solvers; `diffrax` branch ports them
+
+- **Status:** Accepted (2026-05-22)
+- **Context:** During M5 (12-point convergence sweep), the JAX port diverged sharply from Fortran at `nstep ≤ 30` (`dt ≥ 60s`). Diagnosis: Fortran's `mam_soaexch_1subarea` triggers adaptive substepping (`dtcur = alpha_astem/tmpa` at `modal_aero_amicphys.F90:3835-3843`); the JAX port intentionally assumes single-substep (deferred in M3.6 PR-E as PR-E2 per `docs/DEFERRED.md`). M7 (diffrax migration) was already on the roadmap as a future solver-quality improvement. The question: do we port handwritten adaptive substepping as PR-E2 first, then migrate to diffrax later, or skip PR-E2 and let the diffrax migration provide adaptive substepping for free?
+- **Decision:** **Skip PR-E2 on `main`. Adaptive / dynamic substepping is solely the diffrax branch's responsibility.** A separate long-lived `diffrax` branch ports the handwritten ODE/analytical solvers (`_mam_gasaerexch_1subarea`'s H₂SO₄ analytical solver, `_mam_soaexch_1subarea`, possibly `_mam_coag_1subarea` if it has coupled-ODE structure) to diffrax equivalents. Diffrax's standard adaptive-controller (PI / I) handles step-size control natively — no handwritten substepping logic needed.
+- **Branch invariants:**
+  - **Structural parity.** Same module layout, function names, state-dict contract, and test fixtures on both branches. The only deltas are inside the affected solver bodies.
+  - **Test parity.** The 6 currently-`xfail`ed `nstep ≤ 30` cases in `tests/test_sweep.py` should flip to expected-pass on the diffrax branch (with `rtol=1e-6` per ADR-003, possibly relaxed by 1 ULP if the solver choice shifts residuals).
+  - **Cross-branch porting.** Non-solver changes (new docs, new fixtures, new processes) land in `main` first and then get cherry-picked / replayed into `diffrax`. Solver changes land in `diffrax` only. A future `diffrax → main` merge is *not* anticipated unless the project pivots to make diffrax the canonical implementation.
+- **Consequences:**
+  - `main` keeps the simpler, more transparent handwritten implementations — easier to read against Fortran 1:1.
+  - `main` has a permanent gap on the `nstep ≤ 30` convergence-sweep cases. They stay `xfail` indefinitely with docstrings pointing at the diffrax branch as the resolution.
+  - The two branches let us measure the diffrax change cleanly: same tests, same fixtures, only the solver differs. Performance / accuracy / autodiff trade-offs become directly comparable.
+  - When the diffrax branch is ready to land, the decision to merge (or keep parallel) is itself a future ADR.
+- **Alternatives considered:**
+  - **Port PR-E2 (handwritten adaptive substepping) on `main`, then migrate to diffrax.** Rejected: duplicates work; tangles "match Fortran 1:1" with solver-quality improvements; the handwritten substepping would be deleted in M7 anyway.
+  - **Skip M7 entirely; keep main as-is with the documented gap.** Rejected: the diffrax migration brings real benefits beyond adaptive substepping (autodiff cleanliness, standard error estimators, established library) — worth doing once we have a baseline.
+  - **Apply the diffrax port as a series of PRs to `main` directly (no parallel branch).** Rejected: makes side-by-side comparison harder, forces both implementations to live in the same files, and loses the "structurally similar, only the solver differs" property the dual-branch arrangement provides.
+
+---
+
 *Add new ADRs below this line. Number sequentially; never reuse numbers; never edit an Accepted ADR.*
