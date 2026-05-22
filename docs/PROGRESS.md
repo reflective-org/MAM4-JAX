@@ -6,6 +6,18 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-22 — Milestone 4 (PR-M4-B) — 60-step trajectory test + size-distribution figure. **M4 complete.**
+
+- PR: pending (`m4/driver-trajectory`)
+- Plan: [`docs/plans/013-driver-trajectory-and-figure.md`](plans/013-driver-trajectory-and-figure.md). Second of the two-PR M4 split. Validates the operator-splitting time loop accumulates correctly over the full 1800 s window and produces the mode-by-mode size-distribution comparison figure the owner asked about prior to M4. **Closes M4.**
+- **Test** (`tests/test_driver.py`, 1 new test): `test_run_timesteps_60_step_trajectory_matches_fortran`. Drives JAX `run_timesteps(ic, 60)` from `calcsize_before[0]`, asserts each per-step snapshot matches Fortran `amicphys_after_writeback[n]` at `rtol=1e-6, atol=1e-20` on `q`/`qqcw`. **Max trajectory rel-err: 1.97e-8** at step 29 on tracer 17 (Aitken number) — 50× under ADR-003. Errors flatten by step ~5; no runaway accumulation. Size fields at `rtol=1e-3, atol=1e-15` (same Fortran mid-substep re-uptake caveat as the per-process amicphys tests).
+- **Figure** `docs/figures/driver_60step_trajectory.png`:
+  - 4 mode panels (accum / Aitken / coarse / pcarbon) with dual y-axes — number-density on log left, dry diameter on linear right; Fortran solid (lw 2), JAX dashed (lw 0.9). Mode trajectories overlay cleanly across 60 steps.
+  - Bottom panel: per-(step, tracer) `|rel-err|` for all 35 tracers, semilog y, with ADR-003 1e-6 reference line and machine-ε reference line. The Aitken-number band peaks at ~2e-8 around step 30; everything else sits near 1e-12 to 1e-14.
+  - This is the mode-by-mode size-distribution comparison the owner requested. Per `feedback-validation-must-be-driven`, the figure shows a **self-driven JAX trajectory** vs Fortran capture, not per-step JAX on captured before-states.
+- Full suite: **61/61 green** (60 + 1 new).
+- **M4 is now complete.** Next milestone: M5 — reproduce Fortran's 12-point convergence sweep (`run_test.csh`'s `1, 2, 4, 9, 18, 30, 60, 120, 180, 360, 900, 1800` step counts over 1800 s) and validate against the Fortran NetCDF outputs at every timestep count.
+
 ## 2026-05-22 — Milestone 4 (PR-M4-A) — Operator-splitting driver scaffold
 
 - PR: pending (`m4/driver-scaffold`)

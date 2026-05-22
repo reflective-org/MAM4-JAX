@@ -103,6 +103,10 @@ mam4_jax/
   data.py                   # MAM4-MOM constants + IndexTables + accessors (ADR-008)
   saturation.py             # polysvp_water/ice, qsat_water/ice (ported, M3.1/M3.2)
   kohler.py                 # makoh_cubic/quartic + modal_aero_kohler (ported, M3.4 A/B)
+  newnuc.py                 # binary_nuc_vehk2002, pbl_nuc_wang2008, mer07_veh02_nuc_mosaic_1box (ported, M3.6 PR-F1/F2)
+  coag.py                   # getcoags, getcoags_wrapper_f (ported, M3.6 PR-G1/G2)
+  _coag_tables.npz          # Whitby correction-factor tables (extracted from upstream data declarations)
+  driver.py                 # run_step / run_timesteps — operator-splitting time loop (ported, M4)
   processes/
     calcsize.py             # modal_aero_calcsize_sub (ported, M3.5 A+B)
     wateruptake.py          # modal_aero_wateruptake_sub/_dr (ported, M3.4 C)
@@ -132,8 +136,8 @@ docs/
 Notable structural decisions that emerged during the port and weren't in the original sketch:
 
 - **`constants.py` and `saturation.py` are package-level**, not under `processes/`. They are leaf math (no aerosol state), reused by multiple processes.
-- **`kohler.py` is package-level** for the same reason — it's the equilibrium solver consumed by `wateruptake`, and is independently testable.
-- **No `driver.py` yet.** The operator-splitting time loop is Milestone 4; only the leaf processes have landed so far.
+- **`kohler.py`, `newnuc.py`, `coag.py` are package-level** for the same reason — they're equilibrium / parameterization solvers consumed by `wateruptake` / `amicphys`, and are independently testable. `mam4_jax/coag.py` ships with a sibling `_coag_tables.npz` (extracted once from the upstream Fortran `data` declarations by `scripts/extract_coag_tables.py`).
+- **`driver.py` landed in M4** (2026-05-22). Exposes `run_step(state)` and `run_timesteps(state, n_steps)`. Chains `calcsize → wateruptake → cloud_chem (no-op) → amicphys`. Validated end-to-end against a 60-step Fortran capture at max rel-err 1.97e-8.
 - **The four `processes/{gasaerexch,newnuc,coag,rename}.py` stubs are kept** as dead M1 scaffolding, even though the box-model build never reaches them. Removing them would be a no-op refactor; they get deleted (or repurposed) when the corresponding `_mam_*_1subarea` helpers inside `amicphys.py` land in M3.6 PR-B/C/D/E.
 
 See [PLANS.md](PLANS.md) for milestone sequencing and [KEY_DECISIONS.md](KEY_DECISIONS.md) for the architectural ADRs.

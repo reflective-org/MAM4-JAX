@@ -79,12 +79,12 @@ Each port lands as its own PR following the validation workflow in `CLAUDE.md` (
 
 ---
 
-## Milestone 4 — Operator-splitting time loop (in progress)
+## Milestone 4 — Operator-splitting time loop (done)
 
-**Status:** in progress (2026-05-22). M3.6 complete; M4 splits into two PRs.
+**Status:** done (2026-05-22). M3.6 complete; M4 landed across two PRs.
 
 - **PR-M4-A** [x]: scaffold `mam4_jax/driver.py` with `run_step` and `run_timesteps`; 1-step test against a new `instrumented-full-minus-pcarbon-aging` Fortran capture (max rel-err **2.5e-9** on `q`). Cloud-chem stubbed as a no-op (box-model fixture has `cldn=0`); gas-chem term stays inside gasaerexch's analytical solver (no operator-splitting refactor). Plan: `docs/plans/012-driver-scaffold.md`.
-- **PR-M4-B** [ ]: 60-step trajectory test against the same fixture (step-by-step rel-err < 1e-6 across the full 1800 s integration); mode-by-mode size-distribution comparison figure (Fortran solid / JAX dashed for 4 modes' number-density and dry diameter over 60 steps). Completes M4.
+- **PR-M4-B** [x]: 60-step trajectory test against the same fixture — **max rel-err 1.97e-8** at step 29 on Aitken-mode number (tracer 17), 50× under ADR-003. Errors flatten by step ~5; no runaway accumulation. Mode-by-mode size-distribution comparison figure shows JAX (dashed) overlaying Fortran (solid) across the full integration. Plan: `docs/plans/013-driver-trajectory-and-figure.md`. Plot: `docs/figures/driver_60step_trajectory.png`.
 
 Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` is deferred to Milestone 6.
 
@@ -92,7 +92,18 @@ Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` 
 
 ## Milestone 5 — Convergence test reproduction (proposed)
 
-**Status:** proposed. Reproduce the 12-point timestep sweep from `run_test.csh` (`1, 2, 4, 9, 18, 30, 60, 120, 180, 360, 900, 1800` substeps over 1800 s) and match Fortran outputs to `1e-6` at every step count. Generates a convergence-plot deliverable.
+**Status:** proposed (M4 done 2026-05-22, M5 now unblocked). Reproduce the 12-point timestep sweep from `run_test.csh` (`1, 2, 4, 9, 18, 30, 60, 120, 180, 360, 900, 1800` substeps over 1800 s) and match Fortran outputs to `1e-6` at every step count. Generates a convergence-plot deliverable.
+
+**Tentative subtasks (to be refined when M5 is approved to "in progress"):**
+
+1. Generate the 12-point Fortran NetCDF sweep against the matching "full-minus-pcarbon-aging" build (canonical namelist + `skip_pcarbon_aging.patch`). Reuses `scripts/build_reference.sh` infrastructure but writes NetCDF instead of `.npz` (or both); decide.
+2. Read Fortran NetCDF output into the JAX side for comparison. Likely `netCDF4` (already a pyproject dependency) — no new dependencies needed.
+3. Run `mam4_jax.driver.run_timesteps(ic, n)` for each `n` in the sweep; collect final-state trajectories.
+4. Validate at each `n`: JAX final state matches Fortran final state to `rtol=1e-6` (allow `1e-3` on size fields per the standing caveat).
+5. Convergence-plot deliverable — Fortran-vs-JAX final-step state across the 12 step counts (one axis = step count, another = chosen tracer/diameter). Highlights whether the operator-splitting solution converges at the same rate as Fortran's.
+6. Open-question: gas-chem extraction may need to land here if any of the sweep configurations toggles `mdo_gasaerexch` off. Defer the decision until after step 1 confirms the sweep config matches what JAX already supports.
+
+**Possible scope expansion**: NetCDF output emission from JAX (so the post-process notebook works against JAX outputs). Defer until the convergence test is validated.
 
 ---
 
