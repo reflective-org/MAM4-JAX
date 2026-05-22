@@ -65,6 +65,16 @@ tests/reference/
 │   ├── amicphys_before.npz
 │   ├── amicphys_after.npz
 │   └── amicphys_after_writeback.npz
+├── per_process_full_minus_pcarbon_aging/   # all mdo_*=1; skip_pcarbon_aging (M4 PR-A)
+│   ├── calcsize_before.npz
+│   ├── calcsize_after.npz
+│   ├── wateruptake_before.npz
+│   ├── wateruptake_after.npz
+│   ├── amicphys_before.npz
+│   ├── amicphys_after.npz
+│   ├── amicphys_after_writeback.npz
+│   ├── rename_before.npz
+│   └── rename_after.npz
 ├── polysvp/                        # standalone polysvp T-sweep
 │   └── reference.npz
 ├── qsat/                           # standalone qsat (T, p)-grid
@@ -272,6 +282,29 @@ absorbs the same term via the H₂SO₄ analytical solver's
 Same six tags + `amicphys_after_writeback.npz` (validation target —
 same writeback rationale as `per_process_gasaerexch/` and
 `per_process_gasaerexch_and_newnuc/`).
+
+### `per_process_full_minus_pcarbon_aging/` — full-physics minus pcarbon-aging (M4 PR-A)
+
+Captured by `scripts/capture_reference.py --mode instrumented-full-minus-pcarbon-aging`.
+Canonical full-physics namelist (all `mdo_*=1`) but with
+`scripts/patches/skip_pcarbon_aging.patch` applied at build time so
+`mam_pcarbon_aging_1subarea` is a no-op. Matches the JAX port's M3.6
+scope: pcarbon aging is deferred (`docs/DEFERRED.md`) and isn't in the
+JAX `amicphys` chain.
+
+The canonical `per_process/` fixture (pcarbon aging on) would diverge
+from the JAX driver on every step's Aitken / pcarbon tracers by ~20%
+— well above ADR-003's 1e-6 budget. The new fixture removes that
+confound so the M4 driver test can validate at machine-ε rel-err
+without conflating JAX vs Fortran differences with the
+intentionally-deferred sub-process.
+
+Used by `tests/test_driver.py::test_run_step_one_step_matches_fortran`
+(M4 PR-A); will also feed `test_60step_trajectory_matches_fortran` in
+PR-M4-B.
+
+Same six instrumented tags + the rename hook (rename is on in the
+canonical namelist, so the hook fires every step).
 
 ### `per_process_amicphys_off/` — variant with the amicphys sub-processes disabled
 

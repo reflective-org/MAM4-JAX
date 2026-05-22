@@ -98,6 +98,9 @@ PER_PROCESS_GASAEREXCH_AND_NEWNUC_OUT_DIR = (
     REPO_ROOT / "tests" / "reference" / "per_process_gasaerexch_and_newnuc"
 )
 PER_PROCESS_COAG_OUT_DIR = REPO_ROOT / "tests" / "reference" / "per_process_coag"
+PER_PROCESS_FULL_MINUS_AGING_OUT_DIR = (
+    REPO_ROOT / "tests" / "reference" / "per_process_full_minus_pcarbon_aging"
+)
 POLYSVP_OUT_DIR = REPO_ROOT / "tests" / "reference" / "polysvp"
 POLYSVP_EXE = RUN_DIR / "polysvp_driver.exe"
 QSAT_OUT_DIR = REPO_ROOT / "tests" / "reference" / "qsat"
@@ -562,9 +565,13 @@ def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
                      gasaerexch_only: bool = False,
                      gasaerexch: bool = False,
                      gasaerexch_and_newnuc: bool = False,
-                     coag_only: bool = False) -> list[Path]:
+                     coag_only: bool = False,
+                     full_minus_aging: bool = False) -> list[Path]:
     dt = TOTAL_DURATION_S // nstep
-    if coag_only:
+    if full_minus_aging:
+        out_dir = PER_PROCESS_FULL_MINUS_AGING_OUT_DIR
+        flavour = "instrumented-full-minus-pcarbon-aging"
+    elif coag_only:
         out_dir = PER_PROCESS_COAG_OUT_DIR
         flavour = "instrumented-coag-only"
     elif gasaerexch_and_newnuc:
@@ -615,6 +622,11 @@ def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
         write_namelist(dt, nstep,
                        mdo_gasaerexch=0, mdo_rename=0,
                        mdo_newnuc=0, mdo_coag=1)
+    elif full_minus_aging:
+        # All mdo_*=1 (canonical full-physics), but skip_pcarbon_aging
+        # patch is applied at build time. The namelist is unchanged from
+        # the canonical defaults.
+        write_namelist(dt, nstep)
     else:
         write_namelist(dt, nstep)
     print(f"[capture_reference] {flavour} dt={dt}s nstep={nstep} ...", flush=True)
@@ -628,7 +640,7 @@ def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
     if (not no_aitacc_transfer and not amicphys_off
             and not rename_only and not gasaerexch_only
             and not gasaerexch and not gasaerexch_and_newnuc
-            and not coag_only):
+            and not coag_only and not full_minus_aging):
         indices_txt = RUN_DIR / "mam4_indices.txt"
         if not indices_txt.is_file():
             raise RuntimeError(f"expected indices dump missing: {indices_txt}")
@@ -992,6 +1004,7 @@ def main() -> int:
                  "instrumented-gasaerexch-with-soaexch-only",
                  "instrumented-gasaerexch-and-newnuc-only",
                  "instrumented-coag-only",
+                 "instrumented-full-minus-pcarbon-aging",
                  "polysvp", "qsat", "makoh", "kohler", "newnuc-helpers",
                  "mer07-veh02", "coag-coefficients"),
         default="sweep",
@@ -1097,6 +1110,19 @@ def main() -> int:
                   f"{NSTEP_SWEEP}", file=sys.stderr)
         written = run_instrumented(nstep, coag_only=True)
         out_root = PER_PROCESS_COAG_OUT_DIR
+    elif args.mode == "instrumented-full-minus-pcarbon-aging":
+        # All mdo_*=1 (canonical full-physics namelist), but
+        # skip_pcarbon_aging.patch is applied at build time so the
+        # pcarbon-aging sub-process is no-op'd. Matches the JAX port's
+        # M3.6 scope (pcarbon aging deferred). Used by M4 PR-A's
+        # driver test as the meaningful full-physics baseline.
+        ensure_built(instrumented=True, skip_pcarbon_aging=True)
+        nstep = args.nstep if args.nstep is not None else 60
+        if nstep not in NSTEP_SWEEP:
+            print(f"[capture_reference] warning: --nstep={nstep} is outside the canonical sweep "
+                  f"{NSTEP_SWEEP}", file=sys.stderr)
+        written = run_instrumented(nstep, full_minus_aging=True)
+        out_root = PER_PROCESS_FULL_MINUS_AGING_OUT_DIR
     elif args.mode == "polysvp":
         ensure_built(polysvp=True)
         written = run_polysvp()
