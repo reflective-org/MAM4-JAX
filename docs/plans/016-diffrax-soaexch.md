@@ -62,6 +62,20 @@ Map every `SolverConfig` field to its diffrax counterpart. No
 fallback paths, no try/except around `getattr` — invalid solver
 names should fail loudly at construction.
 
+Two implementation notes the soaexch port relies on:
+
+- **`getattr(diffrax, config.solver)` only resolves top-level
+  diffrax exports** (`Kvaerno5`, `Tsit5`, `Dopri5`, etc.). If a
+  future call site needs `diffrax.implicit.<...>` or a similarly
+  nested solver, the lookup grows a small `getattr` chain. Out
+  of scope for PR-D1; flagging the limit so it doesn't surprise.
+- **The default `saveat=None` collapses to `SaveAt(t1=True)` —
+  endpoint only.** That is the fast path for callers that only
+  need `result.ys[-1]`. The soaexch port needs both endpoints to
+  form the trapezoidal `qgas_avg`, so it must pass
+  `saveat=diffrax.SaveAt(t0=True, t1=True)` explicitly;
+  otherwise `result.ys[0]` is not recorded.
+
 ### `mam4_jax/processes/amicphys.py` — port `_mam_soaexch_1subarea`
 
 The current handwritten body solves a semi-implicit Step-1 / Step-2
@@ -96,14 +110,19 @@ integrator (no `where` chain in the RHS).
 
 **Boundary conditions / clamps.** The current handwritten port
 applies `max(0, ·)` to the new gas and aerosol concentrations.
-The diffrax port should rely on the ODE's structure to keep
-states non-negative: as `y[1+i] → 0`, `g_star[i] → 0`, so the
-flux into a depleted mode goes to whatever the gas pushes; and as
-`y[0] → 0`, the back-evaporation flux is bounded by `a_soa`. We
-will verify this empirically; if drift below zero happens
-numerically, a final `max(0, ·)` post-integration clamp is the
-acceptable fallback (matches what the handwritten port does
-anyway).
+The ODE structure makes the depleted-aerosol direction
+well-behaved — as `y[1+i] → 0`, `g_star[i] → 0`, so the flux
+becomes `uptkaer * y[0]`, pure condensation, bounded by the
+available gas. But the depleted-gas direction is **not**
+math-guaranteed non-negative: when `y[0] → 0`, the flux flips
+sign to `-uptkaer * g_star[i]`, driving mass out of the
+aerosol, and the bound `|flux| ≤ uptkaer * g0_soa` does not by
+itself prevent `a_soa[i]` from dipping below zero between
+integrator steps. The handwritten port's `max(0, ·)`
+post-integration clamp is therefore retained as a numerical
+safety net (not a math-derived invariant); diffrax's adaptive
+controller should keep drift small, but the clamp closes the
+loop on rare integrator overshoots.
 
 **`qgas_avg` (time-averaged gas).** The current port computes
 this as `(qgas_prv + g_soa_new) / 2` — a trapezoidal estimate over
@@ -192,9 +211,16 @@ in the PR description.
 - `python -m pytest tests/test_sweep.py` — **12 passed, 0 xfailed**
   (was 6 passed / 6 xfailed). Worst rel-err for each of the 12
   step counts logged in the PR description.
-- `python -m pytest tests/` (full suite on `diffrax`): at least
-  72 passed (was 68 on `diffrax` post-PR-I1; +4 from the 6 xfails
-  flipping minus any consolidation), 0 xfailed.
+- `python -m pytest tests/` (full suite on `diffrax`):
+  **74 passed, 0 xfailed** (= 68 on `diffrax` post-PR-I1 + 6
+  flipped xfails). If the xfail-bearing
+  `test_sweep_xfail_without_adaptive_soa_substep` parametrization
+  is deleted in favor of extending the main
+  `test_sweep_matches_fortran` parametrization to all 12 step
+  counts, the slot count is preserved (6 deleted + 6 added) so
+  the total stays at 74. Any deviation from 74 means a test was
+  added or removed for another reason and should be called out
+  in the PR description.
 - New / updated residual figures regenerable from a script under
   `scripts/`.
 
@@ -219,17 +245,30 @@ in the PR description.
   `[t0, t1]` (endpoint average) vs trapezoidal over a denser
   `SaveAt` grid. Cheapest correct option: start with the
   endpoint average (matches the handwritten port's `(qgas_prv +
-  g_soa_new) / 2`). Switch to the denser version if newnuc
-  validation residuals climb.
+  g_soa_new) / 2`). **Important interaction:** Fortran's
+  `qgas_avg` is trapezoidal over its *adaptive* substeps, which
+  at large `dt` (the very `nstep ≤ 30` cases PR-D1 is designed
+  to fix) is strictly more accurate than the endpoint-only
+  trapezoid. So if any of those cases stay above `rtol=1e-6`
+  after this port, the cause may not be H₂SO₄ uptake alone but
+  also `qgas_avg` diverging from Fortran's substep-aware
+  integral. Diagnose by switching to a denser `SaveAt` grid
+  before tightening the solver further.
 - **Batched integration.** Diffrax accepts array-valued `y0` and
   applies the solver component-wise. Confirm during
   implementation that this works for the per-(col, level)
   batched state. If not, fall back to `vmap` over the lead axes.
-- **Stiff-solver compile time.** `Kvaerno5` is implicit; the JIT
-  compile may be slow on first call. If compile dominates the
-  60-step driver test runtime, consider caching or switching to
-  `Tsit5` (explicit) as the default — but only if Stage 2
-  validation still meets `rtol=1e-6`.
+- **Stiff-solver compile time and Tsit5 dry-run.** `Kvaerno5`
+  is implicit; the JIT compile may be slow on first call. Cheap
+  experiment to run before declaring `Kvaerno5` the final
+  default: a side-by-side `Tsit5` dry-run on Stages 1–3. SOA
+  exchange is *mildly* stiff (concentrations span many orders of
+  magnitude — hence ADR-002's `float64` mandate — but the
+  characteristic timescales aren't ratio'd hard apart like
+  classical nucleation), so `Tsit5` may meet `rtol=1e-6` while
+  amortizing compile cost better. Pick the default on data, not
+  on compile-time anxiety. Document the head-to-head numbers in
+  the PR description if `Tsit5` ends up the choice.
 - **Are the 6 `xfail` markers in `tests/test_sweep.py` removed
   in this PR or in a follow-up?** Default: same PR. The xfail
   → pass flip is the load-bearing acceptance criterion.
