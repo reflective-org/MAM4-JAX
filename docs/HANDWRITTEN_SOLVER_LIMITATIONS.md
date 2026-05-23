@@ -31,16 +31,18 @@ See `docs/PROGRESS.md` for the full milestone log with PR links.
 
 All three live in `mam4_jax/processes/amicphys.py`:
 
-1. **`_mam_soaexch_1subarea`** (lines 83–~520) — semi-implicit
-   step-1/step-2 solver for SOA gas/aerosol exchange. Assumes one
-   substep per call (`dtcur = dtfull`). Fortran's equivalent
-   triggers adaptive substepping when `dtfull * tmpa > alpha_astem`
-   (see `modal_aero_amicphys.F90:3835-3843`); the JAX port does not.
-2. **H₂SO₄ analytical uptake** inside `_mam_gasaerexch_1subarea`
-   (lines 593–636) — three-branch closed form on `tmp_kxt`:
-   `tmp_kxt > 0.001` uses `exp(-tmp_kxt)`, `tmp_kxt ≤ 0.001` uses a
-   Taylor expansion, `tmp_kxt < 1e-20` skips the qaer update. No
-   adaptive control; the branch boundaries are hand-picked.
+1. **`_mam_soaexch_1subarea`** — semi-implicit step-1/step-2 solver
+   for SOA gas/aerosol exchange. Assumes one substep per call
+   (`dtcur = dtfull`). Fortran's equivalent triggers adaptive
+   substepping inside `mam_soaexch_1subarea` when
+   `dtfull * tmpa > alpha_astem`
+   (`mam4-original-src-code/e3sm_src_modified/modal_aero_amicphys.F90`,
+   subroutine `mam_soaexch_1subarea`); the JAX port does not.
+2. **H₂SO₄ analytical uptake** inside `_mam_gasaerexch_1subarea` —
+   three-branch closed form on `tmp_kxt`: `tmp_kxt > 0.001` uses
+   `exp(-tmp_kxt)`, `tmp_kxt ≤ 0.001` uses a Taylor expansion,
+   `tmp_kxt < 1e-20` skips the `qaer` update. No adaptive control;
+   the branch boundaries are hand-picked.
 3. **Coag's analytical number-loss + exp-decay mass transfer** in
    `_mam_coag_1subarea` — closed-form `(1 - exp(...))` decay for
    number, two-branch number-loss guard at `tmpa < 1e-5`. No
