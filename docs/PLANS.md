@@ -118,29 +118,29 @@ Each optimization lands as its own PR with a before/after correctness check (sti
 
 ## Milestone 7 — Diffrax migration (long-lived `diffrax` branch)
 
-**Status:** owner-introduced 2026-05-21; promoted to dual-branch strategy 2026-05-22 (see ADR-013).
+**Status:** approved 2026-05-22; ready to start with PR-I1. Owner-introduced 2026-05-21; dual-branch strategy 2026-05-22 (ADR-013); eventual merge-back to `main` planned (ADR-014).
 
-**Branching model.** M7 lives on a separate long-lived `diffrax` branch parallel to `main`, *not* as a sequence of PRs into `main`. Rationale and invariants in ADR-013. Summary:
+**Branching model.** M7 lives on a long-lived `diffrax` branch parallel to `main`. Rationale and invariants in ADR-013; the merge-back intent and the `main → diffrax` sync convention are in ADR-014. Summary:
 
-- `main` keeps handwritten solvers (current state), including the 6 `nstep ≤ 30` `xfail`s on the convergence sweep.
-- `diffrax` branch replaces handwritten solvers with diffrax equivalents; dynamic substepping comes from diffrax's standard adaptive controller. The 6 `xfail`ed cases are expected to pass on this branch.
-- Both branches stay structurally similar (same module layout, function names, state-dict contract, test fixtures).
+- `main` keeps handwritten solvers, including the 6 `nstep ≤ 30` `xfail`s on the convergence sweep. The `v0.1.0` tag (created during PR-I1) anchors this baseline.
+- `diffrax` branch replaces handwritten solvers with diffrax equivalents; dynamic substepping comes from diffrax's standard adaptive controller. The 6 `xfail`ed cases are expected to pass.
+- Both branches stay structurally similar (same module layout, function names, state-dict contract, test fixtures). Non-solver changes land in `main` first and reach `diffrax` via periodic `main → diffrax` merges (ADR-014).
+- Eventually, once the diffrax port is validated end-to-end, `diffrax` merges back into `main` and becomes the canonical implementation (ADR-014).
 
-**Solvers in scope.** Each is a separate sub-PR within the `diffrax` branch:
+**Sub-PRs on the `diffrax` branch.** Each lands as its own PR; per-PR detail lives in the archived plan docs.
 
-- H₂SO₄ analytical solver in `_mam_gasaerexch_1subarea` (the three-branch `tmp_kxt` / Taylor / exp formula at `processes/amicphys.py:603-622`).
-- SOA exchange step-1/step-2 semi-implicit solver in `_mam_soaexch_1subarea` — this is where adaptive substepping resolves the `nstep ≤ 30` gap.
-- Coag's analytical number-loss and exp-decay mass transfer in `_mam_coag_1subarea` (if a stiffer fixture ever motivates revisiting the closed-form).
+1. **PR-I1 — Infra & tooling.** Create `v0.1.0` tag on `main` (handwritten-solver baseline). On `diffrax`: add `diffrax` to `pyproject.toml`; introduce `mam4_jax/solvers.py` strategy module (skeleton + signature, no real solvers wired in yet); add ADR-014; add `docs/HANDWRITTEN_SOLVER_LIMITATIONS.md`. No solver swap — every existing test still passes, the 6 xfails stay xfail. Plan: `docs/plans/015-diffrax-infra.md`.
+2. **PR-D1 — Port `_mam_soaexch_1subarea` to diffrax.** Default solver `Kvaerno5`. Validation surface: the 6 currently-`xfail`ed M5 cases (`nstep ∈ {1,2,4,9,18,30}`) flip to expected-pass at `rtol=1e-6`; the 6 currently-passing cases stay green; soaexch-only single-toggle fixture residual plot. Plan: `docs/plans/016-diffrax-soaexch.md` (to be drafted).
+3. **PR-D2 — Port H₂SO₄ analytical solver in `_mam_gasaerexch_1subarea` to diffrax.** Lower priority (no current accuracy gap on `main`); validates the `solvers.py` abstraction on a simpler closed-form ODE. Plan: `docs/plans/017-diffrax-h2so4.md` (to be drafted).
+4. **PR-D3 — Coag analytical solvers.** Deferred unless PR-D1 or PR-D2 surface a coupled-ODE stiffness issue. May stay in `docs/DEFERRED.md`.
 
-**Pros.** JIT/grad/vmap-clean; better numerics on stiff systems (Kvaerno5, KenCarp4); adaptive stepping for free; standard diagnostics/error estimators; resolves the M5 `nstep ≤ 30` gap on the `diffrax` branch without polluting `main`.
+**Pros.** JIT/grad/vmap-clean; better numerics on stiff systems (Kvaerno5, KenCarp4); adaptive stepping for free; standard diagnostics/error estimators; resolves the M5 `nstep ≤ 30` gap without polluting `main` before the merge-back.
 
-**Cons.** Adds runtime dependency (~3 MB on the `diffrax` branch only). Per-step output may differ from Fortran by ~1 ULP because the solver choice and tolerances differ; cross-validation against Fortran at 1e-6 becomes trickier on stiff problems.
+**Cons.** Adds runtime dependency (~3 MB on the `diffrax` branch only). Per-step output may differ from Fortran by ~1 ULP because the solver choice and tolerances differ; cross-validation against Fortran at 1e-6 becomes trickier on stiff problems (ADR-013 allows ~1 ULP slack but otherwise enforces ADR-003's 1e-6).
 
-**Sequencing.** Each handwritten solver is replaced one at a time on the `diffrax` branch with a per-solver PR (into the `diffrax` branch, not `main`). The test suite from `main` is reused unchanged — `tests/test_sweep.py`'s currently-`xfail`ed cases should flip to expected-pass.
+**Validation discipline.** The validation bar against Fortran stays at `rtol=1e-6` (ADR-003). The diffrax controller's *internal* tolerances are much tighter (starting defaults: `rtol=1e-9`, `atol=1e-12`) so that the validation residual is dominated by physics-model differences, not by solver truncation error. Both tolerances are tunable per PR.
 
 **Out of scope on `main`.** The previously-planned handwritten "PR-E2" (adaptive SOA substepping ported to `main`) is cancelled per ADR-013.
-
-**Out of scope today.** Spec-level decisions (which solver family, which tolerances, how to validate against Fortran) — those happen when this milestone is approved to "in progress".
 
 ---
 
