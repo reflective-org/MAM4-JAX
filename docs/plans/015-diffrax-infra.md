@@ -147,7 +147,7 @@ PR-I1 needs investigation before it merges.
   `diffrax`; `python -c "from mam4_jax import solvers; print(solvers.SolverConfig())"`
   prints the dataclass.
 - `python -m pytest tests/ -v` on `diffrax`: same line-for-line
-  result as on `main` (73 passed, 6 xfailed at the time of writing,
+  result as on `main` (67 passed, 6 xfailed at the time of writing,
   per `docs/PROGRESS.md`).
 - ADR-014 reviewed and merged; ADR-013's status annotation reflects
   the partial supersession.

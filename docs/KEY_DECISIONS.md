@@ -141,7 +141,7 @@ Status values: **Accepted**, **Proposed**, **Superseded by ADR-NNN**.
 
 ## ADR-013 — Dual-branch strategy: `main` keeps handwritten solvers; `diffrax` branch ports them
 
-- **Status:** Accepted (2026-05-22)
+- **Status:** Accepted (2026-05-22). Partially superseded by ADR-014 (2026-05-22): the "future `diffrax → main` merge is *not* anticipated" clause is reversed, and the cross-branch sync convention is replaced with merge-based sync. ADR-013's body is left unedited per the KEY_DECISIONS convention.
 - **Context:** During M5 (12-point convergence sweep), the JAX port diverged sharply from Fortran at `nstep ≤ 30` (`dt ≥ 60s`). Diagnosis: Fortran's `mam_soaexch_1subarea` triggers adaptive substepping (`dtcur = alpha_astem/tmpa` at `modal_aero_amicphys.F90:3835-3843`); the JAX port intentionally assumes single-substep (deferred in M3.6 PR-E as PR-E2 per `docs/DEFERRED.md`). M7 (diffrax migration) was already on the roadmap as a future solver-quality improvement. The question: do we port handwritten adaptive substepping as PR-E2 first, then migrate to diffrax later, or skip PR-E2 and let the diffrax migration provide adaptive substepping for free?
 - **Decision:** **Skip PR-E2 on `main`. Adaptive / dynamic substepping is solely the diffrax branch's responsibility.** A separate long-lived `diffrax` branch ports the handwritten ODE/analytical solvers (`_mam_gasaerexch_1subarea`'s H₂SO₄ analytical solver, `_mam_soaexch_1subarea`, possibly `_mam_coag_1subarea` if it has coupled-ODE structure) to diffrax equivalents. Diffrax's standard adaptive-controller (PI / I) handles step-size control natively — no handwritten substepping logic needed.
 - **Branch invariants:**
@@ -157,6 +157,27 @@ Status values: **Accepted**, **Proposed**, **Superseded by ADR-NNN**.
   - **Port PR-E2 (handwritten adaptive substepping) on `main`, then migrate to diffrax.** Rejected: duplicates work; tangles "match Fortran 1:1" with solver-quality improvements; the handwritten substepping would be deleted in M7 anyway.
   - **Skip M7 entirely; keep main as-is with the documented gap.** Rejected: the diffrax migration brings real benefits beyond adaptive substepping (autodiff cleanliness, standard error estimators, established library) — worth doing once we have a baseline.
   - **Apply the diffrax port as a series of PRs to `main` directly (no parallel branch).** Rejected: makes side-by-side comparison harder, forces both implementations to live in the same files, and loses the "structurally similar, only the solver differs" property the dual-branch arrangement provides.
+
+---
+
+## ADR-014 — Diffrax becomes canonical: eventual `diffrax → main` merge planned; sync via merge, not cherry-pick
+
+- **Status:** Accepted (2026-05-22)
+- **Context:** ADR-013 set up the dual-branch arrangement on the assumption that the `diffrax` branch might remain parallel indefinitely. In practice, the owner's intent (confirmed during M7 planning) is that once the diffrax port is validated end-to-end, it becomes the canonical MAM4-JAX implementation and merges back into `main`. ADR-013's "future `diffrax → main` merge is *not* anticipated" clause and its cherry-pick-based sync convention are inconsistent with that intent: a cherry-picked history makes the eventual merge-back noisier and the cross-branch comparison harder to maintain.
+- **Decision:**
+  1. **Eventual `diffrax → main` merge is planned**, not just possible. The diffrax branch is the canonical-to-be implementation. The decision *when* to merge — once all M7 sub-PRs (PR-I1, PR-D1, PR-D2, optionally PR-D3) land and the M5 `xfail`s flip — remains a future ADR; *that* it will eventually merge is settled.
+  2. **Cross-branch sync uses periodic `main → diffrax` merges**, not cherry-picks, not rebases. Each baseline-sync is a merge commit on `diffrax` that brings the latest `main` (or, while `main` is gated by branch protection, the integration branch standing in for `main`) into `diffrax`. This preserves the full history so the eventual `diffrax → main` merge has a clean ancestry.
+  3. **Solver changes still land on `diffrax` only.** ADR-013's "structural parity" invariant (same module layout, function names, state-dict contract, test fixtures) is preserved — the only deltas between branches are inside the solver bodies and any test-tolerance adjustments the merge-back will eventually unify.
+  4. **The `v0.1.0` tag** on `main` (at the handwritten-solver baseline tip) anchors the pre-diffrax state. It is created out-of-band by the owner (not by automation) at a moment of their choosing — natural candidate: when this ADR merges. The tag's purpose is to preserve a checkout-able snapshot of the handwritten-solver implementation after the merge-back lands.
+- **Consequences:**
+  - `diffrax`'s history grows by accumulation of `main → diffrax` merges plus PR-D* solver-port commits; the eventual merge-back to `main` becomes a single (large) merge whose diff isolates the solver bodies.
+  - `docs/HANDWRITTEN_SOLVER_LIMITATIONS.md` (introduced in PR-I1) documents what `v0.1.0` covers and doesn't, so users checking out the tag understand the gap.
+  - The "permanent gap on `nstep ≤ 30`" wording in ADR-013 reads literally on `main` until the merge-back; after the merge-back, the gap is closed by diffrax and the `xfail`s are removed.
+  - Branch protection on `main`: ADR-014 is agnostic. When `main` is gated, baseline syncs into `diffrax` flow from whichever branch carries the latest baseline (currently `dev`); the merge into `diffrax` still produces a merge commit with the right ancestry as long as the integration branch is a clean ancestor of `main`.
+- **Alternatives considered:**
+  - **Keep ADR-013's cherry-pick model.** Rejected: makes the eventual `diffrax → main` merge a manual reconciliation against a divergent history; defeats the "structurally similar, only the solver differs" promise.
+  - **Rebase `diffrax` onto `main` periodically.** Rejected: rewrites `diffrax`'s tip, breaks anyone else tracking the branch, and discards the merge-commit ancestry that makes the future merge-back legible.
+  - **Drop the merge-back intent; keep `diffrax` parallel forever.** Rejected: leaves two implementations of the same physics in the long term; doubles maintenance; the project would have to pick one as canonical eventually anyway.
 
 ---
 
