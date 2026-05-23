@@ -226,3 +226,11 @@ def test_process_stub_raises(module_name: str) -> None:
 
     with pytest.raises(NotImplementedError):
         fn(state=None, params=None, config=None)
+
+
+def test_solvers_skeleton() -> None:
+    from mam4_jax import solvers
+
+    assert isinstance(solvers.SolverConfig(), solvers.SolverConfig)
+    with pytest.raises(NotImplementedError):
+        solvers.solve_ivp(rhs=None, y0=None, t0=0.0, t1=1.0)

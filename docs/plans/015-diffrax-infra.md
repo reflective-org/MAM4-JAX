@@ -146,9 +146,12 @@ PR-I1 needs investigation before it merges.
 - On `diffrax` after PR-I1 merges: `pip install -e .` resolves
   `diffrax`; `python -c "from mam4_jax import solvers; print(solvers.SolverConfig())"`
   prints the dataclass.
-- `python -m pytest tests/ -v` on `diffrax`: same line-for-line
-  result as on `main` (73 passed, 6 xfailed at the time of writing,
-  per `docs/PROGRESS.md`).
+- `python -m pytest tests/ -v` on `diffrax`: **68 passed, 6
+  xfailed** — `main`'s `67 passed, 6 xfailed` plus one new smoke
+  test in `tests/test_scaffolding.py::test_solvers_skeleton` that
+  imports `mam4_jax.solvers`, instantiates `SolverConfig`, and
+  asserts `solve_ivp` raises `NotImplementedError`. The single
+  pass-count delta is intentional and isolated to the new module.
 - ADR-014 reviewed and merged; ADR-013's status annotation reflects
   the partial supersession.
 - `docs/HANDWRITTEN_SOLVER_LIMITATIONS.md` cross-checks against the
@@ -177,3 +180,10 @@ PR-I1 needs investigation before it merges.
   `mam4_jax/solvers.py`, peer of `kohler.py`, `coag.py`,
   `newnuc.py`, `constants.py` — it's infrastructure shared by
   multiple processes, not a process itself.
+- **Public API re-exports (decide in PR-D1).** Once `solve_ivp` is
+  wired up, should `SolverConfig`, `SolverResult`, and `solve_ivp`
+  be re-exported from `mam4_jax/__init__.py`? Argument for: matches
+  how process modules consume them via the public entry point.
+  Argument against: keep `mam4_jax.solvers` as the canonical
+  import path and avoid cluttering the package root. Defer to
+  PR-D1 where the first real consumer materializes.
