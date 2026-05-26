@@ -86,6 +86,16 @@ The point of this file is to keep the *decided to skip for now* knowledge out of
 - **Why:** the handwritten H₂SO₄ analytical solver (PR-D), soaexch step-1/step-2 semi-implicit (PR-E), and coag's analytical solvers (PR-G) are good candidates for replacement by [`diffrax`](https://github.com/patrick-kidger/diffrax) (JIT/grad/vmap-clean, better stiff-system numerics, adaptive stepping for free). Migrating on `main` would change Fortran-vs-JAX output by ~1 ULP (different solver tolerances), which complicates the 1e-6 bit-validation baseline; ADR-013 resolves this by keeping diffrax on its own branch where the baseline is "match `main` within ADR-003" instead of "match Fortran".
 - **Resurface in `main` only if:** ADR-013 is revisited.
 
+## Coag analytical → diffrax (PR-D3)
+
+- **Status:** **permanently deferred** on the `diffrax` branch (2026-05-26). PR-I1, PR-D1, PR-D2 of M7 are complete; PR-D3 was conditional on a motivating issue surfacing during PR-D1/PR-D2, and none did.
+- **Why coagulation isn't worth porting to diffrax:**
+  - **Coagulation has no differential equation in time on the box-model substep.** `_mam_coag_1subarea` applies *closed-form algebraic formulas* derived from analytically integrating the coagulation kinetics over one substep: a two-branch number-loss guard at `tmpa < 1e-5` and `(1 − exp(−tmpb))` mass-transfer formulas per active pair. There is no per-substep ODE state to integrate, no internal solver decisions for diffrax to make. Replacing the closed form with `solve_ivp` reformulates an algebraic step as a numerical-ODE step — strictly more expensive per call (Kvaerno5 takes 5–7 RHS stages × adaptive internal substeps × implicit-solver iterations vs ~140 LOC of jnp ops in the handwritten code), with no accuracy benefit.
+  - **No validation gap.** PR-D1's mass-conservation trace + PR-D2's ablation experiment confirmed that total SO4 mass and aerosol number conserve to ~ε between JAX and Fortran. Coag is bit-clean against the Fortran reference; there is no rel-err to close.
+  - **No autodiff motivation on this fixture.** The existing handwritten coag is fully JIT-clean and `vmap`-clean. The two-branch number-loss has a non-smooth gradient at the `tmpa = 1e-5` boundary, but no downstream consumer in scope cares about that smoothness. If a future autodiff use case (e.g., gradient-based calibration of a coag-sensitive parameter) materialises and the gradient discontinuity matters, this entry resurfaces.
+  - **No stiffness motivation.** Coag's closed-form is mathematically exact for the underlying kinetics over one substep; no stiff regime has surfaced where the closed form fails. ADR-015's deferral condition ("a motivating stiffness or autodiff issue") has not been met.
+- **Resurface if:** (a) a downstream autodiff use case requires smoother gradients across the `tmpa = 1e-5` boundary, or (b) the box-model configuration changes to a fixture where the closed-form formulas lose accuracy (e.g., very stiff coagulation regimes the current closed-form doesn't capture).
+
 ---
 
 *When adding a new deferred item: state what, why, and the condition that would bring it back.*
