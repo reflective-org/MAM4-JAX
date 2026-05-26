@@ -228,9 +228,16 @@ def test_process_stub_raises(module_name: str) -> None:
         fn(state=None, params=None, config=None)
 
 
-def test_solvers_skeleton() -> None:
+def test_solvers_smoke() -> None:
+    """solve_ivp integrates dy/dt = -y over [0, 1]; result ~= exp(-1)."""
+    import jax.numpy as jnp
     from mam4_jax import solvers
 
     assert isinstance(solvers.SolverConfig(), solvers.SolverConfig)
-    with pytest.raises(NotImplementedError):
-        solvers.solve_ivp(rhs=None, y0=None, t0=0.0, t1=1.0)
+
+    def rhs(t, y, args):
+        return -y
+
+    result = solvers.solve_ivp(rhs, y0=jnp.array(1.0), t0=0.0, t1=1.0)
+    np.testing.assert_allclose(result.ys[-1], np.exp(-1.0), rtol=1e-8)
+    assert "num_accepted_steps" in result.stats

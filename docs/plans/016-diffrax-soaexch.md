@@ -1,7 +1,12 @@
 # Plan 016 — M7 PR-D1: port `_mam_soaexch_1subarea` to diffrax
 
-> **Status:** proposed 2026-05-22. Awaiting owner approval before
-> implementation.
+> **Status:** approved 2026-05-22, **executed 2026-05-25 with
+> empirically revised acceptance bar.** The original 1% / 24h
+> validation target proved unachievable on `soag_gas` due to a
+> dt-independent structural offset (~2.4 %). Per ADR-015 (revised
+> 2026-05-25), the diffrax-branch bar is now **<3 % over 24 h at
+> dt ≤ 5 s**; coarser dt is observational. See *Empirical findings*
+> section below.
 
 ---
 
@@ -286,3 +291,85 @@ in the PR description.
 - `qgas_avg` divergence from Fortran's trapezoidal-over-adaptive-
   substeps formula — could shift the H₂SO₄ uptake feeding
   newnuc. Investigate empirically during validation.
+
+---
+
+## Empirical findings (2026-05-25, during execution)
+
+### Validation didn't go as planned
+
+The plan's three-stage validation at `rtol=1e-6` (Stage 1
+single-toggle, Stage 2 M5 convergence sweep, Stage 3 M4 driver)
+was attempted and **failed at all three stages on most fields**.
+Key numbers across a 4-point 24h sweep (`dt ∈ {1, 5, 30, 300}`):
+
+| dt (s) | max rel-err over 24 h | worst field |
+| ------ | --------------------- | ----------- |
+| 300    | 9.21 %                | soag_gas    |
+| 30     | 6.91 %                | soag_gas    |
+| 5      | 2.55 %                | soag_gas    |
+| 1      | 2.55 %                | soag_gas    |
+
+`soag_gas` end-of-24h rel-err **saturates at 2.42 % regardless of
+dt** (identical to 3 decimal places across all 4 dt values), so
+the issue is a structural offset, not an accuracy / refinement
+artifact. All other fields stay under 1 % at dt = 5 s; soa_aer
+accum at dt = 1 s shows ~1.7 % from linear-in-N-steps accumulation
+of per-step diffrax-vs-semi-implicit differences.
+
+### Diagnosis: structural diffrax-vs-Fortran offset, not a bug
+
+- Per-call soaexch conserves SOA mass to **1.2 × 10⁻¹⁶**
+  (verified directly). The port has no internal mass-conservation
+  bug.
+- Total SOA mass drifts **+0.35 % (JAX heavier than Fortran)**
+  by t = 24 h, dt-independent. This is **specific to SOA**:
+  H₂SO₄ / SO4 total mass conserves to ~ε (2.6e-6), aerosol
+  number to ~1e-4. The SOA-specificity isolates the cause to
+  soaexch (the only process with a JAX-vs-Fortran scheme
+  difference — diffrax vs semi-implicit).
+- `qgas_avg[0]` (SOA gas avg) was the leading suspect for the
+  offset. The trace (also 2026-05-25) showed soaexch writes
+  `qgas_avg[0]` but **no downstream process reads it** — newnuc
+  reads only `qgas_avg[..., igas_h2so4 = 1]`. The qgas_avg
+  formulation cannot be the cause; that open-question item from
+  this plan is closed without action.
+- The 2.4 % `soag_gas` offset and the 0.35 % SOA mass drift are
+  two facets of the same root cause: accumulated trajectory
+  difference between diffrax (true-ODE) and Fortran
+  (semi-implicit) inside the same operator-splitting driver.
+
+### Owner decision and acceptance bar revision
+
+Owner accepted the structural offset (2026-05-25); ADR-015 was
+revised to **<3 % over 24 h at dt ≤ 5 s**. The two coarse-dt
+points are observational only — operator-splitting truncation
+dominates there and is M6 territory, not PR-D1's. See ADR-015 for
+the full rationale.
+
+### What the test suite looks like now
+
+`tests/test_sweep.py` is rewritten:
+
+- `test_sweep_24h_diffrax_within_3pct[1]` and `[5]` — assert
+  `MAX < 3%`. **Passes** (2.55 % on soag_gas, all other fields
+  well below).
+- `test_sweep_24h_diffrax_diagnostic[30]` and `[300]` — record
+  the rel-err to pytest output but do not assert. Always pass.
+- The 12-point M5 sweep at `rtol=1e-6` and the 6 `nstep ≤ 30`
+  `xfail` markers are deleted — their premise (single-substep
+  semi-implicit gap) is fixed by diffrax, and the new structural
+  offset is governed by the 24-h test instead.
+
+### Open follow-ups (out of scope for PR-D1)
+
+- M6 will improve the driver's operator-splitting (Strang or
+  higher-order). If that brings soag_gas under 1 %, ADR-015's
+  bar can be re-tightened.
+- The 0.35 % SOA mass drift is an accumulated effect; if a future
+  PR finds a way to suppress it cheaply (e.g. a mass-conservation
+  correction in the orchestrator), the bar tightens accordingly.
+- PR-D2 (H₂SO₄ analytical solver port) will be validated at the
+  same 3 % / 24 h bar. The H₂SO₄ system is mass-balanced through
+  newnuc + gasaerexch, so its structural-offset signature may
+  differ.

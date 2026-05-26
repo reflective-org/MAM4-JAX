@@ -29,3 +29,7 @@ env/
 # pristine; build artifacts live next to it but are not tracked.
 mam4-original-src-code/build/
 mam4-original-src-code/run/
+
+# Local validation artifacts cached by scripts/diffrax_24h_validation.py.
+# Regenerable from the committed 24h Fortran fixtures + the JAX driver.
+scripts/_artifacts/
