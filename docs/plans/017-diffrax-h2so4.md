@@ -62,8 +62,10 @@ aerosol gain is `tmpa·dt · q4` distributed proportional to
 
 ### Implementation
 
-Replace the analytical block in `_mam_gasaerexch_1subarea`
-(lines 587-649) with a `solve_ivp` call.
+Replace the H₂SO₄ analytical block in
+`_mam_gasaerexch_1subarea` (the `tmp_kxt` 3-branch +
+mode-distribution code path, currently `Stage B` and `Stage C`
+comment-banners inside that function) with a `solve_ivp` call.
 
 **Proposed RHS** (sketch):
 
@@ -119,6 +121,10 @@ the RHS.
 
 **Solver configuration.** Per-call `SolverConfig(rtol=1e-9,
 atol=1e-20)` to match PR-D1's choices. Kvaerno5 + PIDController.
+`atol = 1e-20` is small enough relative to typical `h2so4_gas`
+magnitudes (~1e-12 mol/mol in the box fixture, sometimes smaller)
+that the controller is in the rel-tol regime where it matters
+(`atol + rtol·|y|` → `rtol·|y|` dominates for |y| > 1e-11 or so).
 The H₂SO₄ ODE is **less stiff** than SOA's because there's no
 nonlinear coupling — Tsit5 (explicit RK4(5)) might compile faster
 and match the same accuracy. Dry-run both during implementation
@@ -140,11 +146,25 @@ model with all `mdo_*` toggles on; both SOA and H₂SO₄ paths
 exercise.
 
 **Acceptance:** `tests/test_sweep.py[1|5]` continues to pass at
-3 %; ideally the worst field's rel-err **improves** (currently
-~2.55 % dominated by soag_gas, with h2so4_gas at 0.31 % at dt=5).
-PR-D2 shouldn't shift soag_gas (no soaexch change); h2so4_gas may
-shift modestly (up or down). Diagnostic dt=30 / dt=300 cases
-similarly should not degrade.
+3 %; the worst field's rel-err is still expected to be dominated
+by `soag_gas` at ~2.55 % (PR-D2 doesn't touch soaexch).
+
+**Per-field acceptance target for `h2so4_gas`:**
+
+- **Hard floor (blocks the PR):** ≤ 0.5 % at dt=5s. The current
+  baseline on `diffrax` is 0.31 %; PR-D2 must not regress by more
+  than ~1.6×. A regression beyond that would indicate the diffrax
+  port is *worse* than the handwritten 3-branch closed form on its
+  own ODE, which would be surprising and worth investigating
+  before merging.
+- **Stretch target:** ≤ 0.1 % at dt=5s. The "same ODE → tight
+  match" reasoning (see Open Questions) predicts an
+  order-of-magnitude improvement. If we hit this, the qgas_avg
+  endpoint trapezoidal is empirically benign on the H₂SO₄ side.
+- **Diagnostic dt=30 / dt=300:** should not degrade relative to
+  current `diffrax` baseline (3.13e-3 / 3.51e-3 respectively).
+  Same scaling story as `soag_gas` — coarse-dt observational
+  only.
 
 ### Plots
 
@@ -157,12 +177,27 @@ PR-D2's effect.
 
 - **`qgas_avg[igas_h2so4]` integration strategy.** Default:
   `(g_prv + g_new) / 2` endpoint trapezoidal. Fallback if newnuc
-  validation diverges: switch to a denser `SaveAt` grid and
-  trapezoidal-integrate, OR compute the exact integral
-  analytically from the recorded endpoints
-  (`((g_prv - q_eq)·(1-e)/(tmpa) + q_eq·dt) / dt`) — but that
-  reintroduces the 3-branch numerical guard, partially defeating
-  the migration.
+  validation diverges: switch to a denser `SaveAt` grid (e.g.
+  4–8 points across the substep) and trapezoidal-integrate, OR
+  compute the exact integral analytically from the recorded
+  endpoints (`((g_prv - q_eq)·(1-e)/(tmpa) + q_eq·dt) / dt`) —
+  but that reintroduces the 3-branch numerical guard, partially
+  defeating the migration.
+
+  **Concrete decision criterion** (so the choice is reproducible,
+  not vibes): after the initial endpoint-trapezoidal port, look
+  at `h2so4_gas` rel-err vs dt across the 4-dt sweep.
+
+  - **If rel-err is roughly dt-independent** (PR-D1 soag_gas
+    signature: ~constant 2.4 % across dt), the trapezoidal is
+    leaving a structural offset. Switch to denser `SaveAt`.
+  - **If rel-err shrinks with finer dt** (order ~`dt`), the
+    trapezoidal endpoint converges as expected and is fine to
+    keep — the offset is solver-truncation, not formula choice.
+  - **Only consider the analytical-integral fallback** if denser
+    `SaveAt` also doesn't close the gap *and* the structural
+    offset blocks the acceptance target. It's a last resort
+    because of the migration-defeating 3-branch logic.
 - **Solver choice: Kvaerno5 vs Tsit5.** Kvaerno5 is the PR-D1
   default; Tsit5 is explicit RK and may compile faster on a
   not-very-stiff ODE like this one. Pick on validation data, not
@@ -177,12 +212,26 @@ PR-D2's effect.
   outputs. For H₂SO₄, both Fortran and (proposed) diffrax solve
   the **same exact ODE** — Fortran's "analytical" is the true
   solution; diffrax's adaptive Kvaerno5 should converge to the
-  same answer to ~ε. So **no structural offset is expected**.
-  Cumulative trajectory difference should be at solver-truncation
-  levels (~1e-9 ish at `rtol=1e-9`), and h2so4_gas rel-err vs
-  Fortran should DROP from the current 0.31 % toward machine
-  precision. This prediction is testable; if violated, it points
-  to a bug in the port, not a fundamental issue.
+  same answer to ~ε *for the H₂SO₄ ODE alone*. So **no structural
+  offset is expected from the H₂SO₄ solver itself.**
+
+  **Caveat:** H₂SO₄ doesn't live in isolation.
+  `qgas_avg[igas_h2so4]` feeds newnuc → newnuc mutates mode
+  populations → mode populations change `uptkaer_h2so4` for the
+  next outer driver step. If our endpoint-trapezoidal
+  `qgas_avg` differs measurably from Fortran's exact analytical
+  `q4` (it will — trapezoidal-on-two-points biases high for a
+  convex `exp(-t)`), newnuc consumes slightly different input,
+  and the cumulative trajectory drift on `h2so4_gas` over 24 h
+  is set by **that feedback loop**, not by H₂SO₄ solver
+  truncation.
+
+  Realistic prediction (revised from earlier draft): rel-err
+  drops from the current 0.31 % by at least an order of
+  magnitude — somewhere in the ~1e-3 to ~1e-5 range, not to
+  ε. **If it doesn't drop, suspect qgas_avg-newnuc coupling
+  rather than the H₂SO₄ port itself** — the §1 fallback
+  chain above is the right next move.
 
 ## Risks
 
@@ -200,9 +249,18 @@ PR-D2's effect.
 - **Per-call overhead.** The H₂SO₄ closed-form is currently a
   handful of jnp ops; the diffrax call has more overhead (term
   construction, controller state, step decisions). At fine outer
-  dt (1s), this overhead compounds across many calls. If the
-  24h sweep at dt=1s slows by more than ~2× over the current
-  runtime, that's worth a decision on caching or fallback.
+  dt (1s), this overhead compounds across many calls.
+
+  **Threshold and fallback (with teeth):** if the 24 h sweep at
+  dt=1s slows by more than ~2× over the current runtime
+  (post-PR-D1 baseline), the explicit decision on the table is
+  **abort PR-D2 and keep the analytical 3-branch block in
+  place** until M6 closes the JIT-boundary gap. Reverting is
+  the actual "fallback" — the diffrax migration's value
+  proposition rests on physical-accuracy improvement, and if
+  that improvement comes at a 2×+ runtime cost on a path where
+  the handwritten code already produces the true ODE solution,
+  the trade isn't worth it.
 
 ## What this PR does NOT do
 
