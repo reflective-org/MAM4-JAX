@@ -34,7 +34,9 @@ def _relerr(j: np.ndarray, f: np.ndarray) -> np.ndarray:
 
 def _plot_per_mode(name: str, dt: int, j_pm: np.ndarray, f_pm: np.ndarray,
                    t: np.ndarray, ylabel: str) -> None:
-    """j_pm, f_pm: shape (4 modes, ntime)."""
+    """j_pm, f_pm: shape (4 modes, ntime). `t` is seconds; we plot in
+    hours on a shared x-axis across both rows."""
+    t_h = t / 3600.0
     fig, axes = plt.subplots(2, 4, figsize=(16, 7), sharex=True)
     fig.suptitle(
         f"{name} trajectory — 24h, dt={dt}s — Fortran solid / diffrax dashed",
@@ -53,8 +55,8 @@ def _plot_per_mode(name: str, dt: int, j_pm: np.ndarray, f_pm: np.ndarray,
             ax_e.set_xticks([])
             ax_e.set_yticks([])
             continue
-        ax_v.plot(t, f_pm[m], "-", color="tab:blue", lw=1.2, label="Fortran")
-        ax_v.plot(t, j_pm[m], "--", color="tab:red", lw=1.1, label="diffrax")
+        ax_v.plot(t_h, f_pm[m], "-", color="tab:blue", lw=1.2, label="Fortran")
+        ax_v.plot(t_h, j_pm[m], "--", color="tab:red", lw=1.1, label="diffrax")
         ax_v.set_yscale("log")
         ax_v.set_title(f"mode {m}: {MODE_NAMES[m]}")
         if m == 0:
@@ -63,7 +65,7 @@ def _plot_per_mode(name: str, dt: int, j_pm: np.ndarray, f_pm: np.ndarray,
         ax_v.grid(True, which="both", alpha=0.3)
 
         rel = _relerr(j_pm[m], f_pm[m])
-        ax_e.semilogy(t / 3600, np.maximum(rel, 1e-20),
+        ax_e.semilogy(t_h, np.maximum(rel, 1e-20),
                       color="tab:purple", lw=1.0)
         ax_e.axhline(1e-2, color="black", linestyle=":", lw=0.8,
                      label="1% bar")
@@ -81,6 +83,7 @@ def _plot_per_mode(name: str, dt: int, j_pm: np.ndarray, f_pm: np.ndarray,
 
 def _plot_gas(dt: int, j_h: np.ndarray, f_h: np.ndarray,
               j_s: np.ndarray, f_s: np.ndarray, t: np.ndarray) -> None:
+    t_h = t / 3600.0
     fig, axes = plt.subplots(2, 2, figsize=(11, 7), sharex=True)
     fig.suptitle(f"Gas-phase trajectory — 24h, dt={dt}s — "
                  f"Fortran solid / diffrax dashed", fontsize=12)
@@ -89,8 +92,8 @@ def _plot_gas(dt: int, j_h: np.ndarray, f_h: np.ndarray,
         ("soag_gas", j_s, f_s, "kg SOAG / kg air"),
     )):
         ax_v, ax_e = axes[0, col], axes[1, col]
-        ax_v.plot(t, f, "-", color="tab:blue", lw=1.2, label="Fortran")
-        ax_v.plot(t, j, "--", color="tab:red", lw=1.1, label="diffrax")
+        ax_v.plot(t_h, f, "-", color="tab:blue", lw=1.2, label="Fortran")
+        ax_v.plot(t_h, j, "--", color="tab:red", lw=1.1, label="diffrax")
         ax_v.set_yscale("log")
         ax_v.set_title(name)
         ax_v.set_ylabel(ylabel)
@@ -98,7 +101,7 @@ def _plot_gas(dt: int, j_h: np.ndarray, f_h: np.ndarray,
         ax_v.legend(loc="best", fontsize=9)
 
         rel = _relerr(j, f)
-        ax_e.semilogy(t / 3600, np.maximum(rel, 1e-20),
+        ax_e.semilogy(t_h, np.maximum(rel, 1e-20),
                       color="tab:purple", lw=1.0)
         ax_e.axhline(1e-2, color="black", linestyle=":", lw=0.8,
                      label="1% bar")

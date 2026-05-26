@@ -6,6 +6,27 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-26 — M7 PR-D2: H₂SO₄ analytical solver ported to diffrax (`diffrax` branch)
+
+- PR: pending (`m7/pr-d2-h2so4` → `diffrax`). Second solver-swap of the M7 migration. Plan: [`docs/plans/017-diffrax-h2so4.md`](docs/plans/017-diffrax-h2so4.md).
+- Replaced the 3-branch `tmp_kxt` analytical closed-form inside `_mam_gasaerexch_1subarea`'s `Stage B`/`Stage C` blocks with a `solve_ivp` call. ODE state `[g_h2so4, a_h2so4[0..3]]`, linear-in-`g` RHS (`dg/dt = -tmpa·g + q_src`, `da[i]/dt = uptkaer[i]·g`) with the gas-chem source as a constant. `qgas_avg[igas_h2so4]` computed via endpoint trapezoidal (default per plan 017).
+- New module-level `_h2so4_rhs(t, y, args)` next to `_soaexch_rhs`. `_mam_gasaerexch_1subarea`'s 60+ lines of branch / Taylor / cancellation guards reduce to a ~20-line solve_ivp + clamp + repack sequence.
+- **Validation outcome: PR-D2 produces numerically-equivalent output to PR-D1.** Both Fortran (analytical) and diffrax solve the *same exact linear ODE*; the 3-branch logic in the old port was numerical-precision guards, not a different scheme. Per-field per-mode rel-err over 24 h matches PR-D1 to ≥ 3 significant figures across all 4 dt values. `h2so4_gas` rel-err at dt=5: **0.313 %** (vs hard-floor target 0.5 %; doesn't reach the 0.1 % stretch target because there was no precision to gain — diffrax-H₂SO₄ already matches the analytical to ~ε on this ODE).
+- The 0.31 % `h2so4_gas` floor is **soaexch-side drift propagating through newnuc / coag** to the next outer step's `uptkaer_h2so4`, not an H₂SO₄ port issue. PR-D1's diagnostic story confirmed: only soaexch has a JAX-vs-Fortran scheme difference. PR-D2 cannot reduce this further without revisiting the soaexch port.
+
+  | dt (s) | overall max | h2so4_gas | passes 3 % bar? |
+  | --- | --- | --- | --- |
+  | 1 | 2.55 % | 0.331 % | ✅ (gated) |
+  | 5 | 2.55 % | 0.313 % | ✅ (gated) |
+  | 30 | 6.91 % | 0.313 % | diagnostic only |
+  | 300 | 9.21 % | 0.351 % | diagnostic only |
+
+- `tests/test_sweep.py` unchanged from PR-D1 (same 4-dt parametrization, same 3 % bar). No new fixtures.
+- Regenerated `docs/figures/traj_*_24h_dt*.png` + `summary_24h_per_field.png` from the new validation cache — visually indistinguishable from PR-D1's; canonical set replaced for consistency.
+- Scientific value of PR-D2 on this fixture: structurally aligns H₂SO₄ with diffrax (removes handwritten branch logic) and unifies the two solver call sites under one wrapper. No numerical change. Sets up M6 (autodiff/vmap/jit) cleanliness — the handwritten 3-branch path was a barrier to clean tracing.
+
+---
+
 ## 2026-05-25 — M7 PR-D1: `_mam_soaexch_1subarea` ported to diffrax (`diffrax` branch)
 
 - PR: pending (`m7/pr-d1-soaexch` → `diffrax`). First solver-swap of the M7 migration.
