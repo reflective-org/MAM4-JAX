@@ -213,4 +213,31 @@ Status values: **Accepted**, **Proposed**, **Superseded by ADR-NNN**.
 
 ---
 
+## ADR-016 — Diffrax → main merge-back: conditions, timing, acceptance-bar inheritance
+
+- **Status:** Proposed (2026-05-26).
+- **Context:** ADR-014 (2026-05-22) committed to an eventual `diffrax → main` merge-back but explicitly left timing and mechanics as a future ADR. M7's solver-port sub-PRs are now functionally complete: PR-I1 (#31), PR-D1 (#34), and PR-D2 (#36) all merged into `diffrax`. PR-D3 (coag → diffrax) is **permanently deferred** per `docs/DEFERRED.md` because coag is algebraic, not an ODE — diffrax brings no value there. The branch is ready to merge back in principle; this ADR fixes the criteria, timing, and post-merge baseline.
+- **Decision:**
+  1. **M7 is considered functionally complete with PR-I1, PR-D1, PR-D2 merged on `diffrax`**, and PR-D3 deferred (see DEFERRED.md). No further M7 sub-PRs are required before the merge-back.
+  2. **Merge timing: AFTER M6 (jit / vmap / scan optimization) completes on the `diffrax` branch.** Reason: M6 is the milestone where the diffrax wrappers actually pay off (uncompiled diffrax is ~50× slower than handwritten; JIT-compiled it becomes competitive). Merging back before M6 means `main` inherits the slower uncompiled path. M6's work belongs naturally on `diffrax` (it exercises the diffrax-tied codepaths); doing M6 there first and merging once gives `main` an optimised baseline.
+  3. **Mechanics: merge commit, not rebase or squash.** Per ADR-014's "sync via merge, not cherry-pick" convention, the merge-back preserves the full `diffrax` history (PR-I1, PR-D1, PR-D2, M6 sub-PRs, and any baseline-sync merges). The merge commit on `main` is the single anchor point for the diffrax-integrated era; before-tag and after-tag are clearly separated.
+  4. **Acceptance-bar inheritance: `main` adopts ADR-015's bar for the M7-touched paths.**
+     - The 24h / 3% bar at dt ≤ 5s from ADR-015 governs `tests/test_sweep.py` post-merge. The 12-point convergence sweep at `rtol=1e-6` and its 6 `nstep ≤ 30` `xfail` markers are deleted (they were already gone on `diffrax`).
+     - ADR-003's 1e-6 bar continues to govern all OTHER processes (calcsize, wateruptake, rename, newnuc dispatcher, coag analytical) that remain handwritten. Per-process tests under `tests/test_*` keep their existing bars.
+     - This is a per-test-file decision, not a global relaxation: ADR-003 is NOT superseded for the codebase as a whole, only for the M7-touched test surface.
+  5. **Tag plan: annotated `v0.2.0` on `main` at the merge commit.** Anchors the diffrax-integrated baseline. The pre-diffrax tag `v0.1.0` (created during PR-I1) anchors the handwritten baseline; the two tags together let anyone check out either era of the project cleanly. Tag created by the owner (out-of-band, not by automation), same convention as `v0.1.0`.
+  6. **`HANDWRITTEN_SOLVER_LIMITATIONS.md` is updated, not deleted, at merge-back.** The doc described what `v0.1.0` covered and didn't. Post-merge it's no longer the current state, but it remains a useful historical record. Add an editorial header noting "describes the `v0.1.0` baseline; current `main` integrates diffrax for soaexch + H₂SO₄" and link to ADR-016.
+- **Consequences:**
+  - `diffrax` branch's lifetime ends at the merge-back (it's deleted from `origin` after merge, like any feature branch); the dual-branch arrangement closes.
+  - The 6 `nstep ≤ 30` M5 xfails permanently disappear from `main`'s history (they were already removed on `diffrax`).
+  - Anyone wanting to recover the handwritten-solver behavior post-merge does so via the `v0.1.0` tag, not by branching from `main`.
+  - Any future solver-port work (e.g., if PR-D3 ever resurfaces per DEFERRED.md's conditions) follows the same handwritten-on-main → diffrax-branch → merge-back pattern from ADR-013/-014, but with fresh ADRs (this ADR is M7-specific).
+- **Alternatives considered:**
+  - **Merge back NOW (before M6).** Rejected: `main` would inherit uncompiled diffrax paths that are ~50× slower than handwritten. Better to amortise the slowdown by doing M6 on `diffrax` first.
+  - **Merge back as a series of cherry-picks** (PR-I1 → main, PR-D1 → main, PR-D2 → main). Rejected: cherry-picks lose the history (which ADR-014 went out of its way to preserve), and ADR-015's bar relaxation depends on PR-D1's empirical findings — cherry-picking them out of order doesn't make sense.
+  - **Skip M6 on `diffrax`; do it on `main` post-merge instead.** Rejected: M6 changes will need to exercise the diffrax-tied codepaths and the relaxed bar; doing it on `main` requires the bar relaxation to land first anyway, which is exactly what this merge-back accomplishes. Doing M6 on `diffrax` keeps each milestone scoped to one branch.
+  - **Permanently keep `diffrax` and `main` parallel** (no merge-back). Rejected: explicitly contradicts ADR-014 and creates a long-term maintenance burden. The merge-back is the point of the dual-branch arrangement.
+
+---
+
 *Add new ADRs below this line. Number sequentially; never reuse numbers; never edit an Accepted ADR.*
