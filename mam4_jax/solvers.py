@@ -56,13 +56,25 @@ def solve_ivp(
 
     Default `saveat=None` records `t1` only (endpoint-fast path;
     read terminal state via `result.ys[-1]`). Pass
-    `diffrax.SaveAt(ts=...)` to record a trajectory.
+    `diffrax.SaveAt(ts=...)` to record a trajectory; pass
+    `diffrax.SaveAt(t0=True, t1=True)` for trapezoidal-average
+    use cases that need `ys[0]` as well.
 
     JIT-traceable in `y0` / `args`; not in `config` or `saveat`.
-    Body is filled in by PR-D1 (soaexch port).
     """
-    raise NotImplementedError(
-        "solve_ivp is a PR-I1 skeleton; the diffrax integration is "
-        "wired in by PR-D1 (soaexch port). See "
-        "docs/plans/015-diffrax-infra.md."
+    solver_cls = getattr(diffrax, config.solver)
+    sol = diffrax.diffeqsolve(
+        diffrax.ODETerm(rhs),
+        solver_cls(),
+        t0=t0,
+        t1=t1,
+        dt0=config.dt0,
+        y0=y0,
+        args=args,
+        saveat=saveat if saveat is not None else diffrax.SaveAt(t1=True),
+        stepsize_controller=diffrax.PIDController(
+            rtol=config.rtol, atol=config.atol,
+        ),
+        max_steps=config.max_steps,
     )
+    return SolverResult(ts=sol.ts, ys=sol.ys, stats=sol.stats)
