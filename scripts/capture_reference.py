@@ -87,6 +87,9 @@ SWEEP_OUT_DIR = REPO_ROOT / "tests" / "reference" / "sweep"
 SWEEP_24H_NO_PCA_OUT_DIR = (
     REPO_ROOT / "tests" / "reference" / "sweep_24h_no_pcarbon_aging"
 )
+SWEEP_24H_SKIP_SOAEXCH_NO_PCA_OUT_DIR = (
+    REPO_ROOT / "tests" / "reference" / "sweep_24h_skip_soaexch_no_pcarbon_aging"
+)
 SWEEP_NO_PCA_OUT_DIR = (
     REPO_ROOT / "tests" / "reference" / "sweep_no_pcarbon_aging"
 )
@@ -1024,6 +1027,7 @@ def main() -> int:
         "--mode",
         choices=("sweep", "sweep-no-pcarbon-aging",
                  "sweep-24h-no-pcarbon-aging",
+                 "sweep-24h-skip-soaexch-no-pcarbon-aging",
                  "instrumented", "instrumented-no-aitacc",
                  "instrumented-amicphys-off", "instrumented-rename-only",
                  "instrumented-gasaerexch-only",
@@ -1069,6 +1073,24 @@ def main() -> int:
         SWEEP_24H_NO_PCA_OUT_DIR.mkdir(parents=True, exist_ok=True)
         written = [run_one_24h(dt) for dt in DT_SWEEP_24H]
         out_root = SWEEP_24H_NO_PCA_OUT_DIR
+    elif args.mode == "sweep-24h-skip-soaexch-no-pcarbon-aging":
+        # H2SO4-only 24h validation sweep. Adds gasaerexch_skip_soaexch
+        # to the 24h-no-pcarbon-aging build so soaexch is bypassed in
+        # Fortran; matched in JAX by patching _mam_soaexch_1subarea to
+        # a passthrough. Used to test whether h2so4_gas's residual
+        # rel-err under the full-physics sweep is propagation from
+        # soaexch (this experiment confirms: yes, it is).
+        ensure_built(skip_soaexch=True, skip_pcarbon_aging=True)
+        SWEEP_24H_SKIP_SOAEXCH_NO_PCA_OUT_DIR.mkdir(parents=True, exist_ok=True)
+        written = [
+            run_one_24h(
+                dt,
+                out_dir=SWEEP_24H_SKIP_SOAEXCH_NO_PCA_OUT_DIR,
+                flavour="sweep-24h-skip-soaexch-no-pcarbon-aging",
+            )
+            for dt in DT_SWEEP_24H
+        ]
+        out_root = SWEEP_24H_SKIP_SOAEXCH_NO_PCA_OUT_DIR
     elif args.mode == "instrumented":
         ensure_built(instrumented=True)
         nstep = args.nstep if args.nstep is not None else 1
