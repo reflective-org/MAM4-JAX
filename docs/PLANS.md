@@ -101,18 +101,28 @@ Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` 
 
 ---
 
-## Milestone 6 — Audit + JAX-idiom optimization (proposed)
+## Milestone 6 — Audit + JAX-idiom optimization (proposed 2026-05-26)
 
-**Status:** proposed. Rule #8 phase B. After correctness, perform a sweep for:
+**Status:** proposed; runs on the `diffrax` branch per ADR-016. Sub-PRs land into `diffrax`; the eventual `diffrax → main` merge-back happens *after* M6 completes (ADR-016 §Decision 2). Rule #8 phase B — correctness is established, optimization can now happen without conflating correctness/performance bugs.
 
-- `jax.jit` boundaries.
-- `jax.vmap` for column/level dimensions.
-- `jax.lax.scan` for the time loop.
-- `jax.lax.cond` / `where` for branchy code paths.
-- Sharding decisions (single-host CPU first; GPU/TPU later if owner wants).
-- Differentiability audit (which processes admit autodiff cleanly).
+**Why on `diffrax`, not `main`?** M6 will exercise the diffrax-tied codepaths (`solve_ivp`, the new `_h2so4_rhs` / `_soaexch_rhs` RHS functions, etc.) that only exist on `diffrax`. Doing M6 on `diffrax` first means `main` gets the JIT-compiled (fast) version at merge-back. Uncompiled diffrax is ~50× slower than handwritten; JIT-compiled it becomes competitive (PR-D2 observation).
 
-Each optimization lands as its own PR with a before/after correctness check (still `1e-6`) and a benchmark.
+**Acceptance bar per sub-PR.** Each M6 sub-PR must:
+- Preserve the 24 h / 3 % bar on `tests/test_sweep.py[1|5]` (ADR-015).
+- Preserve the existing per-process tests at their current bars (1e-6 on most; per-test caveats apply).
+- Include a before/after **wall-time benchmark** at one representative case (24 h dt=1 s, since that's the slowest and the place JIT helps most).
+- Per-mode rel-err breakouts in the PR description if any test's tolerance moves at all (per `project-mam4-per-mode-breakouts`).
+
+**Sub-PRs.** Each lands as its own PR on the `diffrax` branch; per-PR detail in the archived plan docs.
+
+1. **PR-J1 — `jax.jit` boundaries.** Wrap the natural call sites (`mam4_jax.solvers.solve_ivp`, `_mam_amicphys_1subarea_clear`, `run_step`, the per-process `*_1subarea` functions where the JIT trace is well-defined). Validate that compile cost is amortised over a 24 h run, benchmark before/after on dt=1 s and dt=5 s. Plan: `docs/plans/018-m6-pr-J1-jit.md`.
+2. **PR-J2 — `jax.lax.scan` for the driver time loop.** Replace the Python `for` loop in `run_timesteps` with `jax.lax.scan`. The huge speedup expected: dt=1 s × 86 400 steps × ~55 ms uncompiled = ~80 min wall today; with scan + JIT the same trajectory should drop to a few seconds. Plan: `docs/plans/019-m6-pr-J2-scan.md` (to be drafted).
+3. **PR-J3 — `jax.vmap` for column / level dimensions.** Currently the box-model fixture is `(ncol=1, pver=1)`, so vmap has no payoff on this fixture. But vmap-cleanness is a prerequisite for any future column-batched run; verify the codepaths broadcast correctly under `vmap`. Plan: `docs/plans/020-m6-pr-J3-vmap.md` (to be drafted).
+4. **PR-J4 — `jax.lax.cond` / `where` audit.** Sweep the codebase for any remaining Python-level conditionals on traced values; replace with `jax.lax.cond` or `where` as appropriate. Mostly small cleanups; might be folded into PR-J1 if there's nothing significant.
+5. **PR-J5 — Differentiability audit.** Verify each process is autodiff-clean (no `at[].set` patterns that break gradients, no incomplete diffrax solver config for backward mode). Document any process that isn't differentiable and the reason. Likely no fixes needed but the audit is worth doing for future calibration / inversion work.
+6. **PR-J6 — Sharding.** Deferred unless owner directs. Single-host CPU is the current target; GPU/TPU sharding is its own milestone.
+
+**Sequencing.** PR-J1 → PR-J2 are the load-bearing performance PRs and come first. PR-J3/J4/J5 are clean-up / future-proofing; can interleave. PR-J6 is its own decision.
 
 ---
 
