@@ -61,7 +61,9 @@ from jax.scipy.special import erfc
 import diffrax
 
 from .. import data
+from .. import newnuc as nn_mod
 from .. import solvers
+from ..coag import getcoags_wrapper_f
 from ..constants import RGAS
 
 
@@ -841,8 +843,6 @@ def _mam_newnuc_1subarea(qgas_cur, qgas_avg, qnum_cur, qaer_cur, qwtr_cur,
       skipped — we hardcode the default optaa=2 path.
     - Diagnostic-output blocks are omitted.
     """
-    from .. import newnuc as nn_mod   # mam4_jax.newnuc (sibling pkg)
-
     nait     = data.AITKEN_MODE_IDX
     iaer_soa = data.AMICPHYS_IAER_SOA
     iaer_so4 = data.AMICPHYS_IAER_SOA + 1   # so4 follows SOA in amicphys ordering
@@ -978,8 +978,6 @@ def _mam_coag_1subarea(qnum_cur, qaer_cur, qwtr_cur,
 
     Returns updated ``(qnum_cur, qaer_cur)``.
     """
-    from ..coag import getcoags_wrapper_f
-
     nait = data.AITKEN_MODE_IDX
     nacc = data.ACCUM_MODE_IDX
     npca = data.PCARBON_MODE_IDX

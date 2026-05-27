@@ -56,6 +56,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 
 from .processes.amicphys import amicphys
@@ -75,6 +76,7 @@ def cloud_chem_simple_sub(state: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
+@jax.jit
 def run_step(state: dict[str, Any]) -> dict[str, Any]:
     """One operator-splitting timestep.
 
