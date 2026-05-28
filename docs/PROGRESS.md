@@ -9,8 +9,8 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 ## 2026-05-28 — `diffrax-v0.1.0` tag + M6/M7 status doc hygiene (`diffrax` branch)
 
 - Tag: `diffrax-v0.1.0` (annotated) at `5ea6330` on `diffrax`. Marks M7 (diffrax migration) + M6 (JAX-idiom optimization) complete. Parallels `v0.1.0` on `main` (the handwritten-solver baseline from PR-I1). 18 commits past `v0.1.0`.
-- Merge-back to `main` per ADR-016 is **deferred** (owner directive 2026-05-28: maintain `diffrax` as parallel canonical for now). PR-D3 (coag → diffrax) is permanently deferred per `docs/DEFERRED.md`. The next planning round will scope M8+ (cloud chemistry, calibration / inverse demo, NetCDF emission, multi-column, GPU/TPU sharding).
-- PR: pending (`docs/m6-m7-status-and-tag` → `diffrax`). Doc-only: updates PLANS.md M6 status (`proposed` → `done`) with [x] checkboxes and PR links for PR-J1..J5; updates PLANS.md M7 sub-PR status (PR-I1/D1/D2 done with PR links, PR-D3 cross-ref to DEFERRED.md); fixes the PR-J5 entry's stale "PR: pending" link to [#44](https://github.com/reflective-org/MAM4-JAX/pull/44); refreshes the PR-J5 entry's "next milestone" line to reflect the deferred merge-back. No code changes.
+- Merge-back to `main` per ADR-016 is **deferred** (owner directive 2026-05-28: maintain `diffrax` as parallel canonical for now). PR-D3 (coag → diffrax) is permanently deferred per `docs/DEFERRED.md`. The next planning round will scope M8+: cloud chemistry, calibration / inverse demo, NetCDF emission, backport ADR-014 + `HANDWRITTEN_SOLVER_LIMITATIONS.md` to `main`, multi-column / multi-level, GPU/TPU sharding.
+- PR: [#45](https://github.com/reflective-org/MAM4-JAX/pull/45) (`docs/m6-m7-status-and-tag` → `diffrax`). Doc-only: updates PLANS.md M6 status (`proposed` → `done`) with [x] checkboxes and PR links for PR-J1..J5; updates PLANS.md M7 sub-PR status (PR-I1/D1/D2 done with PR links, PR-D3 cross-ref to DEFERRED.md); fixes the PR-J5 entry's stale "PR: pending" link to [#44](https://github.com/reflective-org/MAM4-JAX/pull/44); refreshes the PR-J5 entry's "next milestone" line to reflect the deferred merge-back. No code changes.
 
 ---
 
