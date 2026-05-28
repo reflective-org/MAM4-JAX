@@ -101,6 +101,13 @@ def run_step(state: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
+#: Trajectory keys captured per step by :func:`run_timesteps`. Scalars
+#: like ``deltat`` and met fields are echoed back unchanged each step
+#: and stay out of the trajectory dict.
+_TRAJ_KEYS = ("q", "qqcw", "dgncur_a", "dgncur_awet",
+              "qaerwat", "wetdens")
+
+
 def run_timesteps(state: dict[str, Any], n_steps: int) -> dict[str, Any]:
     """Run ``n_steps`` operator-splitting timesteps and return a
     stacked trajectory.
@@ -111,22 +118,41 @@ def run_timesteps(state: dict[str, Any], n_steps: int) -> dict[str, Any]:
     matches Fortran's ``do nstep = 1, nstop`` convention where the
     NetCDF output's step-1 entry is post-step-1, not the IC).
 
-    Phase A: plain Python ``for`` loop. M6 will swap in ``jax.lax.scan``
-    behind this same signature.
+    Uses ``jax.lax.scan`` (M6 PR-J2): the JIT-compiled ``run_step``
+    body is traced once and applied ``n_steps`` times inside the scan,
+    with per-step snapshots stacked into the output trajectory. A new
+    ``jax.lax.scan`` trace happens once per distinct ``n_steps`` value
+    (Python-static length argument), but ``run_step`` itself reuses
+    its JIT cache.
+
+    ``calcsize`` adds three derived keys to the state on each call
+    (``dgncur_c``, ``v2ncur_a``, ``v2ncur_c``). The scan carry must
+    be pytree-stable, so this function pre-populates those keys with
+    zero placeholders (same shape/dtype as their final outputs) before
+    entering scan. The first iteration overwrites them with the real
+    values; the placeholders are never observed downstream because the
+    scan output trajectory only captures :data:`_TRAJ_KEYS`.
     """
     if n_steps < 1:
         raise ValueError(f"n_steps must be >= 1, got {n_steps}")
 
-    # Trajectory keys are the dynamic state fields modified by the
-    # timestep. Scalars like ``deltat`` / met fields are echoed back
-    # unchanged each step (broadcast via the leading axis).
-    traj_keys = ("q", "qqcw", "dgncur_a", "dgncur_awet",
-                 "qaerwat", "wetdens")
-    snapshots: dict[str, list] = {k: [] for k in traj_keys}
+    # Pre-augment the initial state with placeholder keys that calcsize
+    # would add on its first call. Shapes mirror dgncur_a / v2ncur_a
+    # (per-mode), and dtype mirrors dgncur_a's float64.
+    dgncur_a = state["dgncur_a"]
+    placeholder = jnp.zeros_like(dgncur_a)
+    augmented = {**state}
+    for k in ("dgncur_c", "v2ncur_a", "v2ncur_c"):
+        augmented.setdefault(k, placeholder)
 
-    for _ in range(n_steps):
-        state = run_step(state)
-        for k in traj_keys:
-            snapshots[k].append(state[k])
+    def _scan_body(carry_state: dict[str, Any], _) -> tuple[
+        dict[str, Any], dict[str, Any]
+    ]:
+        new_state = run_step(carry_state)
+        output = {k: new_state[k] for k in _TRAJ_KEYS}
+        return new_state, output
 
-    return {k: jnp.stack(v, axis=0) for k, v in snapshots.items()}
+    _, trajectory = jax.lax.scan(
+        _scan_body, augmented, xs=None, length=n_steps,
+    )
+    return trajectory

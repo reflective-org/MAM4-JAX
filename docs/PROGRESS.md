@@ -6,9 +6,32 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-27 — M6 PR-J2: `jax.lax.scan` for the driver time loop (`diffrax` branch)
+
+- PR: pending (`m6/pr-j2-scan` → `diffrax`). Second M6 sub-PR. Plan: inline in the PR description — per owner direction the PR-J1 → PR-J2 sequence didn't need a separate planning PR (scope tight, validation reused PR-J1's framework, no new fixtures or acceptance-bar negotiation).
+- Replaced the Python `for` loop in `mam4_jax.driver.run_timesteps` with `jax.lax.scan`. The scan body wraps `run_step` (already JIT-compiled in PR-J1); scan stacks the trajectory outputs (`q`, `qqcw`, `dgncur_a`, `dgncur_awet`, `qaerwat`, `wetdens`) along axis 0 automatically. Compile happens once per distinct `n_steps` value (Python-static length argument).
+- **State-dict pre-augmentation:** `calcsize` adds three derived keys (`dgncur_c`, `v2ncur_a`, `v2ncur_c`) on each call; scan requires a pytree-stable carry, so `run_timesteps` now pre-populates those keys with zero placeholders before entering scan. The first scan iteration overwrites them. Downstream they're invisible — the scan output trajectory only captures the 6 trajectory keys.
+- **Numerical: identical to PR-J1 and PR-D2** to all displayed digits at every dt across all per-mode and per-field rel-errs. Scan is value-preserving.
+- **Wall-time benchmark** (24 h trajectory, full 4-dt validation sweep):
+
+  | dt (s) | nstep | PR-D2 wall | PR-J1 wall | **PR-J2 wall** | PR-J2 / PR-D2 |
+  | --- | --- | --- | --- | --- | --- |
+  | 300 | 288 | 13.5 s | 2.7 s | **2.2 s** | 6× |
+  | 30 | 2 880 | 79.8 s | 1.2 s | **2.0 s** | 40× |
+  | 5 | 17 280 | 476.8 s | 6.5 s | **5.7 s** | 84× |
+  | **1** | **86 400** | **2 363 s** | 31.4 s | **20.9 s** | **113×** |
+  | total | — | 49 min | 42 s | **30.8 s** | 95× |
+
+  dt=30 is mildly slower than PR-J1 (2.0 s vs 1.2 s) because scan pays the full body-trace cost upfront once per distinct `n_steps`, and at 2 880 steps it doesn't amortise as well as PR-J1's per-call JIT cache. At dt=1 (86 400 steps) scan amortises much better → 1.5× faster than PR-J1, and crosses the 100× cumulative speedup vs PR-D2 — meeting plan 018's stretch target.
+- PR-J2 acceptance: (a) numerical match to PR-J1 ✓ (identical); (b) wall-time speedup on dt=1 24h ✓ (113× cumulative vs PR-D2, exceeds plan 018's >100× stretch); (c) no new compile-time spike beyond what scan inherently adds. `tests/test_sweep.py[1|5]` continues to pass at the 3 % bar.
+- Plots regenerated; visually unchanged (numerical output is identical to PR-J1).
+- M6 status: 2 of 5 sub-PRs done (PR-J1 jit, PR-J2 scan). Remaining: PR-J3 vmap audit, PR-J4 cond/where audit, PR-J5 differentiability audit. PR-J6 sharding deferred.
+
+---
+
 ## 2026-05-27 — M6 PR-J1: `@jax.jit` boundary on `run_step` (`diffrax` branch)
 
-- PR: pending (`m6/pr-j1-jit` → `diffrax`). First M6 sub-PR. Plan: [`docs/plans/018-m6-pr-J1-jit.md`](docs/plans/018-m6-pr-J1-jit.md).
+- PR: [#39](https://github.com/reflective-org/MAM4-JAX/pull/39) (`m6/pr-j1-jit` → `diffrax`). First M6 sub-PR. Plan: [`docs/plans/018-m6-pr-J1-jit.md`](docs/plans/018-m6-pr-J1-jit.md).
 - Added `@jax.jit` decorator to `mam4_jax.driver.run_step` (one-line change in code). Lifted two lazy imports inside `_mam_amicphys_1subarea_clear` (`from ..coag import getcoags_wrapper_f` and `from .. import newnuc as nn_mod`) to module-level imports in `mam4_jax/processes/amicphys.py` — the lazy imports were triggering at first jit-trace, executing `mam4_jax/coag.py`'s module-level `jnp.asarray(_TABLES[...])` calls *inside* the trace and producing tracer-leak errors. Module-level imports execute at package-load time, before any jit, so the lookup-table conversions stay outside trace scope.
 - **Numerical: identical to PR-D2 to ≥3 sig figs** at every dt across all per-mode and per-field rel-errs (`tests/test_sweep.py[1|5]` continues to pass at the 3% bar; per-mode breakdown unchanged from PR-D2's 2026-05-26 entry).
 - **Wall-time benchmark (24h trajectory, full validation sweep):**
