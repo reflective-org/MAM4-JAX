@@ -84,6 +84,12 @@ EXE = RUN_DIR / "mam_box_test.exe"
 BUILD_SCRIPT = REPO_ROOT / "scripts" / "build_reference.sh"
 
 SWEEP_OUT_DIR = REPO_ROOT / "tests" / "reference" / "sweep"
+SWEEP_24H_NO_PCA_OUT_DIR = (
+    REPO_ROOT / "tests" / "reference" / "sweep_24h_no_pcarbon_aging"
+)
+SWEEP_24H_SKIP_SOAEXCH_NO_PCA_OUT_DIR = (
+    REPO_ROOT / "tests" / "reference" / "sweep_24h_skip_soaexch_no_pcarbon_aging"
+)
 SWEEP_NO_PCA_OUT_DIR = (
     REPO_ROOT / "tests" / "reference" / "sweep_no_pcarbon_aging"
 )
@@ -122,6 +128,10 @@ INDICES_OUT_DIR = REPO_ROOT / "tests" / "reference" / "indices"
 
 TOTAL_DURATION_S = 1800
 NSTEP_SWEEP: tuple[int, ...] = (1, 2, 4, 9, 18, 30, 60, 120, 180, 360, 900, 1800)
+
+# 24h validation sweep for the diffrax branch (per project_diffrax_acceptance_bar).
+TOTAL_DURATION_24H_S = 86400
+DT_SWEEP_24H: tuple[int, ...] = (1, 5, 30, 300)
 
 DUMP_TAGS: tuple[str, ...] = (
     "calcsize_before", "calcsize_after",
@@ -229,6 +239,19 @@ def run_one_baseline(nstep: int, *, out_dir: Path = SWEEP_OUT_DIR,
     dt = TOTAL_DURATION_S // nstep
     write_namelist(dt, nstep)
     print(f"[capture_reference] {flavour} dt={dt:>4}s nstep={nstep:<5} ...", flush=True)
+    subprocess.run(["./mam_box_test.exe"], cwd=RUN_DIR, check=True,
+                   stdout=subprocess.DEVNULL)
+    dest = out_dir / f"mam_dt{dt}_ndt{nstep}.nc"
+    shutil.copy2(RUN_DIR / "mam_output.nc", dest)
+    return dest
+
+
+def run_one_24h(dt: int, *, out_dir: Path = SWEEP_24H_NO_PCA_OUT_DIR,
+                flavour: str = "sweep-24h-no-pcarbon-aging") -> Path:
+    """Single 24h Fortran run at a given dt. nstep = 86400 // dt."""
+    nstep = TOTAL_DURATION_24H_S // dt
+    write_namelist(dt, nstep)
+    print(f"[capture_reference] {flavour} dt={dt}s nstep={nstep} (24h) ...", flush=True)
     subprocess.run(["./mam_box_test.exe"], cwd=RUN_DIR, check=True,
                    stdout=subprocess.DEVNULL)
     dest = out_dir / f"mam_dt{dt}_ndt{nstep}.nc"
@@ -1003,6 +1026,8 @@ def main() -> int:
     ap.add_argument(
         "--mode",
         choices=("sweep", "sweep-no-pcarbon-aging",
+                 "sweep-24h-no-pcarbon-aging",
+                 "sweep-24h-skip-soaexch-no-pcarbon-aging",
                  "instrumented", "instrumented-no-aitacc",
                  "instrumented-amicphys-off", "instrumented-rename-only",
                  "instrumented-gasaerexch-only",
@@ -1039,6 +1064,33 @@ def main() -> int:
                                     flavour="sweep-no-pcarbon-aging")
                    for n in NSTEP_SWEEP]
         out_root = SWEEP_NO_PCA_OUT_DIR
+    elif args.mode == "sweep-24h-no-pcarbon-aging":
+        # 24h validation sweep for the diffrax branch's relaxed
+        # acceptance bar (<1% max rel-err over 24h vs Fortran).
+        # 4-dt sweep: 1s, 5s, 30s, 300s. skip_pcarbon_aging.patch
+        # applied at build time (matches the 30-min sweep flavour).
+        ensure_built(skip_pcarbon_aging=True)
+        SWEEP_24H_NO_PCA_OUT_DIR.mkdir(parents=True, exist_ok=True)
+        written = [run_one_24h(dt) for dt in DT_SWEEP_24H]
+        out_root = SWEEP_24H_NO_PCA_OUT_DIR
+    elif args.mode == "sweep-24h-skip-soaexch-no-pcarbon-aging":
+        # H2SO4-only 24h validation sweep. Adds gasaerexch_skip_soaexch
+        # to the 24h-no-pcarbon-aging build so soaexch is bypassed in
+        # Fortran; matched in JAX by patching _mam_soaexch_1subarea to
+        # a passthrough. Used to test whether h2so4_gas's residual
+        # rel-err under the full-physics sweep is propagation from
+        # soaexch (this experiment confirms: yes, it is).
+        ensure_built(skip_soaexch=True, skip_pcarbon_aging=True)
+        SWEEP_24H_SKIP_SOAEXCH_NO_PCA_OUT_DIR.mkdir(parents=True, exist_ok=True)
+        written = [
+            run_one_24h(
+                dt,
+                out_dir=SWEEP_24H_SKIP_SOAEXCH_NO_PCA_OUT_DIR,
+                flavour="sweep-24h-skip-soaexch-no-pcarbon-aging",
+            )
+            for dt in DT_SWEEP_24H
+        ]
+        out_root = SWEEP_24H_SKIP_SOAEXCH_NO_PCA_OUT_DIR
     elif args.mode == "instrumented":
         ensure_built(instrumented=True)
         nstep = args.nstep if args.nstep is not None else 1
