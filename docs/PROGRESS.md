@@ -6,9 +6,17 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-28 — `diffrax-v0.1.0` tag + M6/M7 status doc hygiene (`diffrax` branch)
+
+- Tag: `diffrax-v0.1.0` (annotated) at `5ea6330` on `diffrax`. Marks M7 (diffrax migration) + M6 (JAX-idiom optimization) complete. Parallels `v0.1.0` on `main` (the handwritten-solver baseline from PR-I1). 18 commits past `v0.1.0`.
+- Merge-back to `main` per ADR-016 is **deferred** (owner directive 2026-05-28: maintain `diffrax` as parallel canonical for now). PR-D3 (coag → diffrax) is permanently deferred per `docs/DEFERRED.md`. The next planning round will scope M8+: cloud chemistry, calibration / inverse demo, NetCDF emission, backport ADR-014 + `HANDWRITTEN_SOLVER_LIMITATIONS.md` to `main`, multi-column / multi-level, GPU/TPU sharding.
+- PR: [#45](https://github.com/reflective-org/MAM4-JAX/pull/45) (`docs/m6-m7-status-and-tag` → `diffrax`). Doc-only: updates PLANS.md M6 status (`proposed` → `done`) with [x] checkboxes and PR links for PR-J1..J5; updates PLANS.md M7 sub-PR status (PR-I1/D1/D2 done with PR links, PR-D3 cross-ref to DEFERRED.md); fixes the PR-J5 entry's stale "PR: pending" link to [#44](https://github.com/reflective-org/MAM4-JAX/pull/44); refreshes the PR-J5 entry's "next milestone" line to reflect the deferred merge-back. No code changes.
+
+---
+
 ## 2026-05-28 — M6 PR-J5: reverse-mode autodiff audit (`diffrax` branch)
 
-- PR: pending (`m6/pr-j5-grad` → `diffrax`). Fifth and final M6 sub-PR. Plan: PLANS.md M6 §PR-J5 ("verify each process is autodiff-clean (no `at[].set` patterns that break gradients, no incomplete diffrax solver config for backward mode); document any process that isn't differentiable and the reason").
+- PR: [#44](https://github.com/reflective-org/MAM4-JAX/pull/44) (`m6/pr-j5-grad` → `diffrax`, merged 2026-05-28). Fifth and final M6 sub-PR. Plan: PLANS.md M6 §PR-J5 ("verify each process is autodiff-clean (no `at[].set` patterns that break gradients, no incomplete diffrax solver config for backward mode); document any process that isn't differentiable and the reason").
 - **Audit result: codebase is autodiff-clean.** No code changes. Two regression tests added to lock the result in.
 - **Audit method**: define a scalar loss = `sum(traj["q"][-1])`, take `jax.grad` wrt the initial `q` array, observe whether the resulting cotangent is finite (no NaN, no Inf) and deterministic across repeat calls. Two trajectory lengths tested:
   - **`run_step` (1 driver step)** — fully exercises calcsize → wateruptake → cloud-chem no-op → amicphys orchestration including both diffrax `solve_ivp` calls (`_h2so4_rhs`, `_soaexch_rhs`). Result: `grad` returns a (1,1,35) cotangent with norm ~6.98e14, all entries finite, no NaN/Inf. The large norm reflects high physical sensitivity (number-concentration outputs of order 1e8 amplify SOA/H₂SO₄ gas inputs of order 1e-13 through nucleation and coag) — not a cotangent pathology.
@@ -26,8 +34,8 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 - **Implication for calibration / inversion workflows**: the diffrax-branch JAX-side is end-to-end differentiable. A future use case that wants to fit a sensitivity (e.g., calibrate a tuning parameter via gradient descent over a 24 h simulation) can wrap `run_timesteps` with `jax.grad` directly — no diffrax-config changes, no checkpointing tricks, no manual adjoint plumbing required.
   - **Memory-feasibility caveat (NOT measured at scale):** the 60-step audit confirms differentiability but doesn't probe the memory footprint at 24 h trajectory lengths. `RecursiveCheckpointAdjoint`'s memory scales as `O(√n_steps × per-step-state)` with default checkpointing; at `n_steps = 17 280` (24 h at dt=5 s, the ADR-015-validated bar) the per-step 16-key augmented carry could push host RAM hard, and diffrax's internal substeps multiply this further. If a calibration workflow hits a memory ceiling, switch `solve_ivp`'s `diffeqsolve` to `adjoint=diffrax.ImplicitAdjoint()` (IFT-based, O(per-step) memory; opt-in change in `mam4_jax/solvers.py`) or pass an explicit `RecursiveCheckpointAdjoint(checkpoints=N)` to bound the working set.
 - Test suite: **72 passed, 0 failed** (was 68 before; +4 are the new autodiff regression tests: finite/no-NaN through 1 step, finite/no-NaN/deterministic through 60 steps via scan, all-tracers-connected, and finite-difference sanity).
-- **M6 status: complete.** All 5 planned sub-PRs done (PR-J1 jit, PR-J2 scan + follow-up, PR-J3 vmap, PR-J4 cond/where, PR-J5 grad). PR-J6 (sharding) deferred indefinitely.
-- **Next milestone: ADR-016's `diffrax → main` merge-back.** All M6 prerequisites are in place.
+- **M6 status: complete.** All 5 planned sub-PRs done (PR-J1 jit, PR-J2 scan + follow-up, PR-J3 vmap, PR-J4 cond/where, PR-J5 grad). PR-J6 (sharding) deferred to a separate milestone.
+- **Next: comprehensive plan refresh** (M8+ scoping for cloud chemistry, calibration / inverse demo, NetCDF emission, multi-column, GPU/TPU sharding). ADR-016 merge-back is deferred (owner directive 2026-05-28: maintain `diffrax` as parallel canonical until further notice).
 
 ---
 
