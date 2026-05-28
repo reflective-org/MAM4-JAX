@@ -105,7 +105,7 @@ Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` 
 
 ## Milestone 6 — Audit + JAX-idiom optimization (done)
 
-**Status:** done (2026-05-28). All 5 planned sub-PRs landed on the `diffrax` branch over a single day; PR-J6 (sharding) deferred to its own milestone (now M13). The diffrax branch tip `5ea6330` is tagged `diffrax-v0.1.0`. Merge-back to `main` per ADR-016 is deferred (owner directive 2026-05-28: maintain `diffrax` as parallel canonical for now). GitHub: [milestone 1](https://github.com/reflective-org/MAM4-JAX/milestone/1).
+**Status:** done (2026-05-28). All 5 planned sub-PRs landed on the `diffrax` branch over a single day; PR-J6 (sharding) deferred to its own milestone (now M13). The diffrax branch tip `5ea6330` is tagged `diffrax-v0.1.0`. **Merge-back to `main` per ADR-016 is in progress via the merge-back PR (opened 2026-05-28), bringing M6 + M7 work onto main.** GitHub: [milestone 1](https://github.com/reflective-org/MAM4-JAX/milestone/1) (closed).
 
 **Why on `diffrax`, not `main`?** M6 will exercise the diffrax-tied codepaths (`solve_ivp`, the new `_h2so4_rhs` / `_soaexch_rhs` RHS functions, etc.) that only exist on `diffrax`. Doing M6 on `diffrax` first means `main` gets the JIT-compiled (fast) version at merge-back. Uncompiled diffrax is ~50× slower than handwritten; JIT-compiled it becomes competitive (PR-D2 observation).
 
@@ -128,7 +128,7 @@ Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` 
 
 ## Milestone 7 — Diffrax migration (long-lived `diffrax` branch)
 
-**Status:** core PRs done (2026-05-26 through 2026-05-28). PR-I1, PR-D1, PR-D2 landed; PR-D3 permanently deferred (see `DEFERRED.md`). Merge-back to `main` per ADR-016 is deferred (owner directive 2026-05-28: maintain `diffrax` as parallel canonical until further notice). GitHub: [milestone 2](https://github.com/reflective-org/MAM4-JAX/milestone/2).
+**Status:** core PRs done (2026-05-26 through 2026-05-28). PR-I1, PR-D1, PR-D2 landed; PR-D3 permanently deferred (see `DEFERRED.md`). **Merge-back to `main` per ADR-016 is in progress via the merge-back PR (opened 2026-05-28).** GitHub: [milestone 2](https://github.com/reflective-org/MAM4-JAX/milestone/2) (closed).
 
 **Branching model.** M7 lives on a long-lived `diffrax` branch parallel to `main`. Rationale and invariants in ADR-013; the merge-back intent and the `main → diffrax` sync convention are in ADR-014. Summary:
 
@@ -206,19 +206,11 @@ Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` 
 
 ---
 
-## Milestone 11 — Backport ADR-014 + HANDWRITTEN_SOLVER_LIMITATIONS.md to main (proposed)
+## Milestone 11 — Backport ADR-014 + HANDWRITTEN_SOLVER_LIMITATIONS.md to main (subsumed)
 
-**Status:** proposed 2026-05-28; owner priority slot 5. Runs against `main`. GitHub: [milestone 6](https://github.com/reflective-org/MAM4-JAX/milestone/6).
+**Status:** **subsumed 2026-05-28 by the merge-back PR** — ADR-013/014/015/016 and `docs/HANDWRITTEN_SOLVER_LIMITATIONS.md` flow to `main` as part of the merge-back rather than via a separate backport PR, since the merge-back is no longer deferred. The "superseded on `diffrax-v0.1.0` by M7" pointer at the top of `HANDWRITTEN_SOLVER_LIMITATIONS.md` (the deliverable that was carried over from PR #45's review-item #3) lands in the same merge-back PR. GitHub milestone [#6](https://github.com/reflective-org/MAM4-JAX/milestone/6) will be closed once the merge-back lands; the priority slot is now free.
 
-**Why.** ADR-014 (dual-branch strategy + merge-back convention) and `docs/HANDWRITTEN_SOLVER_LIMITATIONS.md` landed via PR [#33](https://github.com/reflective-org/MAM4-JAX/pull/33) on the `dev`/`diffrax` lineage but never reached `main`. Per ADR-014's own "baseline changes flow `main → diffrax`" convention they sit on the wrong side of the divide. The merge-back is deferred indefinitely; backporting these docs separately closes the gap.
-
-**Scope sketch.** Small docs-only PR opens against `main`. Cherry-pick or hand-port the relevant content from `dev`/`diffrax`. Add a "superseded on `diffrax-v0.1.0` by M7" pointer at the top of `HANDWRITTEN_SOLVER_LIMITATIONS.md` so a reader landing on the doc via `v0.1.0`'s release notes immediately knows the diffrax branch supersedes the limitations.
-
-**Open questions.**
-- Add an ADR addendum to ADR-013/014 noting the merge-back deferral, or leave that out of this PR and write it separately?
-- Should ADR-016 (merge-back plan) backport too, given the merge-back is now deferred? Or does that ADR's content become stale on main once it gets there?
-
-**Sub-PRs.** Single PR; no sub-PR breakdown anticipated.
+**Original rationale (retained for history).** ADR-014 (dual-branch strategy + merge-back convention) and `docs/HANDWRITTEN_SOLVER_LIMITATIONS.md` landed via PR [#33](https://github.com/reflective-org/MAM4-JAX/pull/33) on the `dev`/`diffrax` lineage but never reached `main`. Per ADR-014's own "baseline changes flow `main → diffrax`" convention they sat on the wrong side of the divide. M11 was originally a small docs-only backport PR; now that the merge-back is happening, the docs ride with everything else.
 
 ---
 
@@ -252,6 +244,27 @@ Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` 
 - Memory: at scale, M9's calibration memory caveat reappears with a multi-device twist.
 
 **Sub-PRs.** TBD.
+
+---
+
+## Milestone 14 — Cloudy-subarea amicphys orchestration (proposed)
+
+**Status:** proposed 2026-05-28; gated on M8 outcomes. Runs on the `diffrax-cloud` branch (or its successor). GitHub: [milestone 9](https://github.com/reflective-org/MAM4-JAX/milestone/9).
+
+**Why.** Port `mam_amicphys_1subarea_cloudy` (`modal_aero_amicphys.F90:1504-2059`, ~555 LOC) — the cloudy-fraction counterpart to the clear-subarea path already ported in M3.6. It runs the same four sub-processes (gasaerexch, rename, newnuc, coag) on the cloudy fraction of a gridcell, not the clear fraction. Owner-flagged 2026-05-28 during the M8 framing discussion so it doesn't get lost.
+
+**Why this isn't part of M8.** Structurally orthogonal:
+- M8's `cloudchem_simple_sub` (`box_model_utils/cloudchem_simple.F90`, ~137 LOC) is a driver-level cloud-chem step (parameterized aqueous SO₂ → SO₄). Different call site (`driver.F90:1265`).
+- M14's `mam_amicphys_1subarea_cloudy` is the amicphys-internal cloudy-fraction orchestration. Different call site (inside amicphys, after the clear-subarea path).
+- Both gate on `cldn > 0` but they're not nested; both need to be ported for full cloud-physics behavior.
+
+**Scope sketch.** Add the cloudy-subarea path to `mam4_jax/processes/amicphys.py` (sibling to the existing `_mam_amicphys_1subarea_clear`). Reuse M8's new `cldn > 0` fixture infrastructure. Validation: cloudy-subarea single-toggle Fortran capture + end-to-end trajectory test.
+
+**Open questions.**
+- Does the cloudy-fraction `gasaerexch` need its own `solve_ivp` call (separate from the clear-fraction one), or do they share the diffrax integration over the full gridcell? Likely separate (different `qgas` arrays); confirm by reading the Fortran flow.
+- Validation bar — ADR-015's 3 % bar inherited from the clear-subarea path, or stricter since `mam_amicphys_1subarea_cloudy` is structurally parallel to the clear path (already at ε-level for non-soaexch tracers)?
+
+**Sub-PRs.** TBD; depends on what M8 establishes for fixture + driver patterns.
 
 ---
 
