@@ -6,6 +6,28 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-27 — M6 PR-J1: `@jax.jit` boundary on `run_step` (`diffrax` branch)
+
+- PR: pending (`m6/pr-j1-jit` → `diffrax`). First M6 sub-PR. Plan: [`docs/plans/018-m6-pr-J1-jit.md`](docs/plans/018-m6-pr-J1-jit.md).
+- Added `@jax.jit` decorator to `mam4_jax.driver.run_step` (one-line change in code). Lifted two lazy imports inside `_mam_amicphys_1subarea_clear` (`from ..coag import getcoags_wrapper_f` and `from .. import newnuc as nn_mod`) to module-level imports in `mam4_jax/processes/amicphys.py` — the lazy imports were triggering at first jit-trace, executing `mam4_jax/coag.py`'s module-level `jnp.asarray(_TABLES[...])` calls *inside* the trace and producing tracer-leak errors. Module-level imports execute at package-load time, before any jit, so the lookup-table conversions stay outside trace scope.
+- **Numerical: identical to PR-D2 to ≥3 sig figs** at every dt across all per-mode and per-field rel-errs (`tests/test_sweep.py[1|5]` continues to pass at the 3% bar; per-mode breakdown unchanged from PR-D2's 2026-05-26 entry).
+- **Wall-time benchmark (24h trajectory, full validation sweep):**
+
+  | dt (s) | nstep | PR-D2 wall | PR-J1 wall | speedup |
+  | --- | --- | --- | --- | --- |
+  | 300 | 288 | 13.5 s | **2.7 s** | 5.0× (includes ~1.6 s first-call compile) |
+  | 30 | 2880 | 79.8 s | **1.2 s** | 66× |
+  | 5 | 17 280 | 476.8 s | **6.5 s** | 73× |
+  | 1 | 86 400 | 2362.9 s | **31.4 s** | **75×** |
+  | total | — | 49 min | **42 s** | **70×** |
+
+  First-call compile (measured in isolation): **1.64 s** (well under the 30 s acceptance ceiling). Steady-state per-call cost: **~0.4 ms** (vs ~55 ms uncompiled).
+- PR-J1 hard acceptance criteria all met: (a) numerical match to PR-D2 ✓, (b) wall-time speedup ≥10× target >100× ⇒ 75× achieved (above floor, below stretch), (c) first-call compile <30 s ⇒ 1.64 s. Stretch goal of >100× not quite reached — the residual cost is the Python `for` loop overhead in `run_timesteps` and the `jnp.stack` of trajectory snapshots; PR-J2 (`jax.lax.scan`) will close that gap.
+- Regenerated canonical 24h plots (`docs/figures/traj_*_24h_dt*.png` + `summary_24h_per_field.png`) from the fresh cache — visually indistinguishable from PR-D2's (numerical output is identical), but cache is refreshed for consistency.
+- `tests/test_sweep.py` unchanged; same 4-dt parametrization, same 3% / 24h bar at dt ≤ 5s. No new fixtures.
+
+---
+
 ## 2026-05-26 — M7 PR-D2: H₂SO₄ analytical solver ported to diffrax (`diffrax` branch)
 
 - PR: pending (`m7/pr-d2-h2so4` → `diffrax`). Second solver-swap of the M7 migration. Plan: [`docs/plans/017-diffrax-h2so4.md`](docs/plans/017-diffrax-h2so4.md).
