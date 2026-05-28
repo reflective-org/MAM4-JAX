@@ -181,7 +181,7 @@ Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` 
 **Scope sketch.** Pick a sensitive physics parameter (candidates: binary nucleation pre-factor, soaexch uptake coefficient, coag pre-factor). Define a synthetic target trajectory from a known parameter value. Gradient-descend (`jax.grad` + `optax`) over a 24 h window to recover the parameter. Plot loss curve + recovered-vs-true parameter trajectory.
 
 **Open questions.**
-- Memory feasibility at 24 h trajectory lengths — see PR-J5 memory caveat in `docs/PROGRESS.md`. Likely requires switching `mam4_jax/solvers.py::solve_ivp` to `diffrax.ImplicitAdjoint()` or passing an explicit `RecursiveCheckpointAdjoint(checkpoints=N)` to bound working set.
+- Memory feasibility at 24 h trajectory lengths — see PR-J5 memory caveat in `docs/PROGRESS.md`. Likely requires switching `mam4_jax/solvers.py::solve_ivp` to `diffrax.ImplicitAdjoint()` or passing an explicit `RecursiveCheckpointAdjoint(checkpoints=N)` to bound working set. **Sub-question (owned by M9's first sub-PR):** should the adjoint strategy be configurable via `SolverConfig` (which would touch the strategy abstraction added in PR-I1, but lets forward / reverse runs share solver config), or hard-coded to `ImplicitAdjoint()` for calibration runs while keeping forward runs on the default? Probably configurable, but the abstraction churn warrants explicit owner approval before changing `solvers.py`.
 - Which physics parameter is the most informative calibration target?
 - Loss formulation: trajectory L2, terminal-state L2, or a physics-motivated functional (effective radius, AOD)?
 
@@ -212,7 +212,7 @@ Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` 
 
 **Why.** ADR-014 (dual-branch strategy + merge-back convention) and `docs/HANDWRITTEN_SOLVER_LIMITATIONS.md` landed via PR [#33](https://github.com/reflective-org/MAM4-JAX/pull/33) on the `dev`/`diffrax` lineage but never reached `main`. Per ADR-014's own "baseline changes flow `main → diffrax`" convention they sit on the wrong side of the divide. The merge-back is deferred indefinitely; backporting these docs separately closes the gap.
 
-**Scope sketch.** Small docs-only PR opens against `main`. Cherry-pick or hand-port the relevant content from `dev`/`diffrax`. Carries review-item #3 from PR #45: add a "superseded on `diffrax-v0.1.0` by M7" pointer at the top of `HANDWRITTEN_SOLVER_LIMITATIONS.md` so a reader landing on the doc via `v0.1.0`'s release notes immediately knows the diffrax branch supersedes the limitations.
+**Scope sketch.** Small docs-only PR opens against `main`. Cherry-pick or hand-port the relevant content from `dev`/`diffrax`. Add a "superseded on `diffrax-v0.1.0` by M7" pointer at the top of `HANDWRITTEN_SOLVER_LIMITATIONS.md` so a reader landing on the doc via `v0.1.0`'s release notes immediately knows the diffrax branch supersedes the limitations.
 
 **Open questions.**
 - Add an ADR addendum to ADR-013/014 noting the merge-back deferral, or leave that out of this PR and write it separately?
@@ -247,7 +247,7 @@ Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` 
 **Scope sketch.** Set up sharding spec for the `(ncol, pver)` leading axes. Pick a target backend (GPU first or TPU first). Re-validate against Fortran under the new execution model.
 
 **Open questions.**
-- GPU (CUDA) or TPU first? Consumer GPUs emulate `float64` in software (10–30× slower); A100 / H100 / TPU have hardware `float64`. Does the project allow a `float32` fallback on consumer GPUs, accepting a relaxed bar?
+- GPU (CUDA) or TPU first? Consumer NVIDIA GPUs lack dedicated hardware FP64 throughput (FP64 outside the FP64 tensor cores found only on A100 / H100 is emulated via paired-FP32 sequences and is substantially slower than FP32); A100 / H100 / TPU have full-throughput hardware FP64. Does the project allow a `float32` fallback on consumer GPUs, accepting a relaxed bar? Actual slowdown factor varies by op mix and should be benchmarked once the target hardware is picked.
 - Sharding strategy: `shard_map`, `jax.device_put` with explicit sharding spec, or `pmap` (deprecated)?
 - Memory: at scale, M9's calibration memory caveat reappears with a multi-device twist.
 

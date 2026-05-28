@@ -26,9 +26,10 @@ The point of this file is to keep the *decided to skip for now* knowledge out of
 
 ## CI / continuous integration
 
-- **Status:** deferred. **Tracked as issue [#46](https://github.com/reflective-org/MAM4-JAX/issues/46)** — owner-recommended (2026-05-28) mid-priority slotting between M8 and M9, since CI would catch regressions while M8 cloud-chem porting lands.
+- **Status:** deferred. **Tracked as issue [#46](https://github.com/reflective-org/MAM4-JAX/issues/46).**
 - **Why:** No JAX code or tests exist yet; nothing meaningful to run in CI beyond markdown lint. Premature.
-- **Resurface when:** Milestone 1 (JAX package scaffold) lands a first test. *(Condition met since M3.6 — 72-test suite has existed since then; recommendation now active.)*
+- **Resurface when:** Milestone 1 (JAX package scaffold) lands a first test.
+- **Activated 2026-05-28** by owner directive — slot between M8 and M9 so CI catches regressions while cloud-chem porting lands. The resurfacing condition above was technically met since M3.6 (72-test suite exists); what changed today is the priority slotting, not the trigger.
 
 ## Differentiability through MAM4
 
