@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -265,3 +266,132 @@ def test_run_step_jax_vmap_matches_single_cell(per_process) -> None:
                 err_msg=f"jax.vmap run_step diverged on {key!r} at "
                         f"batch={b}",
             )
+
+
+# ---------------------------------------------------------------------------
+# M6 PR-J5: reverse-mode autodiff (`jax.grad`) regression tests
+#
+# Guards against future changes silently breaking the autodiff chain.
+# Specifically catches:
+#   - `jnp.where(cond, f(x), nan)` patterns that NaN-bomb cotangents.
+#   - `lax.stop_gradient` mistakenly inserted in a load-bearing path.
+#   - Diffrax adjoint mode regressing on Kvaerno5's internal while_loop.
+#   - State-dict pytree structure changes that break scan reverse-mode.
+# ---------------------------------------------------------------------------
+
+def _loss_sum_q_after_one_step(q, state_template) -> jnp.ndarray:
+    """Scalar loss = sum(q) after one driver step. Differentiate wrt q."""
+    state = {**state_template, "q": q}
+    new_state = run_step(state)
+    return jnp.sum(new_state["q"])
+
+
+def _loss_sum_q_after_n_steps(q, state_template, n_steps: int) -> jnp.ndarray:
+    """Scalar loss = sum(final-step q) after n_steps. Differentiate wrt q."""
+    state = {**state_template, "q": q}
+    traj = run_timesteps(state, n_steps=n_steps)
+    return jnp.sum(traj["q"][-1])
+
+
+def test_jax_grad_run_step_is_finite(per_process) -> None:
+    """``jax.grad`` through one driver step produces a finite cotangent
+    with no NaNs and no Infs.
+
+    M6 PR-J5 audit observed gradient norm ~6.98e14 at the canonical IC
+    — large because aerosol-number outputs (~1e8 magnitude) amplify
+    tiny gas/SOA inputs through nucleation and coag, not because of
+    any cotangent pathology.
+    """
+    ic = _build_state(per_process["calcsize_before"], step=0)
+    q_init = ic["q"]
+    state_template = {k: v for k, v in ic.items() if k != "q"}
+
+    g = jax.grad(_loss_sum_q_after_one_step)(q_init, state_template)
+    assert g.shape == q_init.shape
+    assert jnp.sum(jnp.isnan(g)) == 0, "NaN cotangent through run_step"
+    assert jnp.sum(jnp.isinf(g)) == 0, "Inf cotangent through run_step"
+
+
+def test_jax_grad_run_timesteps_is_finite(per_process) -> None:
+    """``jax.grad`` through a 60-step trajectory (via ``jax.lax.scan``
+    + diffrax internals) produces a finite cotangent and is
+    deterministic between repeat calls.
+
+    M6 PR-J5 audit measurements: compile + 1st eval ~10 s; cached
+    evaluation ~54 ms; max abs diff between repeat calls = 0.0
+    (bit-deterministic).
+    """
+    ic = _build_state(per_process["calcsize_before"], step=0)
+    q_init = ic["q"]
+    state_template = {k: v for k, v in ic.items() if k != "q"}
+
+    grad_fn = jax.grad(_loss_sum_q_after_n_steps)
+    g1 = grad_fn(q_init, state_template, 60)
+    assert g1.shape == q_init.shape
+    assert jnp.sum(jnp.isnan(g1)) == 0, "NaN cotangent through run_timesteps"
+    assert jnp.sum(jnp.isinf(g1)) == 0, "Inf cotangent through run_timesteps"
+
+    # Determinism check: repeat the grad call, expect bit-identical.
+    g2 = grad_fn(q_init, state_template, 60)
+    np.testing.assert_array_equal(
+        np.asarray(g1), np.asarray(g2),
+        err_msg="jax.grad(run_timesteps) is non-deterministic",
+    )
+
+
+def test_jax_grad_run_step_all_tracers_connected(per_process) -> None:
+    """Every input tracer connects to the loss output — no input has an
+    exactly-zero cotangent that would indicate a hidden
+    ``lax.stop_gradient`` or disconnected pytree leaf.
+
+    This complements the direct ``grep -rn stop_gradient mam4_jax/`` →
+    0 hits check (which is the load-bearing evidence); the per-tracer
+    cotangent count would catch a stop_gradient slipped past grep into
+    a third-party dependency or applied via some less-obvious idiom.
+    """
+    ic = _build_state(per_process["calcsize_before"], step=0)
+    q_init = ic["q"]
+    state_template = {k: v for k, v in ic.items() if k != "q"}
+
+    g = jax.grad(_loss_sum_q_after_one_step)(q_init, state_template)
+    g_flat = np.asarray(g).flatten()
+    n_zero = int(np.sum(g_flat == 0.0))
+    assert n_zero == 0, (
+        f"{n_zero} of {g_flat.size} input tracers have exactly-zero "
+        f"cotangent through run_step — possible stop_gradient leak."
+    )
+
+
+def test_jax_grad_run_step_finite_difference_sanity(per_process) -> None:
+    """Central-difference sanity check on one well-conditioned tracer.
+
+    Picks `q[0,0,17]` (Aitken-mode number, magnitude ~7.8e7 — a clean
+    test point because its gradient is ~1 and the value is large
+    enough that round-off doesn't dominate). Confirms the analytical
+    gradient has the right sign and order of magnitude — not full
+    numerical correctness, but enough to catch a wrong-sign or
+    wrong-scale regression that a calibration workflow would hit on
+    its first step.
+    """
+    ic = _build_state(per_process["calcsize_before"], step=0)
+    q_init = ic["q"]
+    state_template = {k: v for k, v in ic.items() if k != "q"}
+
+    g = jax.grad(_loss_sum_q_after_one_step)(q_init, state_template)
+    analytical = float(g[0, 0, 17])
+
+    # eps ≈ √(machine_eps) × |q| — balances cancellation vs truncation.
+    q17 = float(q_init[0, 0, 17])
+    eps = max(1.0, 1.0e-5 * abs(q17))
+    q_plus = q_init.at[0, 0, 17].add(eps)
+    q_minus = q_init.at[0, 0, 17].add(-eps)
+    f_plus = float(_loss_sum_q_after_one_step(q_plus, state_template))
+    f_minus = float(_loss_sum_q_after_one_step(q_minus, state_template))
+    fd = (f_plus - f_minus) / (2.0 * eps)
+
+    rel_err = abs(fd - analytical) / max(abs(analytical), 1e-30)
+    assert rel_err < 1e-3, (
+        f"FD vs analytical mismatch at q[0,0,17]: "
+        f"FD={fd:.6e}, analytical={analytical:.6e}, "
+        f"rel_err={rel_err:.3e}, eps={eps:.3e}, q={q17:.3e}"
+    )
