@@ -101,9 +101,9 @@ Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` 
 
 ---
 
-## Milestone 6 — Audit + JAX-idiom optimization (proposed 2026-05-26)
+## Milestone 6 — Audit + JAX-idiom optimization (done)
 
-**Status:** proposed; runs on the `diffrax` branch per ADR-016. Sub-PRs land into `diffrax`; the eventual `diffrax → main` merge-back happens *after* M6 completes (ADR-016 §Decision 2). Rule #8 phase B — correctness is established, optimization can now happen without conflating correctness/performance bugs.
+**Status:** done (2026-05-28). All 5 planned sub-PRs landed on the `diffrax` branch over a single day; PR-J6 (sharding) deferred to a separate milestone. The diffrax branch tip `5ea6330` is tagged `diffrax-v0.1.0`. Merge-back to `main` per ADR-016 is deferred (owner directive 2026-05-28: maintain `diffrax` as parallel canonical for now).
 
 **Why on `diffrax`, not `main`?** M6 will exercise the diffrax-tied codepaths (`solve_ivp`, the new `_h2so4_rhs` / `_soaexch_rhs` RHS functions, etc.) that only exist on `diffrax`. Doing M6 on `diffrax` first means `main` gets the JIT-compiled (fast) version at merge-back. Uncompiled diffrax is ~50× slower than handwritten; JIT-compiled it becomes competitive (PR-D2 observation).
 
@@ -113,22 +113,20 @@ Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` 
 - Include a before/after **wall-time benchmark** at one representative case (24 h dt=1 s, since that's the slowest and the place JIT helps most).
 - Per-mode rel-err breakouts in the PR description if any test's tolerance moves at all (per `project-mam4-per-mode-breakouts`).
 
-**Sub-PRs.** Each lands as its own PR on the `diffrax` branch; per-PR detail in the archived plan docs.
+**Sub-PRs.** Each landed as its own PR on the `diffrax` branch; per-PR detail in PROGRESS.md.
 
-1. **PR-J1 — `jax.jit` boundaries.** Wrap the natural call sites (`mam4_jax.solvers.solve_ivp`, `_mam_amicphys_1subarea_clear`, `run_step`, the per-process `*_1subarea` functions where the JIT trace is well-defined). Validate that compile cost is amortised over a 24 h run, benchmark before/after on dt=1 s and dt=5 s. Plan: `docs/plans/018-m6-pr-J1-jit.md`.
-2. **PR-J2 — `jax.lax.scan` for the driver time loop.** Replace the Python `for` loop in `run_timesteps` with `jax.lax.scan`. The huge speedup expected: dt=1 s × 86 400 steps × ~55 ms uncompiled = ~80 min wall today; with scan + JIT the same trajectory should drop to a few seconds. Plan: `docs/plans/019-m6-pr-J2-scan.md` (to be drafted).
-3. **PR-J3 — `jax.vmap` for column / level dimensions.** Currently the box-model fixture is `(ncol=1, pver=1)`, so vmap has no payoff on this fixture. But vmap-cleanness is a prerequisite for any future column-batched run; verify the codepaths broadcast correctly under `vmap`. Plan: `docs/plans/020-m6-pr-J3-vmap.md` (to be drafted).
-4. **PR-J4 — `jax.lax.cond` / `where` audit.** Sweep the codebase for any remaining Python-level conditionals on traced values; replace with `jax.lax.cond` or `where` as appropriate. Mostly small cleanups; might be folded into PR-J1 if there's nothing significant.
-5. **PR-J5 — Differentiability audit.** Verify each process is autodiff-clean (no `at[].set` patterns that break gradients, no incomplete diffrax solver config for backward mode). Document any process that isn't differentiable and the reason. Likely no fixes needed but the audit is worth doing for future calibration / inversion work.
-6. **PR-J6 — Sharding.** Deferred unless owner directs. Single-host CPU is the current target; GPU/TPU sharding is its own milestone.
-
-**Sequencing.** PR-J1 → PR-J2 are the load-bearing performance PRs and come first. PR-J3/J4/J5 are clean-up / future-proofing; can interleave. PR-J6 is its own decision.
+1. **PR-J1** [x] — `@jax.jit` on `run_step` and per-process subareas. ~70× speedup at dt=1 s after compile. PR [#39](https://github.com/reflective-org/MAM4-JAX/pull/39). Plan: `docs/plans/018-m6-pr-J1-jit.md`.
+2. **PR-J2** [x] — `jax.lax.scan` for the driver time loop. Cumulative 113× speedup at dt=1 s; ~80 min → seconds for 24 h trajectories. PR [#40](https://github.com/reflective-org/MAM4-JAX/pull/40). Follow-up PR [#41](https://github.com/reflective-org/MAM4-JAX/pull/41) wrapped `run_timesteps` itself in `@jax.jit` (static `n_steps`) to amortise Python-side dispatch over the 1000-sim benchmark; JAX ended up 3.8× faster than Fortran per simulation.
+3. **PR-J3** [x] — `jax.vmap` audit. Codebase already vmap-clean by design (trailing-axis reductions, no leading-axis assumptions); two regression tests added. PR [#42](https://github.com/reflective-org/MAM4-JAX/pull/42). Bundled fix: 4 inherited tests still gated at ADR-003's 1e-6 against Fortran fixtures the diffrax port no longer matches bit-for-bit; relaxed to ADR-015's bar with appropriate `atol` for near-zero tracers.
+4. **PR-J4** [x] — `jax.lax.cond` / `where` audit. Zero code changes; documentation only. Grep-verified: 37 control-flow statements all operate on Python-static values; 127 `jnp.where` calls are correct; zero `bool()/.item()/print/assert` inside JIT scope. PR [#43](https://github.com/reflective-org/MAM4-JAX/pull/43).
+5. **PR-J5** [x] — reverse-mode autodiff audit. Codebase is autodiff-clean; `jax.grad` through `run_step` and through 60-step `scan` returns finite, deterministic cotangents. Four regression tests added. PR [#44](https://github.com/reflective-org/MAM4-JAX/pull/44). Solver-side adjoint: `solve_ivp` uses the default `diffrax.RecursiveCheckpointAdjoint` (memory-feasibility caveat at 24 h trajectory lengths flagged in PROGRESS.md; switch to `ImplicitAdjoint()` if a future calibration workflow hits a memory ceiling).
+6. **PR-J6** — Sharding. **Deferred to its own milestone** (single-host CPU is the current target; GPU/TPU sharding is a distinct effort, not a sub-task of M6).
 
 ---
 
 ## Milestone 7 — Diffrax migration (long-lived `diffrax` branch)
 
-**Status:** approved 2026-05-22; ready to start with PR-I1. Owner-introduced 2026-05-21; dual-branch strategy 2026-05-22 (ADR-013); eventual merge-back to `main` planned (ADR-014).
+**Status:** core PRs done (2026-05-26 through 2026-05-28). PR-I1, PR-D1, PR-D2 landed; PR-D3 permanently deferred (see `DEFERRED.md`). Merge-back to `main` per ADR-016 is deferred (owner directive 2026-05-28: maintain `diffrax` as parallel canonical until further notice).
 
 **Branching model.** M7 lives on a long-lived `diffrax` branch parallel to `main`. Rationale and invariants in ADR-013; the merge-back intent and the `main → diffrax` sync convention are in ADR-014. Summary:
 
@@ -137,12 +135,12 @@ Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` 
 - Both branches stay structurally similar (same module layout, function names, state-dict contract, test fixtures). Non-solver changes land in `main` first and reach `diffrax` via periodic `main → diffrax` merges (ADR-014).
 - Eventually, once the diffrax port is validated end-to-end, `diffrax` merges back into `main` and becomes the canonical implementation (ADR-014).
 
-**Sub-PRs on the `diffrax` branch.** Each lands as its own PR; per-PR detail lives in the archived plan docs.
+**Sub-PRs on the `diffrax` branch.** Each landed as its own PR; per-PR detail in PROGRESS.md.
 
-1. **PR-I1 — Infra & tooling.** Create `v0.1.0` tag on `main` (handwritten-solver baseline). On `diffrax`: add `diffrax` to `pyproject.toml`; introduce `mam4_jax/solvers.py` strategy module (skeleton + signature, no real solvers wired in yet); add ADR-014; add `docs/HANDWRITTEN_SOLVER_LIMITATIONS.md`. No solver swap — every existing test still passes, the 6 xfails stay xfail. Plan: `docs/plans/015-diffrax-infra.md`.
-2. **PR-D1 — Port `_mam_soaexch_1subarea` to diffrax.** Default solver `Kvaerno5`. Validation surface: the 6 currently-`xfail`ed M5 cases (`nstep ∈ {1,2,4,9,18,30}`) flip to expected-pass at `rtol=1e-6`; the 6 currently-passing cases stay green; soaexch-only single-toggle fixture residual plot. Plan: `docs/plans/016-diffrax-soaexch.md` (to be drafted).
-3. **PR-D2 — Port H₂SO₄ analytical solver in `_mam_gasaerexch_1subarea` to diffrax.** Lower priority (no current accuracy gap on `main`); validates the `solvers.py` abstraction on a simpler closed-form ODE. Plan: `docs/plans/017-diffrax-h2so4.md` (to be drafted).
-4. **PR-D3 — Coag analytical solvers.** Deferred unless PR-D1 or PR-D2 surface a coupled-ODE stiffness issue. May stay in `docs/DEFERRED.md`.
+1. **PR-I1** [x] — Infra & tooling. `v0.1.0` tag on `main`; `diffrax` added to `pyproject.toml` on the branch; `mam4_jax/solvers.py` strategy module; ADR-014; `docs/HANDWRITTEN_SOLVER_LIMITATIONS.md`. PR [#31](https://github.com/reflective-org/MAM4-JAX/pull/31). Plan: `docs/plans/015-diffrax-infra.md`.
+2. **PR-D1** [x] — Port `_mam_soaexch_1subarea` to diffrax (`Kvaerno5`). Empirical finding: the 6 previously-`xfail`ed M5 cases now pass at ADR-015's 3 %/24 h/dt≤5 s bar (the original 1 %/1 e-6 target was unattainable due to a structural per-step semi-implicit-vs-true-ODE difference that accumulates to ~2.4 % on `soag_gas`, dt-independent — see `project-diffrax-structural-offset`). Test sweep rewritten from M5's 12-point sweep to a 4-dt 24 h test. PR [#34](https://github.com/reflective-org/MAM4-JAX/pull/34). Plan: `docs/plans/016-diffrax-soaexch.md`.
+3. **PR-D2** [x] — Port H₂SO₄ analytical solver to diffrax. Validates the `solvers.py` abstraction on a closed-form linear-in-`g` ODE. Confirmed (via H₂SO₄-only ablation) that the 2.4 % `soag_gas` offset is SOA-specific, not a diffrax-vs-handwritten artifact in general — H₂SO₄ + SO4 conserve to ε, only SOA drifts (~0.35 % over 24 h). PR [#36](https://github.com/reflective-org/MAM4-JAX/pull/36). Plan: `docs/plans/017-diffrax-h2so4.md`.
+4. **PR-D3** — Coag analytical solvers. **Permanently deferred** (PR [#37](https://github.com/reflective-org/MAM4-JAX/pull/37)); see `docs/DEFERRED.md` entry "Coag analytical → diffrax (PR-D3)" for reasoning (coagulation is algebraic, not an ODE in time; no validation gap, no stiffness motivation, no autodiff motivation on this fixture).
 
 **Pros.** JIT/grad/vmap-clean; better numerics on stiff systems (Kvaerno5, KenCarp4); adaptive stepping for free; standard diagnostics/error estimators; resolves the M5 `nstep ≤ 30` gap without polluting `main` before the merge-back.
 
