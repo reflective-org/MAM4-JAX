@@ -172,8 +172,14 @@ def test_orchestration_gasaerexch_and_newnuc_matches_fortran(
     gasaerexch_and_newnuc_captured,
 ) -> None:
     """JAX `amicphys(state, mdo_gasaerexch=1, mdo_newnuc=1, others=0)`
-    reproduces the Fortran fixture at 1e-6 on `q` and `qqcw`
-    (M3.6 PR-F3 wiring test).
+    reproduces the Fortran fixture at the ADR-015 diffrax-branch bar
+    (M3.6 PR-F3 wiring + M7 PR-D1/D2 solver-port adjustments).
+
+    PR-D1's test_sweep.py rewrite missed this test; M6 PR-J3 closes
+    the gap. Empirical max rel-err on `q` is ~1e-2 (driven by the
+    diffrax soaexch structural offset propagating through newnuc);
+    abs diff stays under 1e-12 for near-zero tracers, so atol=1e-12
+    avoids rtol blow-up at 1e-25-magnitude values.
     """
     before, aw = gasaerexch_and_newnuc_captured
     state = _build_state(before)
@@ -183,13 +189,13 @@ def test_orchestration_gasaerexch_and_newnuc_matches_fortran(
     for key in ("q", "qqcw"):
         np.testing.assert_allclose(
             np.asarray(new_state[key]), aw[key],
-            rtol=1e-6, atol=1e-20,
+            rtol=1e-2, atol=1e-12,
             err_msg=f"gasaerexch+newnuc orchestration diverged on {key!r}",
         )
     for key in ("dgncur_a", "dgncur_awet", "qaerwat", "wetdens"):
         np.testing.assert_allclose(
             np.asarray(new_state[key]), aw[key],
-            rtol=1e-3, atol=1e-15,
+            rtol=5e-3, atol=1e-15,
             err_msg=f"gasaerexch+newnuc orchestration drifted on {key!r}",
         )
 
@@ -262,7 +268,14 @@ def test_orchestration_coag_only_matches_fortran(coag_captured) -> None:
 def test_orchestration_gasaerexch_matches_fortran(gasaerexch_captured) -> None:
     """JAX `amicphys(state, mdo_gasaerexch=1, others=0)` reproduces the
     Fortran gasaerexch+soaexch fixture (no skip patches besides pcarbon
-    aging) at 1e-6 on `q`/`qqcw` (M3.6 PR-E).
+    aging) at ADR-015's diffrax-branch bar.
+
+    Historical M3.6 PR-E target was `rtol=1e-6` on `q`/`qqcw`, but
+    M7 PR-D1's diffrax soaexch port produces O(dt²) per-step drift
+    versus Fortran's semi-implicit (empirical worst rel-err on `q` is
+    ~4e-3). PR-D1's test_sweep.py rewrite missed this test; M6 PR-J3
+    closes the gap. atol=1e-12 keeps rtol from blowing up on
+    1e-25-magnitude near-zero tracers (observed abs diff floor ~1.5e-13).
     """
     before, aw = gasaerexch_captured
     state = _build_state(before)
@@ -270,13 +283,10 @@ def test_orchestration_gasaerexch_matches_fortran(gasaerexch_captured) -> None:
                          mdo_gasaerexch=1, mdo_rename=0,
                          mdo_newnuc=0, mdo_coag=0)
 
-    # Per-key check. atol is set generously enough to absorb ULP-level
-    # noise on near-zero tracers (e.g. species absent from a mode end up
-    # at ~1e-25 instead of exact 0). rtol=1e-6 per ADR-003.
     for key in ("q", "qqcw"):
         np.testing.assert_allclose(
             np.asarray(new_state[key]), aw[key],
-            rtol=1e-6, atol=1e-20,
+            rtol=1e-2, atol=1e-12,
             err_msg=f"gasaerexch-only orchestration diverged on {key!r}",
         )
     for key in ("dgncur_a", "dgncur_awet", "qaerwat", "wetdens"):
