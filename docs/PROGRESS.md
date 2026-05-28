@@ -10,12 +10,21 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 - PR: pending (`m6/pr-j4-cond-where` → `diffrax`). Fourth M6 sub-PR. Plan: PLANS.md M6 §PR-J4 ("sweep the codebase for any remaining Python-level conditionals on traced values; replace with `jax.lax.cond` or `where` as appropriate; mostly small cleanups; might be folded into PR-J1 if there's nothing significant").
 - **Audit result: zero code changes needed.** Doc-only PR.
-- **Audit method**: grep `mam4_jax/` for every `if`/`for`/`while`/`bool(`/`int(`/`float(`/`__bool__`/`.tolist()`/`.item()`/`print(`/`assert`/`lax.cond`/`lax.while_loop`/`lax.fori_loop` pattern; classify each against the JIT-cleanliness rules. The `@jax.jit` decoration of `run_step` (PR-J1) and `run_timesteps` (PR-J2 follow-up) already enforce this implicitly — any traced-value Python branch would error at trace time. PR-J4 confirms the audit is clean.
+- **Audit method**: the strongest argument is empirical, not the grep — `@jax.jit run_step` (PR-J1) and `@jax.jit run_timesteps` (PR-J2 follow-up) already pass; any traced-value Python branch would have errored at trace time. PR-J4's grep is supplementary documentation. Exact commands:
+
+  ```
+  grep -rEn "^\s*(if|for|while)\s"          mam4_jax/ --include="*.py"
+  grep -rEn "jnp\.where"                     mam4_jax/ --include="*.py"
+  grep -rEn "lax\.cond|lax\.while_loop|lax\.fori_loop" mam4_jax/ --include="*.py"
+  grep -rEn "^\s*(assert|print)\s|\.tolist\(\)|\.item\(\)" mam4_jax/ --include="*.py"
+  ```
+
 - **Findings (`mam4_jax/`):**
-  - **22 control-flow statements** (`if`/`for`/`while`). Every one operates on Python-static values: namelist toggles (`mdo_gasaerexch`, etc.), data-table indices (`LSPECTYPE_AMODE`, `NTOT_AMODE`), Python loop indices, Python tuples/strings. **No traced-value branches.**
-  - **126 `jnp.where` calls**, all elementwise data-dependent. Correct pattern; converting to `jax.lax.cond` would require scalar conditions (cond only works on scalars), so `where` is the right tool throughout.
+  - **37 control-flow statements** matching `if`/`for`/`while`. ~5 are inside docstrings or block comments (`mam4_jax/kohler.py:69`, `mam4_jax/coag.py:107`, `mam4_jax/processes/calcsize.py:23,235`, `mam4_jax/processes/amicphys.py:1089`); the remaining ~32 are real statements. Every real statement operates on Python-static values: namelist toggles (`mdo_gasaerexch`, etc.), data-table indices (`LSPECTYPE_AMODE`, `NTOT_AMODE`, `NSPEC_AMODE`), Python loop indices, Python tuples/strings, Python int casts (`int(NSPEC_AMODE[m])`). **No traced-value branches.**
+  - **127 `jnp.where` calls**, all elementwise data-dependent. Correct pattern; converting to `jax.lax.cond` would require scalar conditions (cond only works on scalars), so `where` is the right tool throughout.
   - **Zero `lax.cond` / `lax.while_loop` / `lax.fori_loop`** usage. Zero needed — diffrax's `solve_ivp` wraps the iterative integration, and no other process has a data-dependent loop boundary.
-  - **Zero scalar-materialization** in production paths (`bool()` / `__bool__` / `.tolist()` / `.item()` / `print()` / `assert` inside JIT'd code).
+  - **Zero scalar-materialization in JIT'd code paths** (`bool()` / `__bool__` / `.tolist()` / `.item()` / `print()` / `assert` inside `@jax.jit` scope). **One module-load-only `assert`** exists at `mam4_jax/data.py:449` (`assert ADV_MASS.shape == (30,)`) — runs at package import, outside any traced path; harmless.
+  - **Patterns also searched, none found inside JIT scope**: `np.asarray` / `np.array` (only in non-JIT helper code, e.g. `mam4_jax/coag.py:42` for module-level lookup-table conversion which PR-J1 already lifted out of trace scope); `len()` on traced shapes (none); `isinstance` checks on possibly-traced values (none); `__index__` materialisation (none).
 - **Implication for ADR-016 merge-back:** the diffrax branch's JAX-side codepaths are JIT/vmap/scan-clean by design — no hidden footguns. M6's audit confirms what PR-J1 / PR-J2 / PR-J3 already established: nothing in `mam4_jax/` will surprise a future caller who tries `jax.jit` / `jax.vmap` / `jax.grad` around a process or driver entry point. PR-J5 (differentiability audit) is the remaining cross-check.
 - M6 status: 4 of 5 sub-PRs done (PR-J1 jit, PR-J2 scan + follow-up, PR-J3 vmap, PR-J4 cond/where). Remaining: PR-J5 (differentiability audit). PR-J6 sharding deferred.
 
