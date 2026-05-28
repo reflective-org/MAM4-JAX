@@ -337,3 +337,61 @@ def test_jax_grad_run_timesteps_is_finite(per_process) -> None:
         np.asarray(g1), np.asarray(g2),
         err_msg="jax.grad(run_timesteps) is non-deterministic",
     )
+
+
+def test_jax_grad_run_step_all_tracers_connected(per_process) -> None:
+    """Every input tracer connects to the loss output — no input has an
+    exactly-zero cotangent that would indicate a hidden
+    ``lax.stop_gradient`` or disconnected pytree leaf.
+
+    This complements the direct ``grep -rn stop_gradient mam4_jax/`` →
+    0 hits check (which is the load-bearing evidence); the per-tracer
+    cotangent count would catch a stop_gradient slipped past grep into
+    a third-party dependency or applied via some less-obvious idiom.
+    """
+    ic = _build_state(per_process["calcsize_before"], step=0)
+    q_init = ic["q"]
+    state_template = {k: v for k, v in ic.items() if k != "q"}
+
+    g = jax.grad(_loss_sum_q_after_one_step)(q_init, state_template)
+    g_flat = np.asarray(g).flatten()
+    n_zero = int(np.sum(g_flat == 0.0))
+    assert n_zero == 0, (
+        f"{n_zero} of {g_flat.size} input tracers have exactly-zero "
+        f"cotangent through run_step — possible stop_gradient leak."
+    )
+
+
+def test_jax_grad_run_step_finite_difference_sanity(per_process) -> None:
+    """Central-difference sanity check on one well-conditioned tracer.
+
+    Picks `q[0,0,17]` (Aitken-mode number, magnitude ~7.8e7 — a clean
+    test point because its gradient is ~1 and the value is large
+    enough that round-off doesn't dominate). Confirms the analytical
+    gradient has the right sign and order of magnitude — not full
+    numerical correctness, but enough to catch a wrong-sign or
+    wrong-scale regression that a calibration workflow would hit on
+    its first step.
+    """
+    ic = _build_state(per_process["calcsize_before"], step=0)
+    q_init = ic["q"]
+    state_template = {k: v for k, v in ic.items() if k != "q"}
+
+    g = jax.grad(_loss_sum_q_after_one_step)(q_init, state_template)
+    analytical = float(g[0, 0, 17])
+
+    # eps ≈ √(machine_eps) × |q| — balances cancellation vs truncation.
+    q17 = float(q_init[0, 0, 17])
+    eps = max(1.0, 1.0e-5 * abs(q17))
+    q_plus = q_init.at[0, 0, 17].add(eps)
+    q_minus = q_init.at[0, 0, 17].add(-eps)
+    f_plus = float(_loss_sum_q_after_one_step(q_plus, state_template))
+    f_minus = float(_loss_sum_q_after_one_step(q_minus, state_template))
+    fd = (f_plus - f_minus) / (2.0 * eps)
+
+    rel_err = abs(fd - analytical) / max(abs(analytical), 1e-30)
+    assert rel_err < 1e-3, (
+        f"FD vs analytical mismatch at q[0,0,17]: "
+        f"FD={fd:.6e}, analytical={analytical:.6e}, "
+        f"rel_err={rel_err:.3e}, eps={eps:.3e}, q={q17:.3e}"
+    )
