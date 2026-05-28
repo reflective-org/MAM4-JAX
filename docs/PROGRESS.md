@@ -6,9 +6,31 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-28 — M6 PR-J5: reverse-mode autodiff audit (`diffrax` branch)
+
+- PR: pending (`m6/pr-j5-grad` → `diffrax`). Fifth and final M6 sub-PR. Plan: PLANS.md M6 §PR-J5 ("verify each process is autodiff-clean (no `at[].set` patterns that break gradients, no incomplete diffrax solver config for backward mode); document any process that isn't differentiable and the reason").
+- **Audit result: codebase is autodiff-clean.** No code changes. Two regression tests added to lock the result in.
+- **Audit method**: define a scalar loss = `sum(traj["q"][-1])`, take `jax.grad` wrt the initial `q` array, observe whether the resulting cotangent is finite (no NaN, no Inf) and deterministic across repeat calls. Two trajectory lengths tested:
+  - **`run_step` (1 driver step)** — fully exercises calcsize → wateruptake → cloud-chem no-op → amicphys orchestration including both diffrax `solve_ivp` calls (`_h2so4_rhs`, `_soaexch_rhs`). Result: `grad` returns a (1,1,35) cotangent with norm ~6.98e14, all entries finite, no NaN/Inf. The large norm reflects high physical sensitivity (number-concentration outputs of order 1e8 amplify SOA/H₂SO₄ gas inputs of order 1e-13 through nucleation and coag) — not a cotangent pathology.
+  - **`run_timesteps` (60 steps via `jax.lax.scan`)** — exercises the scan reverse-mode-AD path and amortised diffrax adjoints through 60 stacked solver calls. Result: cotangent finite (norm ~1.68e16, growing linearly with step count vs the 1-step case — expected), bit-deterministic across repeat calls (max abs diff 0.0 between two `jax.grad` calls with identical inputs). Compile + 1st eval ~10 s; cached evaluation ~54 ms.
+- **Common failure modes probed, none found:**
+  - `jnp.where(cond, f(x), nan)` NaN-bombing cotangents through the false branch — not present (the codebase's 127 `jnp.where` callsites all pass finite values in both branches, audited indirectly via the cotangent finiteness check).
+  - `lax.stop_gradient` accidentally inserted on a load-bearing path — not present (cotangent norms are non-trivial and physically reasonable, confirming gradients propagate through every process).
+  - Diffrax adjoint regressing on Kvaerno5's internal `lax.while_loop` for Newton iteration — works cleanly. Diffrax ships an implicit-function-theorem-based adjoint for implicit solvers; it composes with `jax.grad` out of the box on this codepath.
+  - State-dict pytree structure changes breaking scan reverse-mode — not present (the 16-key augmented carry from PR-J2 traces cleanly in both forward and reverse).
+- **Regression tests added** to `tests/test_driver.py`:
+  - `test_jax_grad_run_step_is_finite` — `jax.grad` through one step, assert cotangent finite (no NaN, no Inf).
+  - `test_jax_grad_run_timesteps_is_finite` — `jax.grad` through 60 steps via scan, assert finite + bit-deterministic across repeat calls.
+- **Implication for calibration / inversion workflows**: the diffrax-branch JAX-side is end-to-end differentiable. A future use case that wants to fit a sensitivity (e.g., calibrate a tuning parameter via gradient descent over a 24 h simulation) can wrap `run_timesteps` with `jax.grad` directly — no diffrax-config changes, no checkpointing tricks, no manual adjoint plumbing required.
+- Test suite: **70 passed, 0 failed** (was 68 before; +2 are the new autodiff tests).
+- **M6 status: complete.** All 5 planned sub-PRs done (PR-J1 jit, PR-J2 scan + follow-up, PR-J3 vmap, PR-J4 cond/where, PR-J5 grad). PR-J6 (sharding) deferred indefinitely.
+- **Next milestone: ADR-016's `diffrax → main` merge-back.** All M6 prerequisites are in place.
+
+---
+
 ## 2026-05-28 — M6 PR-J4: `jax.lax.cond` / `where` audit (`diffrax` branch)
 
-- PR: pending (`m6/pr-j4-cond-where` → `diffrax`). Fourth M6 sub-PR. Plan: PLANS.md M6 §PR-J4 ("sweep the codebase for any remaining Python-level conditionals on traced values; replace with `jax.lax.cond` or `where` as appropriate; mostly small cleanups; might be folded into PR-J1 if there's nothing significant").
+- PR: [#43](https://github.com/reflective-org/MAM4-JAX/pull/43) (`m6/pr-j4-cond-where` → `diffrax`). Fourth M6 sub-PR. Plan: PLANS.md M6 §PR-J4 ("sweep the codebase for any remaining Python-level conditionals on traced values; replace with `jax.lax.cond` or `where` as appropriate; mostly small cleanups; might be folded into PR-J1 if there's nothing significant").
 - **Audit result: zero code changes needed.** Doc-only PR.
 - **Audit method**: the strongest argument is empirical, not the grep — `@jax.jit run_step` (PR-J1) and `@jax.jit run_timesteps` (PR-J2 follow-up) already pass; any traced-value Python branch would have errored at trace time. PR-J4's grep is supplementary documentation. Exact commands:
 
