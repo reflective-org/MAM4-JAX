@@ -1,5 +1,16 @@
 # Handwritten-solver limitations of the `v0.1.0` baseline
 
+> **Superseded as of `diffrax-v0.1.0`** (tag `diffrax-v0.1.0` at
+> commit `5ea6330`, merged to `main` via the `diffrax → main`
+> merge-back per ADR-016). The limitations catalogued below describe
+> the handwritten-solver baseline that M7 (diffrax migration)
+> retired: the H₂SO₄ analytical solver and the `_mam_soaexch_1subarea`
+> semi-implicit stepper are now diffrax-driven (`Kvaerno5` with
+> adaptive substepping). This document remains useful for anyone
+> checking out the `v0.1.0` tag directly or auditing what the
+> merge-back replaces; for the current state, see `docs/PROGRESS.md`
+> M7 entries and ADR-015.
+
 > **Scope:** This document describes the MAM4-JAX implementation as
 > it stands on `main` at the `v0.1.0` tag (and equivalently, on the
 > `diffrax` branch up to PR-I1, before any solver port). It is
