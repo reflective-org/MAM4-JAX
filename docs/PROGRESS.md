@@ -6,9 +6,33 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-28 — M6 PR-J4: `jax.lax.cond` / `where` audit (`diffrax` branch)
+
+- PR: pending (`m6/pr-j4-cond-where` → `diffrax`). Fourth M6 sub-PR. Plan: PLANS.md M6 §PR-J4 ("sweep the codebase for any remaining Python-level conditionals on traced values; replace with `jax.lax.cond` or `where` as appropriate; mostly small cleanups; might be folded into PR-J1 if there's nothing significant").
+- **Audit result: zero code changes needed.** Doc-only PR.
+- **Audit method**: the strongest argument is empirical, not the grep — `@jax.jit run_step` (PR-J1) and `@jax.jit run_timesteps` (PR-J2 follow-up) already pass; any traced-value Python branch would have errored at trace time. PR-J4's grep is supplementary documentation. Exact commands:
+
+  ```
+  grep -rEn "^\s*(if|for|while)\s"          mam4_jax/ --include="*.py"
+  grep -rEn "jnp\.where"                     mam4_jax/ --include="*.py"
+  grep -rEn "lax\.cond|lax\.while_loop|lax\.fori_loop" mam4_jax/ --include="*.py"
+  grep -rEn "^\s*(assert|print)\s|\.tolist\(\)|\.item\(\)" mam4_jax/ --include="*.py"
+  ```
+
+- **Findings (`mam4_jax/`):**
+  - **37 control-flow statements** matching `if`/`for`/`while`. ~5 are inside docstrings or block comments (`mam4_jax/kohler.py:69`, `mam4_jax/coag.py:107`, `mam4_jax/processes/calcsize.py:23,235`, `mam4_jax/processes/amicphys.py:1089`); the remaining ~32 are real statements. Every real statement operates on Python-static values: namelist toggles (`mdo_gasaerexch`, etc.), data-table indices (`LSPECTYPE_AMODE`, `NTOT_AMODE`, `NSPEC_AMODE`), Python loop indices, Python tuples/strings, Python int casts (`int(NSPEC_AMODE[m])`). **No traced-value branches.**
+  - **127 `jnp.where` calls**, all elementwise data-dependent. Correct pattern; converting to `jax.lax.cond` would require scalar conditions (cond only works on scalars), so `where` is the right tool throughout.
+  - **Zero `lax.cond` / `lax.while_loop` / `lax.fori_loop`** usage. Zero needed — diffrax's `solve_ivp` wraps the iterative integration, and no other process has a data-dependent loop boundary.
+  - **Zero scalar-materialization in JIT'd code paths** (`bool()` / `__bool__` / `.tolist()` / `.item()` / `print()` / `assert` inside `@jax.jit` scope). **One module-load-only `assert`** exists at `mam4_jax/data.py:449` (`assert ADV_MASS.shape == (30,)`) — runs at package import, outside any traced path; harmless.
+  - **Patterns also searched, none found inside JIT scope**: `np.asarray` / `np.array` (only in non-JIT helper code, e.g. `mam4_jax/coag.py:42` for module-level lookup-table conversion which PR-J1 already lifted out of trace scope); `len()` on traced shapes (none); `isinstance` checks on possibly-traced values (none); `__index__` materialisation (none).
+- **Implication for ADR-016 merge-back:** the diffrax branch's JAX-side codepaths are JIT/vmap/scan-clean by design — no hidden footguns. M6's audit confirms what PR-J1 / PR-J2 / PR-J3 already established: nothing in `mam4_jax/` will surprise a future caller who tries `jax.jit` / `jax.vmap` / `jax.grad` around a process or driver entry point. PR-J5 (differentiability audit) is the remaining cross-check.
+- M6 status: 4 of 5 sub-PRs done (PR-J1 jit, PR-J2 scan + follow-up, PR-J3 vmap, PR-J4 cond/where). Remaining: PR-J5 (differentiability audit). PR-J6 sharding deferred.
+
+---
+
 ## 2026-05-28 — M6 PR-J3: vmap audit + test_driver.py / test_amicphys.py ADR-015 inheritance fix (`diffrax` branch)
 
-- PR: pending (`m6/pr-j3-vmap` → `diffrax`). Third M6 sub-PR.
+- PR: [#42](https://github.com/reflective-org/MAM4-JAX/pull/42) (`m6/pr-j3-vmap` → `diffrax`). Third M6 sub-PR.
 - **Vmap audit result: zero code changes needed.** Multi-column `run_step` (ncol=4, pver=2 with identical IC tiled across all points) produces output that's byte-identical to single-cell to within float64 noise (~1.6e-27 worst diff). Explicit `jax.vmap` produces bit-exact (0.0e+00) output. The per-process functions consistently use `axis=-1` / trailing-axis reductions; leading axes (col, level, batch) propagate cleanly. The codebase was already vmap-clean by design from the original ports.
 - Added two regression tests in `tests/test_driver.py`:
   - `test_run_step_multicolumn_matches_single_cell` — feeds a (4, 2) state with the IC tiled, verifies per-point output matches single-cell.
