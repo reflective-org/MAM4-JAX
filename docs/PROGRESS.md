@@ -6,9 +6,24 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-28 — M6 PR-J3: vmap audit + test_driver.py / test_amicphys.py ADR-015 inheritance fix (`diffrax` branch)
+
+- PR: pending (`m6/pr-j3-vmap` → `diffrax`). Third M6 sub-PR.
+- **Vmap audit result: zero code changes needed.** Multi-column `run_step` (ncol=4, pver=2 with identical IC tiled across all points) produces output that's byte-identical to single-cell to within float64 noise (~1.6e-27 worst diff). Explicit `jax.vmap` produces bit-exact (0.0e+00) output. The per-process functions consistently use `axis=-1` / trailing-axis reductions; leading axes (col, level, batch) propagate cleanly. The codebase was already vmap-clean by design from the original ports.
+- Added two regression tests in `tests/test_driver.py`:
+  - `test_run_step_multicolumn_matches_single_cell` — feeds a (4, 2) state with the IC tiled, verifies per-point output matches single-cell.
+  - `test_run_step_jax_vmap_matches_single_cell` — explicit `jax.vmap(run_step, in_axes=...)`, batch=4. Same assertion.
+- **Bundled ADR-015 inheritance fix** (out-of-scope-creep but couldn't responsibly leave the bugs in): four tests inherited from `main` were still gated at ADR-003's `1e-6` against Fortran fixtures that the diffrax soaexch port no longer matches bit-for-bit. PR-D1's `test_sweep.py` rewrite missed them. PR-J3 relaxes:
+  - `test_run_step_one_step_matches_fortran` and `test_run_timesteps_60_step_trajectory_matches_fortran` in `test_driver.py`: `rtol=1e-6 → 5e-2` on `q/qqcw`; `rtol=1e-3 → 5e-3` on size fields. Coarse-dt diagnostic framing per ADR-015 (the M4 fixture is dt=30s).
+  - `test_orchestration_gasaerexch_matches_fortran` and `test_orchestration_gasaerexch_and_newnuc_matches_fortran` in `test_amicphys.py`: `rtol=1e-6 → 1e-2`, `atol=1e-20 → 1e-12` on `q/qqcw`. `atol` floor matters because some tracers are at 1e-25 magnitudes where rtol blows up but abs diff stays under 1.5e-13.
+- Test suite status: **68 passed, 0 failed** (was 6 failures inherited from PR-D1's incomplete bar relaxation: 2 in test_driver.py + 2 in test_amicphys.py).
+- M6 status: 3 of 5 sub-PRs done (PR-J1 jit, PR-J2 scan + follow-up, PR-J3 vmap). Remaining: PR-J4 cond/where audit, PR-J5 differentiability audit. PR-J6 sharding deferred.
+
+---
+
 ## 2026-05-28 — M6 PR-J2 follow-up: `@jax.jit` on `run_timesteps` + 1000-sim benchmark (`diffrax` branch)
 
-- PR: pending (`m6/pr-j2-followup-jit-run-timesteps` → `diffrax`). Small follow-up to PR-J2 that closes a Python-side dispatch gap, plus a Fortran-vs-JAX wall-time benchmark requested by the owner.
+- PR: [#41](https://github.com/reflective-org/MAM4-JAX/pull/41) (`m6/pr-j2-followup-jit-run-timesteps` → `diffrax`). Small follow-up to PR-J2 that closes a Python-side dispatch gap, plus a Fortran-vs-JAX wall-time benchmark requested by the owner.
 - **The gap PR-J2 left:** `jax.lax.scan` inside an un-JIT'd Python function still pays ~1 s of per-call Python overhead (closure rebuild + 16-key carry abstractification + scan-cache lookup). PR-J2's 24h validation didn't surface this because it calls `run_timesteps` only 4 times total (one per dt). A 1000-sim benchmark hit it head-on: each call was 1112 ms when it should have been ~6 ms.
 - **Fix:** decorate `run_timesteps` with `@functools.partial(jax.jit, static_argnums=(1,))`. One cache entry per distinct `n_steps`. First call at a given `n_steps` compiles (~1.8 s); subsequent calls drop to ~6 ms at `n_steps=60`. The inner scan body trace and `run_step` JIT cache continue to work as before; the new outer JIT just amortises the Python wrapper.
 - **1000-sim benchmark** (1800 s simulation, dt=30 s, nstep=60, both implementations warmed up before timing):
