@@ -16,7 +16,9 @@ Composes the per-step microphysics sequence from
                             way through the vmr→mmr writeback (implicit
                             via ``_repack_amicphys_view_to_state``).
 
-**Phase A only.** Plain Python ``for`` loop. ``jax.lax.scan`` is M6.
+**Optimisation status.** ``run_step`` is ``@jax.jit``-compiled
+(M6 PR-J1). ``run_timesteps`` uses ``jax.lax.scan`` (M6 PR-J2)
+to amortise the body trace across long trajectories.
 
 Gas-chem placement
 ------------------
@@ -101,6 +103,13 @@ def run_step(state: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
+#: Trajectory keys captured per step by :func:`run_timesteps`. Scalars
+#: like ``deltat`` and met fields are echoed back unchanged each step
+#: and stay out of the trajectory dict.
+_TRAJ_KEYS = ("q", "qqcw", "dgncur_a", "dgncur_awet",
+              "qaerwat", "wetdens")
+
+
 def run_timesteps(state: dict[str, Any], n_steps: int) -> dict[str, Any]:
     """Run ``n_steps`` operator-splitting timesteps and return a
     stacked trajectory.
@@ -111,22 +120,68 @@ def run_timesteps(state: dict[str, Any], n_steps: int) -> dict[str, Any]:
     matches Fortran's ``do nstep = 1, nstop`` convention where the
     NetCDF output's step-1 entry is post-step-1, not the IC).
 
-    Phase A: plain Python ``for`` loop. M6 will swap in ``jax.lax.scan``
-    behind this same signature.
+    Uses ``jax.lax.scan`` (M6 PR-J2): the JIT-compiled ``run_step``
+    body is traced once and applied ``n_steps`` times inside the scan,
+    with per-step snapshots stacked into the output trajectory. A new
+    ``jax.lax.scan`` trace happens once per distinct ``n_steps`` value
+    (Python-static length argument), but ``run_step`` itself reuses
+    its JIT cache.
+
+    ``calcsize`` adds three derived keys to the state on each call
+    (``dgncur_c``, ``v2ncur_a``, ``v2ncur_c``). The scan carry must
+    be pytree-stable, so this function pre-populates those keys **if
+    missing** with zero placeholders (same shape/dtype as ``dgncur_a``)
+    before entering scan; a caller that already supplies the keys
+    keeps their values untouched. The first scan iteration overwrites
+    the placeholders with the real values; downstream they're invisible
+    because the scan output trajectory only captures :data:`_TRAJ_KEYS`.
+
+    **Compile cost.** Scan trades a one-time body-trace cost for an
+    asymptotic per-step speedup. Very short trajectories
+    (``n_steps`` of a few thousand or less) may run slower than the
+    previous Python ``for``-loop baseline — the M6 PR-J2 benchmark
+    saw a 1.7× slowdown at ``n_steps = 2880`` (dt=30s 24h), offset by
+    >1000× per-step amortisation at ``n_steps = 86400`` (dt=1s 24h).
+    Don't read the per-step time as constant across ``n_steps``.
+
+    **JIT cache.** Scan calls ``run_step`` with a 16-key augmented
+    state pytree (the 13 user-facing keys plus the three calcsize-
+    derived keys above). Direct callers of ``run_step`` (e.g.
+    ``tests/test_driver.py``) pass a 13-key state and get their own
+    cache entry. Both compiles are ~1-2 s each on this hardware
+    (M6 PR-J2 measurements), so the duplication is cheap but worth
+    knowing.
     """
     if n_steps < 1:
         raise ValueError(f"n_steps must be >= 1, got {n_steps}")
 
-    # Trajectory keys are the dynamic state fields modified by the
-    # timestep. Scalars like ``deltat`` / met fields are echoed back
-    # unchanged each step (broadcast via the leading axis).
-    traj_keys = ("q", "qqcw", "dgncur_a", "dgncur_awet",
-                 "qaerwat", "wetdens")
-    snapshots: dict[str, list] = {k: [] for k in traj_keys}
+    # Pre-augment the initial state with placeholder keys that calcsize
+    # would add on its first call. The placeholder values are never
+    # observed because: precondition — calcsize() *writes* but never
+    # *reads* these three keys (they're computed from num / drv derived
+    # from q / qqcw; see calcsize.py:545-565). If a future calcsize
+    # change makes it read its own previous-step v2ncur_a, this becomes
+    # unsafe: the first scan iteration would silently use the zero
+    # placeholder, corrupting the trajectory's first step.
+    #
+    # Shape assumption: dgncur_c / v2ncur_a / v2ncur_c all share
+    # dgncur_a's (..., NTOT_AMODE) shape today; if calcsize ever evolves
+    # a per-moment axis, scan errors loudly at runtime (carry pytree
+    # mismatch) — caught, not silently corrupted.
+    dgncur_a = state["dgncur_a"]
+    placeholder = jnp.zeros_like(dgncur_a)
+    augmented = {**state}
+    for k in ("dgncur_c", "v2ncur_a", "v2ncur_c"):
+        augmented.setdefault(k, placeholder)
 
-    for _ in range(n_steps):
-        state = run_step(state)
-        for k in traj_keys:
-            snapshots[k].append(state[k])
+    def _scan_body(carry_state: dict[str, Any], _) -> tuple[
+        dict[str, Any], dict[str, Any]
+    ]:
+        new_state = run_step(carry_state)
+        output = {k: new_state[k] for k in _TRAJ_KEYS}
+        return new_state, output
 
-    return {k: jnp.stack(v, axis=0) for k, v in snapshots.items()}
+    _, trajectory = jax.lax.scan(
+        _scan_body, augmented, xs=None, length=n_steps,
+    )
+    return trajectory
