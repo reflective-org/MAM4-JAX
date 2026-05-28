@@ -4,6 +4,8 @@ The forward-looking roadmap. Each milestone is broken into commit-sized subtasks
 
 When a milestone is in progress, its subtasks become the working task list. As subtasks complete they get a commit/PR link inline.
 
+**GitHub bookkeeping.** Milestones M6 onwards are mirrored on GitHub Milestones; each milestone block below links to its tracker. PRs that belong to a milestone include `--milestone <M_n>` at creation so the milestone page becomes a discoverable index of related work. Standalone deferred items that warrant their own work-tracking are filed as GitHub Issues (cross-linked from `docs/DEFERRED.md`); PRs that close them use the `Closes #N` body convention so the Development linkage closes the issue automatically. M0–M5 predate this convention and aren't backfilled.
+
 ---
 
 ## Milestone 0 — Repo + documentation scaffold
@@ -103,7 +105,7 @@ Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` 
 
 ## Milestone 6 — Audit + JAX-idiom optimization (done)
 
-**Status:** done (2026-05-28). All 5 planned sub-PRs landed on the `diffrax` branch over a single day; PR-J6 (sharding) deferred to a separate milestone. The diffrax branch tip `5ea6330` is tagged `diffrax-v0.1.0`. Merge-back to `main` per ADR-016 is deferred (owner directive 2026-05-28: maintain `diffrax` as parallel canonical for now).
+**Status:** done (2026-05-28). All 5 planned sub-PRs landed on the `diffrax` branch over a single day; PR-J6 (sharding) deferred to its own milestone (now M13). The diffrax branch tip `5ea6330` is tagged `diffrax-v0.1.0`. Merge-back to `main` per ADR-016 is deferred (owner directive 2026-05-28: maintain `diffrax` as parallel canonical for now). GitHub: [milestone 1](https://github.com/reflective-org/MAM4-JAX/milestone/1).
 
 **Why on `diffrax`, not `main`?** M6 will exercise the diffrax-tied codepaths (`solve_ivp`, the new `_h2so4_rhs` / `_soaexch_rhs` RHS functions, etc.) that only exist on `diffrax`. Doing M6 on `diffrax` first means `main` gets the JIT-compiled (fast) version at merge-back. Uncompiled diffrax is ~50× slower than handwritten; JIT-compiled it becomes competitive (PR-D2 observation).
 
@@ -126,7 +128,7 @@ Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` 
 
 ## Milestone 7 — Diffrax migration (long-lived `diffrax` branch)
 
-**Status:** core PRs done (2026-05-26 through 2026-05-28). PR-I1, PR-D1, PR-D2 landed; PR-D3 permanently deferred (see `DEFERRED.md`). Merge-back to `main` per ADR-016 is deferred (owner directive 2026-05-28: maintain `diffrax` as parallel canonical until further notice).
+**Status:** core PRs done (2026-05-26 through 2026-05-28). PR-I1, PR-D1, PR-D2 landed; PR-D3 permanently deferred (see `DEFERRED.md`). Merge-back to `main` per ADR-016 is deferred (owner directive 2026-05-28: maintain `diffrax` as parallel canonical until further notice). GitHub: [milestone 2](https://github.com/reflective-org/MAM4-JAX/milestone/2).
 
 **Branching model.** M7 lives on a long-lived `diffrax` branch parallel to `main`. Rationale and invariants in ADR-013; the merge-back intent and the `main → diffrax` sync convention are in ADR-014. Summary:
 
@@ -149,6 +151,118 @@ Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` 
 **Validation discipline.** The validation bar against Fortran stays at `rtol=1e-6` (ADR-003). The diffrax controller's *internal* tolerances are much tighter (starting defaults: `rtol=1e-9`, `atol=1e-12`) so that the validation residual is dominated by physics-model differences, not by solver truncation error. Both tolerances are tunable per PR.
 
 **Out of scope on `main`.** The previously-planned handwritten "PR-E2" (adaptive SOA substepping ported to `main`) is cancelled per ADR-013.
+
+---
+
+## Milestone 8 — Cloud chemistry port (proposed)
+
+**Status:** proposed 2026-05-28; owner priority slot 1 of the M8–M13 stack. Runs on the `diffrax` branch. GitHub: [milestone 3](https://github.com/reflective-org/MAM4-JAX/milestone/3).
+
+**Why.** The current JAX port runs `cloud_chem_simple_sub` as a no-op because the box-model fixture has `cldn=0`, which gates off Fortran's `if (cld > 1e-6)` at `driver.F90:1263`. To exercise real cloud-chem behavior the JAX port needs a Fortran reference with `cldn > 1e-6` and the corresponding cloudy amicphys path implemented in JAX.
+
+**Scope sketch (subject to a proper plan).** Port `mam_amicphys_1subarea_cloudy` (the cloudy counterpart to the clear-subarea path) plus any cloud-chem-specific helpers it pulls in. Capture a new Fortran reference fixture with non-zero `cldn` for validation. Stub `cloud_chem_simple_sub` at `driver.py:70-79` becomes a live call instead of a no-op.
+
+**Open questions.**
+- Cloudchem-simple only, or the full `modal_aero_cloudchem_intr` (the latter has SO2 → H2O2 → SO4 in-cloud conversion)?
+- FEATURES.md currently lists "sulfur chemistry beyond stubs" as out of scope — does cloud-chem porting force revisiting that?
+- New fixture namelist: how does `cldn>0` interact with `mdo_gaschem` and the driver-level H2SO4 source term at `driver.F90:1249`?
+- Validation bar — ADR-003's 1e-6 against the new fixture, or ADR-015's 3 % if cloud-chem introduces its own ODE that diffrax handles differently than Fortran?
+
+**Sub-PRs.** TBD; sub-PR breakdown lands in a future M8 scoping round per CLAUDE.md rule #3.
+
+---
+
+## Milestone 9 — Calibration / inverse demo (proposed)
+
+**Status:** proposed 2026-05-28; owner priority slot 3 (after M8 + CI). Runs on the `diffrax` branch. GitHub: [milestone 4](https://github.com/reflective-org/MAM4-JAX/milestone/4).
+
+**Why.** M6 PR-J5 audited the diffrax-branch as autodiff-clean end-to-end — `jax.grad` returns finite, deterministic cotangents through 60-step `scan`. M9 converts that audit into a working calibration demo, the first MAM4-JAX deliverable no implementation in this project's lineage has previously produced.
+
+**Scope sketch.** Pick a sensitive physics parameter (candidates: binary nucleation pre-factor, soaexch uptake coefficient, coag pre-factor). Define a synthetic target trajectory from a known parameter value. Gradient-descend (`jax.grad` + `optax`) over a 24 h window to recover the parameter. Plot loss curve + recovered-vs-true parameter trajectory.
+
+**Open questions.**
+- Memory feasibility at 24 h trajectory lengths — see PR-J5 memory caveat in `docs/PROGRESS.md`. Likely requires switching `mam4_jax/solvers.py::solve_ivp` to `diffrax.ImplicitAdjoint()` or passing an explicit `RecursiveCheckpointAdjoint(checkpoints=N)` to bound working set. **Sub-question (owned by M9's first sub-PR):** should the adjoint strategy be configurable via `SolverConfig` (which would touch the strategy abstraction added in PR-I1, but lets forward / reverse runs share solver config), or hard-coded to `ImplicitAdjoint()` for calibration runs while keeping forward runs on the default? Probably configurable, but the abstraction churn warrants explicit owner approval before changing `solvers.py`.
+- Which physics parameter is the most informative calibration target?
+- Loss formulation: trajectory L2, terminal-state L2, or a physics-motivated functional (effective radius, AOD)?
+
+**Sub-PRs.** TBD.
+
+---
+
+## Milestone 10 — NetCDF output emission from JAX (proposed)
+
+**Status:** proposed 2026-05-28; owner priority slot 4. Runs on the `diffrax` branch (or could be ported to `main` if useful before merge-back). GitHub: [milestone 5](https://github.com/reflective-org/MAM4-JAX/milestone/5).
+
+**Why.** The Fortran reference writes `mam_output.nc` (per `driver.F90`), which the postprocess notebook at `mam4-original-src-code/postprocess/postprocess.ipynb` consumes. To make JAX runs first-class citizens in the existing postprocess workflow, the JAX driver needs to emit a comparable NetCDF.
+
+**Scope sketch.** Add a NetCDF writer hook to `run_timesteps` (or to a thin wrapper around it) that produces a file matching the Fortran `mam_output.nc` schema, or close enough that the postprocess notebook works against it.
+
+**Open questions.**
+- Match Fortran's NetCDF schema exactly, or define a clean JAX-native schema with an optional converter?
+- Write per-step (like Fortran) or end-of-run only (simpler under JIT)?
+- Where the write actually happens — inside the JIT'd loop (`jax.experimental.io_callback`) or out-of-loop after `block_until_ready`?
+
+**Sub-PRs.** TBD.
+
+---
+
+## Milestone 11 — Backport ADR-014 + HANDWRITTEN_SOLVER_LIMITATIONS.md to main (proposed)
+
+**Status:** proposed 2026-05-28; owner priority slot 5. Runs against `main`. GitHub: [milestone 6](https://github.com/reflective-org/MAM4-JAX/milestone/6).
+
+**Why.** ADR-014 (dual-branch strategy + merge-back convention) and `docs/HANDWRITTEN_SOLVER_LIMITATIONS.md` landed via PR [#33](https://github.com/reflective-org/MAM4-JAX/pull/33) on the `dev`/`diffrax` lineage but never reached `main`. Per ADR-014's own "baseline changes flow `main → diffrax`" convention they sit on the wrong side of the divide. The merge-back is deferred indefinitely; backporting these docs separately closes the gap.
+
+**Scope sketch.** Small docs-only PR opens against `main`. Cherry-pick or hand-port the relevant content from `dev`/`diffrax`. Add a "superseded on `diffrax-v0.1.0` by M7" pointer at the top of `HANDWRITTEN_SOLVER_LIMITATIONS.md` so a reader landing on the doc via `v0.1.0`'s release notes immediately knows the diffrax branch supersedes the limitations.
+
+**Open questions.**
+- Add an ADR addendum to ADR-013/014 noting the merge-back deferral, or leave that out of this PR and write it separately?
+- Should ADR-016 (merge-back plan) backport too, given the merge-back is now deferred? Or does that ADR's content become stale on main once it gets there?
+
+**Sub-PRs.** Single PR; no sub-PR breakdown anticipated.
+
+---
+
+## Milestone 12 — Multi-column / multi-level support (proposed)
+
+**Status:** proposed 2026-05-28; owner priority slot 6. Runs on the `diffrax` branch. GitHub: [milestone 7](https://github.com/reflective-org/MAM4-JAX/milestone/7).
+
+**Why.** The current port targets `ncol=1, pver=1` (matching the Fortran box-model build flags `-DPCOLS=1 -DPVER=1`). M6 PR-J3 verified `vmap`-cleanness across leading axes — the JAX side is structurally ready. What's missing is a multi-column Fortran reference for validation.
+
+**Scope sketch.** Capture a multi-column Fortran reference (either by rebuilding with `PCOLS>1` if the box-model supports it, or by synthesizing one from multiple single-column runs). Add multi-column trajectory tests on diffrax. Likely interacts with M9 calibration (multi-column adds a richer parameter-sensitivity surface).
+
+**Open questions.**
+- Does the box-model Fortran build accept `PCOLS>1` / `PVER>1` without source changes? CPP flags suggest it might; depends on `box_model_utils/ppgrid.F90` shim's assumptions.
+- Validation bar — ADR-003's 1e-6 across columns, or ADR-015's 3 % if diffrax substeps differently per column?
+
+**Sub-PRs.** TBD.
+
+---
+
+## Milestone 13 — GPU/TPU sharding (proposed)
+
+**Status:** proposed 2026-05-28; owner priority slot 7. Was PR-J6 in the original M6 plan, broken out into its own milestone because the work is substantially distinct from M6's JIT/scan/vmap/grad cleanup. Runs on the `diffrax` branch. GitHub: [milestone 8](https://github.com/reflective-org/MAM4-JAX/milestone/8).
+
+**Why.** Single-host CPU has been the validation target throughout (`float64`, easiest Fortran diff). Multi-device execution opens up large-scale calibration (M9), regional / global multi-column runs (M12), and aerosol-data assimilation workflows.
+
+**Scope sketch.** Set up sharding spec for the `(ncol, pver)` leading axes. Pick a target backend (GPU first or TPU first). Re-validate against Fortran under the new execution model.
+
+**Open questions.**
+- GPU (CUDA) or TPU first? Consumer NVIDIA GPUs lack dedicated hardware FP64 throughput (FP64 outside the FP64 tensor cores found only on A100 / H100 is emulated via paired-FP32 sequences and is substantially slower than FP32); A100 / H100 / TPU have full-throughput hardware FP64. Does the project allow a `float32` fallback on consumer GPUs, accepting a relaxed bar? Actual slowdown factor varies by op mix and should be benchmarked once the target hardware is picked.
+- Sharding strategy: `shard_map`, `jax.device_put` with explicit sharding spec, or `pmap` (deprecated)?
+- Memory: at scale, M9's calibration memory caveat reappears with a multi-device twist.
+
+**Sub-PRs.** TBD.
+
+---
+
+## Smaller deferred items (tracked as GitHub Issues)
+
+These don't warrant their own milestones but are tracked as GitHub Issues so a future PR can use the Development linkage to close them. See `docs/DEFERRED.md` for the detailed deferral context.
+
+- **CI / GitHub Actions** — [#46](https://github.com/reflective-org/MAM4-JAX/issues/46). Owner-recommended mid-priority slotting (between M8 and M9).
+- **License selection** — [#47](https://github.com/reflective-org/MAM4-JAX/issues/47). Blocks public announcement; admin / legal decision.
+- **calcsize_sub stress test for dead branches** — [#48](https://github.com/reflective-org/MAM4-JAX/issues/48). Defensive; slot wherever convenient.
+- **Strip `__pycache__/*.pyc` from vendored Fortran subtree** — [#49](https://github.com/reflective-org/MAM4-JAX/issues/49). Fold into next vendored-snapshot refresh.
 
 ---
 
