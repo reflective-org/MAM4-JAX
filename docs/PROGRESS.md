@@ -6,9 +6,33 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-28 — M6 PR-J2 follow-up: `@jax.jit` on `run_timesteps` + 1000-sim benchmark (`diffrax` branch)
+
+- PR: pending (`m6/pr-j2-followup-jit-run-timesteps` → `diffrax`). Small follow-up to PR-J2 that closes a Python-side dispatch gap, plus a Fortran-vs-JAX wall-time benchmark requested by the owner.
+- **The gap PR-J2 left:** `jax.lax.scan` inside an un-JIT'd Python function still pays ~1 s of per-call Python overhead (closure rebuild + 16-key carry abstractification + scan-cache lookup). PR-J2's 24h validation didn't surface this because it calls `run_timesteps` only 4 times total (one per dt). A 1000-sim benchmark hit it head-on: each call was 1112 ms when it should have been ~6 ms.
+- **Fix:** decorate `run_timesteps` with `@functools.partial(jax.jit, static_argnums=(1,))`. One cache entry per distinct `n_steps`. First call at a given `n_steps` compiles (~1.8 s); subsequent calls drop to ~6 ms at `n_steps=60`. The inner scan body trace and `run_step` JIT cache continue to work as before; the new outer JIT just amortises the Python wrapper.
+- **1000-sim benchmark** (1800 s simulation, dt=30 s, nstep=60, both implementations warmed up before timing):
+
+  | implementation | median | P5 / P95 | max |
+  | --- | --- | --- | --- |
+  | Fortran (subprocess per trial) | **22.2 ms** | 21.6 / 24.9 | 47.9 ms |
+  | JAX (diffrax + jit + scan) | **5.86 ms** | 5.76 / 5.95 | 7.79 ms |
+
+  **JAX is 3.8× faster than Fortran per simulation** at the canonical box-model timestep. Note: each Fortran trial is a fresh subprocess (≈50–100 ms of `mam_box_test.exe` startup); a fairer comparison would batch many simulations inside one Fortran process, which would amortise the startup but requires Fortran modification. Both numbers above are with the OS file cache warm — a first cold-cache run of the benchmark showed Fortran at ~560 ms/trial, not representative of normal operation.
+
+- **Per-mode rel-err** (single canonical simulation, distribution over 60 timesteps):
+  - `num_aer`: Aitken / accum ~1e-3, pcarbon ~0 (no SOA exchange), coarse ~1e-6. All ≪ 1 % bar.
+  - `so4_aer`: Aitken 5e-4, accum 1e-3 to 1e-2 (touches 1 % bar at peak), pcarbon ~1e-9, coarse zero.
+  - `soa_aer`: Aitken / accum ~5e-3 (below 1 % bar), pcarbon ~1e-4, coarse zero.
+  - `h2so4_gas`: median ~1e-3, range 1e-5 to 5e-3 — all well under 1 % bar.
+  - `soag_gas`: median ~1.5e-2 (above 1 % bar at most timesteps), max ~5e-2 — dominated by the structural offset documented in `project-diffrax-structural-offset` memory. ADR-015's 3 % bar covers this.
+- New infrastructure: `scripts/benchmark_1000_sims.py` (the timing run + cache producer), `scripts/plot_benchmark_1000sims.py` (the 3 figures), `scripts/_artifacts/benchmark_1000sims.npz` (gitignored). Plots: `docs/figures/benchmark_walltime_1000sims.png`, `docs/figures/benchmark_relerr_aerosols.png`, `docs/figures/benchmark_relerr_gas.png`.
+
+---
+
 ## 2026-05-27 — M6 PR-J2: `jax.lax.scan` for the driver time loop (`diffrax` branch)
 
-- PR: pending (`m6/pr-j2-scan` → `diffrax`). Second M6 sub-PR. Plan: inline in the PR description — per owner direction the PR-J1 → PR-J2 sequence didn't need a separate planning PR (scope tight, validation reused PR-J1's framework, no new fixtures or acceptance-bar negotiation).
+- PR: [#40](https://github.com/reflective-org/MAM4-JAX/pull/40) (`m6/pr-j2-scan` → `diffrax`). Second M6 sub-PR. Plan: inline in the PR description — per owner direction the PR-J1 → PR-J2 sequence didn't need a separate planning PR (scope tight, validation reused PR-J1's framework, no new fixtures or acceptance-bar negotiation).
 - Replaced the Python `for` loop in `mam4_jax.driver.run_timesteps` with `jax.lax.scan`. The scan body wraps `run_step` (already JIT-compiled in PR-J1); scan stacks the trajectory outputs (`q`, `qqcw`, `dgncur_a`, `dgncur_awet`, `qaerwat`, `wetdens`) along axis 0 automatically. Compile happens once per distinct `n_steps` value (Python-static length argument).
 - **State-dict pre-augmentation:** `calcsize` adds three derived keys (`dgncur_c`, `v2ncur_a`, `v2ncur_c`) on each call; scan requires a pytree-stable carry, so `run_timesteps` now pre-populates those keys with zero placeholders before entering scan. The first scan iteration overwrites them. Downstream they're invisible — the scan output trajectory only captures the 6 trajectory keys.
 - **Numerical: identical to PR-J1 and PR-D2** to all displayed digits at every dt across all per-mode and per-field rel-errs. Scan is value-preserving.

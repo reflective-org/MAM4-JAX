@@ -56,6 +56,7 @@ to keep the operator-splitting sequence structurally faithful.
 """
 from __future__ import annotations
 
+import functools
 from typing import Any
 
 import jax
@@ -110,6 +111,7 @@ _TRAJ_KEYS = ("q", "qqcw", "dgncur_a", "dgncur_awet",
               "qaerwat", "wetdens")
 
 
+@functools.partial(jax.jit, static_argnums=(1,))
 def run_timesteps(state: dict[str, Any], n_steps: int) -> dict[str, Any]:
     """Run ``n_steps`` operator-splitting timesteps and return a
     stacked trajectory.
@@ -144,13 +146,18 @@ def run_timesteps(state: dict[str, Any], n_steps: int) -> dict[str, Any]:
     >1000× per-step amortisation at ``n_steps = 86400`` (dt=1s 24h).
     Don't read the per-step time as constant across ``n_steps``.
 
-    **JIT cache.** Scan calls ``run_step`` with a 16-key augmented
-    state pytree (the 13 user-facing keys plus the three calcsize-
-    derived keys above). Direct callers of ``run_step`` (e.g.
-    ``tests/test_driver.py``) pass a 13-key state and get their own
-    cache entry. Both compiles are ~1-2 s each on this hardware
-    (M6 PR-J2 measurements), so the duplication is cheap but worth
-    knowing.
+    **JIT cache.** ``run_timesteps`` itself is ``@jax.jit``-compiled
+    with ``n_steps`` static (one cache entry per distinct ``n_steps``).
+    This amortises the Python-side dispatch around ``jax.lax.scan``
+    and the per-call abstractification of the 16-key carry pytree —
+    without it, the inner ``scan`` cache hits but each call still
+    paid ~1 s of Python overhead, which dominated benchmarks that
+    invoke ``run_timesteps`` many times (e.g. 1000-sim wall-time
+    studies). Inside the JIT'd ``run_timesteps``, scan calls
+    ``run_step`` with the 16-key augmented carry; direct callers of
+    ``run_step`` (e.g. ``tests/test_driver.py``) pass a 13-key state
+    and get their own ``run_step`` cache entry. Both compiles are
+    ~1-2 s each on this hardware.
     """
     if n_steps < 1:
         raise ValueError(f"n_steps must be >= 1, got {n_steps}")
