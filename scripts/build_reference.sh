@@ -45,6 +45,7 @@ BUILD_COAG_COEFFICIENTS=0
 NO_AITACC_TRANSFER=0
 SKIP_SOAEXCH=0
 SKIP_PCARBON_AGING=0
+ENABLE_CLOUDCHEM=0
 for arg in "$@"; do
   case "$arg" in
     --instrumented)         INSTRUMENTED=1 ;;
@@ -58,6 +59,7 @@ for arg in "$@"; do
     --no-aitacc-transfer)   NO_AITACC_TRANSFER=1 ;;
     --skip-soaexch)         SKIP_SOAEXCH=1 ; SKIP_PCARBON_AGING=1 ;;
     --skip-pcarbon-aging)   SKIP_PCARBON_AGING=1 ;;
+    --enable-cloudchem)     ENABLE_CLOUDCHEM=1 ;;
     *) echo "Unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -140,6 +142,13 @@ if [[ "$INSTRUMENTED" == "1" ]]; then
   ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/rename_hook.patch" )
   ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/amicphys_init_dump.patch" )
   ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/amicphys_after_writeback.patch" )
+  ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/cloudchem_hook.patch" )
+fi
+
+if [[ "$ENABLE_CLOUDCHEM" == "1" ]]; then
+  echo ""
+  echo "Applying cloudchem_enable overlay (cld = 0.5, mdo_cloudchem = 1)..."
+  ( cd "$BUILD_DIR" && patch -p1 < "$PATCH_DIR/cloudchem_enable.patch" )
 fi
 
 if [[ "$NO_AITACC_TRANSFER" == "1" ]]; then

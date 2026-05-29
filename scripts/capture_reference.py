@@ -110,6 +110,12 @@ PER_PROCESS_COAG_OUT_DIR = REPO_ROOT / "tests" / "reference" / "per_process_coag
 PER_PROCESS_FULL_MINUS_AGING_OUT_DIR = (
     REPO_ROOT / "tests" / "reference" / "per_process_full_minus_pcarbon_aging"
 )
+PER_PROCESS_CLOUDCHEM_OUT_DIR = (
+    REPO_ROOT / "tests" / "reference" / "per_process_cloudchem"
+)
+SWEEP_24H_CLOUDCHEM_OUT_DIR = (
+    REPO_ROOT / "tests" / "reference" / "sweep_24h_cloudchem"
+)
 POLYSVP_OUT_DIR = REPO_ROOT / "tests" / "reference" / "polysvp"
 POLYSVP_EXE = RUN_DIR / "polysvp_driver.exe"
 QSAT_OUT_DIR = REPO_ROOT / "tests" / "reference" / "qsat"
@@ -138,6 +144,11 @@ DUMP_TAGS: tuple[str, ...] = (
     "wateruptake_before", "wateruptake_after",
     "amicphys_before", "amicphys_after",
     "amicphys_after_writeback",
+    # M8 PR-K1: cloudchem dumps are always present in instrumented builds
+    # (cloudchem_hook.patch is applied with --instrumented). For modes that
+    # do not enable cloudchem (mdo_cloudchem=0), before == after — captured
+    # as a trivial identity transformation.
+    "cloudchem_before", "cloudchem_after",
 )
 
 # Tags with the per-(col, level, subarea) rename schema (different from
@@ -185,7 +196,8 @@ def ensure_built(instrumented: bool = False, polysvp: bool = False,
                  skip_pcarbon_aging: bool = False,
                  newnuc_helpers: bool = False,
                  mer07_veh02: bool = False,
-                 coag_coefficients: bool = False) -> None:
+                 coag_coefficients: bool = False,
+                 enable_cloudchem: bool = False) -> None:
     """Build the executable. Always rebuilds — the build flag determines
     whether the previous binary is the right flavour."""
     cmd = [str(BUILD_SCRIPT)]
@@ -200,6 +212,7 @@ def ensure_built(instrumented: bool = False, polysvp: bool = False,
     if no_aitacc_transfer:  cmd.append("--no-aitacc-transfer")
     if skip_soaexch:        cmd.append("--skip-soaexch")
     if skip_pcarbon_aging:  cmd.append("--skip-pcarbon-aging")
+    if enable_cloudchem:    cmd.append("--enable-cloudchem")
     flavours = []
     if instrumented:        flavours.append("instrumented")
     if polysvp:             flavours.append("polysvp")
@@ -212,6 +225,7 @@ def ensure_built(instrumented: bool = False, polysvp: bool = False,
     if no_aitacc_transfer:  flavours.append("no-aitacc-transfer")
     if skip_soaexch:        flavours.append("skip-soaexch")
     if skip_pcarbon_aging:  flavours.append("skip-pcarbon-aging")
+    if enable_cloudchem:    flavours.append("enable-cloudchem")
     flavours = flavours or ["baseline"]
     print(f"[capture_reference] building {'+'.join(flavours)} executable(s) ...")
     subprocess.run(cmd, check=True)
@@ -432,7 +446,7 @@ def _read_indices(path: Path) -> dict[str, np.ndarray]:
     def to_0based(arr: np.ndarray) -> np.ndarray:
         return np.where(arr == 0, -1, arr - 1).astype(np.int32)
 
-    return {
+    out = {
         "ntot_amode":     np.int32(ntot_amode),
         "ntot_aspectype": np.int32(ntot_aspectype),
         "maxd_aspectype": np.int32(maxd_aspectype),
@@ -448,6 +462,25 @@ def _read_indices(path: Path) -> dict[str, np.ndarray]:
         "modename_amode":   np.asarray(strings("modename_amode")),
         "specname_amode":   np.asarray(strings("specname_amode")),
     }
+
+    # Gas pcnst slots (M8 PR-K1 extension to dump_indices). Section format:
+    #   <species_name> <1-based_pcnst_slot>          (-1 if absent)
+    # Converted to 0-based here; absent species stay as -1.
+    if "gas_pcnst_indices" in sections:
+        gas_slots: dict[str, int] = {}
+        for line in sections["gas_pcnst_indices"]:
+            toks = line.split()
+            if len(toks) >= 2:
+                name, slot_1based = toks[0], int(toks[1])
+                gas_slots[name] = -1 if slot_1based <= 0 else slot_1based - 1
+        out["pcnst_h2so4_gas"] = np.int32(gas_slots.get("h2so4", -1))
+        out["pcnst_so2_gas"]   = np.int32(gas_slots.get("so2",   -1))
+        out["pcnst_nh3_gas"]   = np.int32(gas_slots.get("nh3",   -1))
+        out["pcnst_hcl_gas"]   = np.int32(gas_slots.get("hcl",   -1))
+        out["pcnst_hno3_gas"]  = np.int32(gas_slots.get("hno3",  -1))
+        out["pcnst_soag_gas"]  = np.int32(gas_slots.get("soag",  -1))
+
+    return out
 
 
 def _read_amicphys_init(path: Path) -> dict[str, np.ndarray]:
@@ -593,9 +626,13 @@ def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
                      gasaerexch: bool = False,
                      gasaerexch_and_newnuc: bool = False,
                      coag_only: bool = False,
-                     full_minus_aging: bool = False) -> list[Path]:
+                     full_minus_aging: bool = False,
+                     cloudchem_only: bool = False) -> list[Path]:
     dt = TOTAL_DURATION_S // nstep
-    if full_minus_aging:
+    if cloudchem_only:
+        out_dir = PER_PROCESS_CLOUDCHEM_OUT_DIR
+        flavour = "instrumented-cloudchem-only"
+    elif full_minus_aging:
         out_dir = PER_PROCESS_FULL_MINUS_AGING_OUT_DIR
         flavour = "instrumented-full-minus-pcarbon-aging"
     elif coag_only:
@@ -654,6 +691,13 @@ def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
         # patch is applied at build time. The namelist is unchanged from
         # the canonical defaults.
         write_namelist(dt, nstep)
+    elif cloudchem_only:
+        # Full physics (all mdo_*=1) plus mdo_cloudchem=1 + cld=0.5 via
+        # the cloudchem_enable.patch overlay applied at build time. The
+        # mdo_* in the namelist controls only the amicphys sub-processes;
+        # mdo_cloudchem is set inside the build via patch (not via
+        # namelist — the box-model namelist does not read mdo_cloudchem).
+        write_namelist(dt, nstep)
     else:
         write_namelist(dt, nstep)
     print(f"[capture_reference] {flavour} dt={dt}s nstep={nstep} ...", flush=True)
@@ -667,7 +711,8 @@ def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
     if (not no_aitacc_transfer and not amicphys_off
             and not rename_only and not gasaerexch_only
             and not gasaerexch and not gasaerexch_and_newnuc
-            and not coag_only and not full_minus_aging):
+            and not coag_only and not full_minus_aging
+            and not cloudchem_only):
         indices_txt = RUN_DIR / "mam4_indices.txt"
         if not indices_txt.is_file():
             raise RuntimeError(f"expected indices dump missing: {indices_txt}")
@@ -1035,6 +1080,7 @@ def main() -> int:
                  "instrumented-gasaerexch-and-newnuc-only",
                  "instrumented-coag-only",
                  "instrumented-full-minus-pcarbon-aging",
+                 "instrumented-cloudchem-only",
                  "polysvp", "qsat", "makoh", "kohler", "newnuc-helpers",
                  "mer07-veh02", "coag-coefficients"),
         default="sweep",
@@ -1191,6 +1237,20 @@ def main() -> int:
                   f"{NSTEP_SWEEP}", file=sys.stderr)
         written = run_instrumented(nstep, full_minus_aging=True)
         out_root = PER_PROCESS_FULL_MINUS_AGING_OUT_DIR
+    elif args.mode == "instrumented-cloudchem-only":
+        # M8 PR-K1: full-physics namelist + cloudchem_enable.patch
+        # (cld = 0.5, mdo_cloudchem = 1) + skip_pcarbon_aging.patch.
+        # The cloudchem_hook.patch (always-on with --instrumented) writes
+        # cloudchem_{before,after}.bin around the cloudchem_simple_sub call;
+        # validation in PR-K2 diffs JAX cloudchem_simple_sub against this.
+        ensure_built(instrumented=True, skip_pcarbon_aging=True,
+                     enable_cloudchem=True)
+        nstep = args.nstep if args.nstep is not None else 60
+        if nstep not in NSTEP_SWEEP:
+            print(f"[capture_reference] warning: --nstep={nstep} is outside the canonical sweep "
+                  f"{NSTEP_SWEEP}", file=sys.stderr)
+        written = run_instrumented(nstep, cloudchem_only=True)
+        out_root = PER_PROCESS_CLOUDCHEM_OUT_DIR
     elif args.mode == "polysvp":
         ensure_built(polysvp=True)
         written = run_polysvp()

@@ -1,0 +1,28 @@
+--- a/driver.F90
++++ b/driver.F90
+@@ -1259,6 +1259,12 @@
+       vmr_svbb = vmr
+       vmrcw_svbb = vmrcw
+
++      ! cloudchem hook: capture vmr / vmrcw immediately before the gated
++      ! cloudchem_simple_sub call. Dump fires unconditionally so the
++      ! before/after fixture is well-defined whether mdo_cloudchem=0/1.
++      call dump_snapshot('cloudchem_before', istep, ncol, pver, gas_pcnst, ntot_amode, &
++         vmr, vmrcw, dgncur_a, dgncur_awet, qaerwat, wetdens)
++
+       if (mdo_cloudchem > 0 .and. maxval( cld_ncol(:,:) ) > 1.0e-6_r8) then
+
+       call cloudchem_simple_sub(                  &
+@@ -1268,6 +1274,12 @@
+
+       end if ! (mdo_cloudchem > 0 .and. maxval( cld_ncol(:,:) ) > 1.0e-6_r8) then
+
++      ! cloudchem hook: capture vmr / vmrcw after the cloudchem call (or
++      ! a no-op pass-through when the gate skips). Pcnst arg passes
++      ! gas_pcnst to match vmr / vmrcw third-dim shape.
++      call dump_snapshot('cloudchem_after', istep, ncol, pver, gas_pcnst, ntot_amode, &
++         vmr, vmrcw, dgncur_a, dgncur_awet, qaerwat, wetdens)
++
+
+ !
+ ! gasaerexch

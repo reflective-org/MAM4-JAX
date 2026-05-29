@@ -1,0 +1,28 @@
+--- a/driver.F90
++++ b/driver.F90
+@@ -548,8 +548,8 @@
+ !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+ ! JS - 06-03-2019: do not consider cloud chem at this moment !
+ !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+ !      mdo_gaschem    = 1
+-      mdo_cloudchem  = 0
++      mdo_cloudchem  = 1   ! M8: enable cloudchem_simple_sub (cloudchem_enable.patch)
+ !      mdo_gasaerexch = 1
+ !      mdo_rename     = 1
+ !      mdo_newnuc     = 1
+@@ -585,10 +585,11 @@
+       dgncur_awet         = 0.0_r8
+       qaerwat             = 0.0_r8
+       wetdens             = 0.0_r8
+-!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+-! JS - 06-03-2019: set cloud fraction to zero for simplicity !
+-!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+-      cld         = 0.0_r8
++!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
++! M8 (cloudchem_enable.patch): set constant mid-cloud fraction so              !
++! cloudchem_simple_sub exercises its body (internal cycle threshold is 0.009). !
++!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
++      cld         = 0.5_r8
+ 
+ ! call gestbl to build saturation vapor pressure table.
+       tmn   = 173.16_r8

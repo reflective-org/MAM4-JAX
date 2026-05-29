@@ -46,8 +46,18 @@
                                      numptr_amode, numptrcw_amode, &
                                      lspectype_amode, lmassptr_amode, lmassptrcw_amode, &
                                      nspec_amode, specname_amode, modename_amode
+         use constituents,    only: cnst_get_ind
 
          integer :: unit, i, j
+
+         ! Gas constituent pcnst slots for cloudchem / amicphys. cnst_get_ind
+         ! returns -1 for absent species (the .false. arg suppresses endrun).
+         ! Added 2026-05-28 (M8 PR-K1) so JAX can map H2SO4/SO2/NH3/HCL/HNO3/
+         ! SOAG into q[gas_pcnst] without re-running cnst_get_ind on the JAX
+         ! side. The H2SO4 / SOAG slots are also available via pcnst_lmap_gas
+         ! (amicphys gas list); the others (SO2/NH3/HCL/HNO3) are *not* in
+         ! lmap_gas — this is the only way to discover them.
+         integer :: l_h2so4g, l_so2g, l_nh3g, l_hclg, l_hno3g, l_soag
 
          open(newunit=unit, file='mam4_indices.txt', status='replace', action='write')
 
@@ -97,6 +107,23 @@
          do i = 1, ntot_aspectype
             write(unit,'(a)') trim(specname_amode(i))
          end do
+
+         ! Gas pcnst slots — 1-based as returned by cnst_get_ind. Converted to
+         ! 0-based with -1 sentinel for absent species on the Python side.
+         call cnst_get_ind( 'H2SO4', l_h2so4g, .false. )
+         call cnst_get_ind( 'SO2',   l_so2g,   .false. )
+         call cnst_get_ind( 'NH3',   l_nh3g,   .false. )
+         call cnst_get_ind( 'HCL',   l_hclg,   .false. )
+         call cnst_get_ind( 'HNO3',  l_hno3g,  .false. )
+         call cnst_get_ind( 'SOAG',  l_soag,   .false. )
+
+         write(unit,'(/a)')   '% gas_pcnst_indices (1-based; -1 if species absent)'
+         write(unit,'(a,1x,i0)') 'h2so4', l_h2so4g
+         write(unit,'(a,1x,i0)') 'so2',   l_so2g
+         write(unit,'(a,1x,i0)') 'nh3',   l_nh3g
+         write(unit,'(a,1x,i0)') 'hcl',   l_hclg
+         write(unit,'(a,1x,i0)') 'hno3',  l_hno3g
+         write(unit,'(a,1x,i0)') 'soag',  l_soag
 
          close(unit)
 
