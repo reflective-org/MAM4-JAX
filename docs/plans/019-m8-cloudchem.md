@@ -5,6 +5,8 @@
 **GitHub milestone:** [M8 #3](https://github.com/reflective-org/MAM4-JAX/milestone/3).
 **Supersedes / supplements:** the M8 stub section in `docs/PLANS.md` written under PR #50.
 
+**Plan-doc numbering note.** This is a *milestone-level* plan covering PR-K1/K2/K3. Plans 015–018 in the archive are *per-PR* plans. The two coexist: if PR-K1 grows complex enough to warrant its own plan doc, it'd land at 020 next to this 019 milestone-level doc. CLAUDE.md's Documentation map lists `docs/plans/NNN-<slug>.md` generically — fits either flavor.
+
 ---
 
 ## 1. Scope
@@ -81,6 +83,8 @@ The `_CW_AMODE` and `LPTR_*_CW_AMODE` index tables touch the `qqcw` (cloud-borne
 
 Three commit-sized sub-PRs per CLAUDE.md rule #2. Each lands on its own feature branch off `diffrax-cloud` and targets `diffrax-cloud`.
 
+**Convention for sub-PR creation.** Each sub-PR opens with `gh pr create --milestone "M8: Cloud chemistry port (diffrax branch)" --assignee aliakherati`, so GitHub [milestone #3](https://github.com/reflective-org/MAM4-JAX/milestone/3) stays the canonical PR index. Label = `documentation` for PR-K1 (mostly fixture + capture script + SCHEMA), `enhancement` for PR-K2 and PR-K3 (physics + driver wiring + new tests).
+
 ### PR-K1 — Reference capture (`mdo_cloudchem=1, cldn=0.5`)
 
 Capture the Fortran reference the JAX port validates against.
@@ -91,7 +95,7 @@ Capture the Fortran reference the JAX port validates against.
 - Instrumented dumps around the `cloudchem_simple_sub` call at `driver.F90:1265` → `tests/reference/per_process_cloudchem/cloudchem_{before,after}.npz`. Captures the `q` and `qqcw` arrays before/after the cloudchem call.
 - End-to-end trajectory NetCDFs for the 4-dt 24 h sweep at `mdo_cloudchem=1, cldn=0.5` → `tests/reference/sweep_24h_cloudchem/mam_dt{1,5,30,300}_*.nc`. Used by PR-K3's end-to-end test.
 - Possibly extend `dump_indices()` to capture `LPTR_SO4_CW_AMODE`, `LPTR_NH4_CW_AMODE`, `NUMPTRCW_AMODE`, gas pcnst indices for SO2/NH3 — refresh `tests/reference/indices/reference.npz` and hard-code into `mam4_jax/data.py` (only if currently sentinel-filled; see open questions §6).
-- `tests/reference/SCHEMA.md` adds sections for the new cloudchem reference + sweep fixtures.
+- `tests/reference/SCHEMA.md` adds sections for the new cloudchem reference + sweep fixtures, **and documents the `cldn = 0.5` baseline motivation** (mid-cloud, picked as the simplest single-value choice that exercises the body; alternative regimes deferred to M9 / M12).
 
 **Expected diff size**: ~150 LOC (patch + capture mode + SCHEMA), plus ~30–50 MB of LFS NetCDFs.
 
@@ -107,7 +111,7 @@ Implement the JAX port. Pure function, JIT-friendly.
   - `jnp.where(cldn > 0.009, body_tendencies, 0.0)` instead of the Fortran cycle (JIT-friendly).
   - Safe-division pattern (`jnp.maximum(qqcw[num_c1], 1.0)`) mirroring the Fortran's `max(qqcw, 1.0)`.
 - `tests/test_cloudchem.py::test_cloudchem_simple_matches_fortran_per_process` — per-process validation against PR-K1's `cloudchem_{before,after}.npz`. Bar = ADR-003's 1e-6 (algebraic step, no ODE — expect ε-level residual).
-- `docs/figures/cloudchem_residuals.png` — residual plot for the seven tracers cloudchem modifies (H2SO4, SO2, NH3, so4_c1, so4_c2, nh4_c1, nh4_c2).
+- `docs/figures/cloudchem_residuals.png` — residual plot for the tracers cloudchem modifies. **Figure layout / axes / per-mode breakouts confirmed in PR-K2's PR description before generation** per the project's figure-flag discipline. Open layout question (decided in PR-K2 review, not pre-committed here): per-mode sub-panels for `so4_c1` vs `so4_c2` and `nh4_c1` vs `nh4_c2` (accum vs Aitken cloud-borne — never collapsed), or stacked time-series with mode-color coding plus a marginal residual histogram. Gas tracers (H2SO4, SO2, NH3) presumably get their own panel since they're single-valued per gridcell.
 - `docs/PROGRESS.md` entry summarizing the port.
 
 **Expected diff size**: ~100 LOC of JAX + ~80 LOC of test + 1 plot.
@@ -118,8 +122,10 @@ Replace the `cloud_chem_simple_sub` no-op in `driver.py` with the real implement
 
 **Deliverables**
 - `mam4_jax/driver.py`:
-  - `cloud_chem_simple_sub` becomes a thin wrapper around `cloudchem.cloudchem_simple_sub`, gated on `state.get("mdo_cloudchem", 0) > 0` to preserve existing fixture tests (they default to 0 = no-op).
-  - The module docstring's "Cloud-chem placement" section updated to reflect that cloud-chem is now live (not a structural no-op).
+  - **Naming reconciliation**: rename `cloud_chem_simple_sub` (current Python-underscore stub) → `cloudchem_simple_sub` (Fortran-aligned). Internal-only rename — `run_step` in the same module is the sole caller. Eliminates the two-names-for-one-function divergence introduced when the stub was first added in M4.
+  - The renamed `cloudchem_simple_sub` becomes a thin call into `mam4_jax.processes.cloudchem.cloudchem_simple_sub`.
+  - **JIT contract for the toggle**: `mdo_cloudchem` is **Python-static / closure-captured** — same convention as the existing `mdo_gasaerexch`, `mdo_rename`, `mdo_newnuc`, `mdo_coag` flags, which are configuration constants resolved at JIT trace time, not traced state-dict values. The state-dict `state.get("mdo_cloudchem", 0)`-style access is misleading for a traced gate; the implementation pattern matches whatever the other `mdo_*` flags do (likely a closure capture in the run-builder, not a `state[...]` read inside the JIT'd `run_step`). If a future workflow needs run-time toggling without recompile, it'd require either `static_argnums` parameterization or `jax.lax.cond` — neither anticipated for M8 since the cldn=0 vs cldn=0.5 fixture choice happens at run-construction time, not mid-trajectory.
+  - The module docstring's "Cloud-chem placement" section updated to reflect that cloud-chem is now live (not a structural no-op), and that the toggle's JIT contract is closure-captured-static.
 - `tests/test_driver.py`:
   - New `test_run_timesteps_60step_with_cloudchem_matches_fortran` against PR-K1's end-to-end fixture (`mdo_cloudchem=1, cldn=0.5`). Bar starts at ADR-015's 3 %.
   - Existing trajectory tests (the cldn=0 fixture) unchanged — verifies the no-op default preserves backwards compatibility.
@@ -145,6 +151,8 @@ Replace the `cloud_chem_simple_sub` no-op in `driver.py` with the real implement
 
 If PR-K3's measured 60-step rel-err is ≤ 1e-6, document the tighter bar in the PR description and keep the 24h sweep at 3 % (24h is where the diffrax structural offset accumulates regardless of cloudchem).
 
+**Test-count acceptance criterion (PR-K3).** The test suite is at **72 passing, 0 failures** on `diffrax-cloud` today. PR-K3 must close with **≥ 75 passing, 0 failures** — the additions are at minimum: 1 per-process test (PR-K2 lands first), 1 end-to-end 60-step trajectory test (PR-K3), 1 sweep test (PR-K3). Matches the explicit-count discipline that worked for PR #44; without it, PR-K3 risks the stale-count rework loop #44 went through.
+
 ---
 
 ## 5. Risks / known unknowns
@@ -153,7 +161,8 @@ If PR-K3's measured 60-step rel-err is ≤ 1e-6, document the tighter bar in the
 2. **Cloud-borne tracer downstream coupling.** This is the first time the JAX port produces non-zero `qqcw[so4_c1/c2, nh4_c1/c2]`. Need to verify amicphys doesn't read these values via a path we haven't exercised (clear-subarea path shouldn't, but worth confirming with a single-toggle test).
 3. **Gas-tracer amplification through nucleation.** `cloudchem_simple_sub` modifies `q[H2SO4]`. Next driver step's amicphys reads `q[H2SO4]` (nucleation uses `qgas_avg[H2SO4]`). Algebraic ε-level diff in cloudchem could compound through nucleation. Bar choice (Q4 = 3 % start) hedges this.
 4. **`l_nh3g` may be -1 in this MAM4-MOM config.** The `if (l_nh3g > 0 ...)` Fortran branch guards against missing NH3. JAX port needs the equivalent. PR-K1's `dump_indices()` extension settles whether NH3 is present.
-5. **`cldn = 0.5` constant choice.** Picked as mid-cloud; could be 0.3 or 0.8. If physically motivated, document the choice in PR-K1's plan. If chosen for convenience, flag it. (Recommendation: 0.5 unless owner has a specific physical regime in mind.)
+
+(The `cldn = 0.5` choice from earlier drafts is not a risk — it's a settled decision in §1 Q2; documenting its motivation is captured as a PR-K1 deliverable in §3, not a future risk.)
 
 ---
 
@@ -164,7 +173,7 @@ The following need owner answers (or my recommended defaults can stand if unaddr
 1. **Cldn value**: lock in 0.5? (Default: yes.)
 2. **NH3 presence**: confirm via `dump_indices()` whether NH3 (`l_nh3g`) exists in this MAM4-MOM config. (Default: PR-K1 instruments and reports; if NH3 is absent, the JAX port's NH3 branch becomes structurally dead and a per-process test exercises only the SO2/H2SO4 path.)
 3. **Cw index tables**: extend `dump_indices()` patch to capture `LPTR_*_CW_AMODE` and `NUMPTRCW_AMODE`? (Default: yes, if they're sentinel-filled — settled by PR-K1's first commit.)
-4. **NetCDF schema**: does PR-K1's new sweep fixture's NetCDF need to add cloud-borne tracer columns to the output? (Default: yes — `mam_output.nc` already has slots; this is a Fortran-side question about what variables get written. If the existing schema doesn't expose `qqcw[so4_c1]` etc., we'd need an instrumentation extension.)
+4. **NetCDF schema**: does `mam_output.nc` already expose `qqcw[*_c1, *_c2]`? PR-K1's first commit answers this empirically by inspecting the existing schema. If exposed, no Fortran-side extension needed. If not, PR-K1 adds an instrumentation extension to write the missing slots. **Default behavior: add what's missing** (uniform "the fixture must contain what the test asserts on" rule).
 5. **Acceptance of bar relaxation**: if PR-K3's measured 60-step bar is between 1e-6 and 3 %, do we tighten to the measured value, leave at 3 %, or pick a round intermediate (1 %, 1e-3)? (Default: tighten to the measured value, documented in the PR.)
 
 ---
