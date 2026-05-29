@@ -629,3 +629,104 @@ def get_mass_by_species_name(q, mode: int, species_name: str,
         f"species {species_name!r} is not present in mode "
         f"{MODE_NAMES[mode]!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# M8 (cloud chemistry): gas pcnst slots + cloud-borne species index tables.
+#
+# These constants support ``mam4_jax/processes/cloudchem.py`` which mirrors
+# Fortran's ``box_model_utils/cloudchem_simple.F90``. Cloudchem operates on
+# the *vmr* arrays (volume mixing ratios with ``gas_pcnst=30`` third-dim for
+# MAM4-MOM), not the *q* arrays (mass mixing ratios with ``pcnst=35``).
+#
+# Reference values captured by the extended ``mam4_dump_state::dump_indices``
+# in PR-K1 (gas_pcnst_indices section of ``mam4_indices.txt``). For MAM4-MOM:
+#   h2so4 = 7 (1-based pcnst) → 6 (0-based pcnst)
+#   so2   = 8 → 7
+#   nh3   = -1 (absent — not in cnst registry for this config)
+#   hcl   = -1 (absent)
+#   hno3  = -1 (absent)
+#   soag  = 10 → 9
+# ---------------------------------------------------------------------------
+
+#: Mode index for the coarse mode (``MODE_NAMES[2] == "coarse"``).
+COARSE_MODE_IDX: int = 2
+
+#: 0-based pcnst slot of H2SO4 in ``q``. Also at ``LMAP_GAS[1]``.
+PCNST_H2SO4_GAS: int = 6
+#: 0-based pcnst slot of SO2 in ``q``. **Not** in ``LMAP_GAS`` (amicphys
+#: does not track SO2 — only cloudchem reads it via a separate
+#: ``cnst_get_ind`` call).
+PCNST_SO2_GAS: int = 7
+#: 0-based pcnst slot of NH3 in ``q``. ``-1`` = absent in MAM4-MOM
+#: (``cnst_get_ind('NH3', ...)`` returns -1 here). Cloudchem's NH3 → NH4
+#: branch is structurally dead for this config.
+PCNST_NH3_GAS: int = -1
+#: 0-based pcnst slot of SOAG (gas-phase SOA precursor) in ``q``. Also at
+#: ``LMAP_GAS[0]``.
+PCNST_SOAG_GAS: int = 9
+
+#: amicphys ``loffset`` — pcnst → vmr/amicphys-internal slot offset.
+#: ``vmr_slot = pcnst_slot - AMICPHYS_LOFFSET`` (0-based on both sides).
+#: Captured by ``mam4_dump_state::dump_amicphys_init`` (amicphys_loffset
+#: field of ``tests/reference/indices/reference.npz``).
+AMICPHYS_LOFFSET: int = 5
+
+
+def _to_vmr_slot(pcnst_slot: int) -> int:
+    """Translate a 0-based pcnst slot to a 0-based vmr/gas_pcnst slot.
+
+    ``-1`` (absent) maps to ``-1``. The conversion is just a shift by
+    ``AMICPHYS_LOFFSET``.
+    """
+    return pcnst_slot - AMICPHYS_LOFFSET if pcnst_slot >= 0 else -1
+
+
+def _lookup_cw_amode(species_name: str) -> tuple[int, ...]:
+    """Return the per-mode 0-based pcnst slot of cloud-borne ``species_name``.
+
+    Derives from ``LMASSPTRCW_AMODE`` + ``LSPECTYPE_AMODE`` + the species
+    name's index into ``SPECNAME_AMODE``. Modes that do not carry the
+    species return ``-1``.
+    """
+    type_idx = SPECNAME_AMODE.index(species_name)
+    out: list[int] = []
+    for m in range(NTOT_AMODE):
+        type_row = LSPECTYPE_AMODE[m]
+        if type_idx in type_row:
+            slot = type_row.index(type_idx)
+            out.append(LMASSPTRCW_AMODE[m][slot])
+        else:
+            out.append(-1)
+    return tuple(out)
+
+
+#: Per-mode pcnst slot of cloud-borne sulfate. For MAM4-MOM:
+#: ``(10, 18, 25, -1)`` — accum / aitken / coarse carry sulfate; primary_carbon
+#: doesn't. Cloudchem_simple_sub only deposits into accum (mode 0) and
+#: aitken (mode 1); coarse stays unchanged but is read by other processes.
+LPTR_SO4_CW_AMODE: tuple[int, ...] = _lookup_cw_amode("sulfate")
+
+#: Per-mode pcnst slot of cloud-borne ammonium. All ``-1`` in MAM4-MOM
+#: (no mode carries ammonium in this config; consistent with NH3 absent
+#: from the constituent registry).
+LPTR_NH4_CW_AMODE: tuple[int, ...] = _lookup_cw_amode("ammonium")
+
+
+# vmr-space (gas_pcnst third-dim) slots used by cloudchem:
+
+#: vmr slot of H2SO4 gas.
+VMR_H2SO4: int = _to_vmr_slot(PCNST_H2SO4_GAS)
+#: vmr slot of SO2 gas.
+VMR_SO2:   int = _to_vmr_slot(PCNST_SO2_GAS)
+#: vmr slot of NH3 gas (-1 if absent).
+VMR_NH3:   int = _to_vmr_slot(PCNST_NH3_GAS)
+#: vmr slot of SOAG gas.
+VMR_SOAG:  int = _to_vmr_slot(PCNST_SOAG_GAS)
+
+#: Per-mode vmrcw slot of cloud-borne aerosol number.
+VMRCW_NUM: tuple[int, ...] = tuple(_to_vmr_slot(s) for s in NUMPTRCW_AMODE)
+#: Per-mode vmrcw slot of cloud-borne sulfate.
+VMRCW_SO4: tuple[int, ...] = tuple(_to_vmr_slot(s) for s in LPTR_SO4_CW_AMODE)
+#: Per-mode vmrcw slot of cloud-borne ammonium (all -1 in MAM4-MOM).
+VMRCW_NH4: tuple[int, ...] = tuple(_to_vmr_slot(s) for s in LPTR_NH4_CW_AMODE)
