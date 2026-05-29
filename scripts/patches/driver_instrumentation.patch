@@ -4,7 +4,7 @@
        use modal_aero_amicphys, only: modal_aero_amicphys_intr, &
            gaexch_h2so4_uptake_optaa, newnuc_h2so4_conc_optaa, mosaic
        use modal_aero_wateruptake, only: modal_aero_wateruptake_dr
-+      use mam4_dump_state, only: dump_snapshot, dump_indices
++      use mam4_dump_state, only: dump_snapshot, dump_snapshot_vmr, dump_indices
        use gaschem_simple, only: gaschem_simple_sub
        use cloudchem_simple, only: cloudchem_simple_sub
  

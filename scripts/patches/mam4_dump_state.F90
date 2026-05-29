@@ -30,7 +30,7 @@
 
       implicit none
       private
-      public :: dump_snapshot, dump_indices, dump_rename_snapshot
+      public :: dump_snapshot, dump_snapshot_vmr, dump_indices, dump_rename_snapshot
 
       contains
 
@@ -168,6 +168,68 @@
          close(unit)
 
       end subroutine dump_snapshot
+
+      subroutine dump_snapshot_vmr(tag, istep, ncol, pver, gas_pcnst, ntot_amode, &
+                                   vmr, vmrcw, dgncur_a, dgncur_awet, qaerwat, wetdens)
+         !
+         ! Same binary record format as dump_snapshot, but for the
+         ! amicphys-internal vmr / vmrcw arrays (volume mixing ratios with
+         ! gas_pcnst third dimension, typically 30 for MAM4-MOM vs pcnst=35
+         ! for mass-mixing-ratio q / qqcw).
+         !
+         ! The output .bin layout matches dump_snapshot byte-for-byte; the
+         ! distinction lives at the call site (and in the Python parser,
+         ! which renames the keys 'q'/'qqcw' -> 'vmr'/'vmrcw' for tags
+         ! produced by this routine). Used by cloudchem_hook.patch to
+         ! capture the state across cloudchem_simple_sub, which operates
+         ! on vmr / vmrcw in driver.F90's amicphys-vmr-context block.
+         !
+         ! ***Binary format MUST stay in lock-step with dump_snapshot***
+         ! Any record-layout change (e.g., adding a new written field)
+         ! must be mirrored to both subroutines, or the Python parser
+         ! (_read_dump in capture_reference.py, used for both formats)
+         ! will mis-parse one or the other. The Python side currently
+         ! reads format-blindly from the header dims; if that diverges,
+         ! either add a magic byte to differentiate or split _read_dump
+         ! into two parsers. See M14 follow-up: when cloudy-subarea
+         ! amicphys lands additional vmr-mode dump tags, this is the
+         ! moment to also enumerate the vmr-tag prefixes explicitly in
+         ! capture_reference.py rather than relying on `startswith
+         ! ("cloudchem_")`.
+         !
+         character(len=*), intent(in) :: tag
+         integer,          intent(in) :: istep, ncol, pver, gas_pcnst, ntot_amode
+         real(r8),         intent(in) :: vmr(:,:,:), vmrcw(:,:,:)
+         real(r8),         intent(in) :: dgncur_a(:,:,:), dgncur_awet(:,:,:)
+         real(r8),         intent(in) :: qaerwat(:,:,:), wetdens(:,:,:)
+
+         integer            :: unit
+         character(len=256) :: filename
+         logical            :: exists
+
+         filename = 'mam4_dump_' // trim(tag) // '.bin'
+
+         inquire(file=filename, exist=exists)
+         if (exists) then
+            open(newunit=unit, file=filename, form='unformatted', &
+                 access='stream', position='append', action='write')
+         else
+            open(newunit=unit, file=filename, form='unformatted', &
+                 access='stream', action='write')
+         end if
+
+         write(unit) istep
+         write(unit) ncol, pver, gas_pcnst, ntot_amode
+         write(unit) vmr
+         write(unit) vmrcw
+         write(unit) dgncur_a
+         write(unit) dgncur_awet
+         write(unit) qaerwat
+         write(unit) wetdens
+
+         close(unit)
+
+      end subroutine dump_snapshot_vmr
 
       subroutine dump_rename_snapshot(tag, istep, i, k, jsub, &
                                       mtoo_renamexf, qnum_cur, qaer_cur, &
