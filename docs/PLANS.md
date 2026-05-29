@@ -154,9 +154,9 @@ Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` 
 
 ---
 
-## Milestone 8 — Cloud chemistry port (proposed)
+## Milestone 8 — Cloud chemistry port (in progress)
 
-**Status:** proposed 2026-05-28; owner priority slot 1 of the M8–M13 stack. Runs on the `diffrax` branch. GitHub: [milestone 3](https://github.com/reflective-org/MAM4-JAX/milestone/3).
+**Status:** **in progress 2026-05-29**; owner priority slot 1 of the M8–M13 stack. Runs on the `diffrax-cloud` branch. PR-K1 (Fortran-side infrastructure + per-process fixture) in flight. Detailed plan: `docs/plans/019-m8-cloudchem.md`. GitHub: [milestone 3](https://github.com/reflective-org/MAM4-JAX/milestone/3).
 
 **Why.** The current JAX port runs `cloud_chem_simple_sub` as a no-op because the box-model fixture has `cldn=0`, which gates off Fortran's `if (cld > 1e-6)` at `driver.F90:1263`. To exercise real cloud-chem behavior the JAX port needs a Fortran reference with `cldn > 1e-6` and the corresponding cloudy amicphys path implemented in JAX.
 

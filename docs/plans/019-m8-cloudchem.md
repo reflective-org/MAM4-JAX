@@ -81,7 +81,9 @@ The `_CW_AMODE` and `LPTR_*_CW_AMODE` index tables touch the `qqcw` (cloud-borne
 
 ## 3. Sub-PR breakdown
 
-Three commit-sized sub-PRs per CLAUDE.md rule #2. Each lands on its own feature branch off `diffrax-cloud` and targets `diffrax-cloud`.
+Three sub-PRs per CLAUDE.md rule #2, with PR-K1 itself split into K1a (Fortran-side infra + per-process fixture; ~430 KB) and K1b (24 h sweep fixtures; ~50 MB via LFS) to keep each PR's review surface reasonable. Each lands on its own feature branch off `diffrax-cloud` and targets `diffrax-cloud`.
+
+The K1a/K1b split was decided 2026-05-29 during PR-K1 drafting: shipping infrastructure + small fixture first lets the reviewer vet the patches without scrolling past the heavy-data NetCDFs. K1b is mechanical (re-run the same capture pipeline at 4 dts over 24 h) once K1a's infrastructure lands.
 
 **Convention for sub-PR creation.** Each sub-PR opens with `gh pr create --milestone "M8: Cloud chemistry port (diffrax branch)" --assignee aliakherati`, so GitHub [milestone #3](https://github.com/reflective-org/MAM4-JAX/milestone/3) stays the canonical PR index. Label = `documentation` for PR-K1 (mostly fixture + capture script + SCHEMA), `enhancement` for PR-K2 and PR-K3 (physics + driver wiring + new tests).
 

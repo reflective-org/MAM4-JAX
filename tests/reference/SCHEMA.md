@@ -77,6 +77,18 @@ tests/reference/
 │   ├── amicphys_after_writeback.npz
 │   ├── rename_before.npz
 │   └── rename_after.npz
+├── per_process_cloudchem/         # full-physics + mdo_cloudchem=1 + cld=0.5 (M8 PR-K1)
+│   ├── calcsize_before.npz        # all amicphys-side tags (q in mmr / pcnst=35)
+│   ├── calcsize_after.npz
+│   ├── wateruptake_before.npz
+│   ├── wateruptake_after.npz
+│   ├── amicphys_before.npz
+│   ├── amicphys_after.npz
+│   ├── amicphys_after_writeback.npz
+│   ├── rename_before.npz
+│   ├── rename_after.npz
+│   ├── cloudchem_before.npz       # q/qqcw slots actually contain vmr/vmrcw (gas_pcnst=30)
+│   └── cloudchem_after.npz
 ├── polysvp/                        # standalone polysvp T-sweep
 │   └── reference.npz
 ├── qsat/                           # standalone qsat (T, p)-grid
@@ -328,6 +340,56 @@ PR-M4-B.
 
 Same six instrumented tags + the rename hook (rename is on in the
 canonical namelist, so the hook fires every step).
+
+### `per_process_cloudchem/` — full-physics + cloudchem enabled (M8 PR-K1)
+
+Captured by `scripts/capture_reference.py --mode instrumented-cloudchem-only`.
+Full-physics namelist (all `mdo_*=1`) plus the `cloudchem_enable.patch`
+overlay applied at build time, which:
+
+- Changes the hard-coded `cld = 0.0_r8` at `driver.F90:591` to
+  `cld = 0.5_r8` (constant mid-cloud fraction; `cloudchem_simple_sub`'s
+  internal `if (cldn <= 0.009) cycle` no-ops below ~0.01).
+- Changes the hard-coded `mdo_cloudchem = 0` at `driver.F90:552` to
+  `mdo_cloudchem = 1` (the box-model namelist does not read this flag,
+  so it has to be set via patch).
+- Also applies `skip_pcarbon_aging.patch` (matches the JAX port's
+  pcarbon-aging deferral, same convention as `per_process_full_minus_pcarbon_aging/`).
+
+**`cldn = 0.5` motivation**: mid-cloud baseline picked as the simplest
+single-value choice that exercises the cloudchem body without sitting at
+either extreme. Time-varying `cldn` profiles are deferred to M9
+(calibration demo); multi-column `cldn` is deferred to M12.
+
+**Two extra tags for cloudchem**: `cloudchem_before.npz` and
+`cloudchem_after.npz` written by the `cloudchem_hook.patch` overlay
+(applied in every `--instrumented` build). These bracket the call to
+`cloudchem_simple_sub` at `driver.F90:1265`. **The slots named `q` and
+`qqcw` in the cloudchem .npz files actually contain `vmr` and `vmrcw`**
+— volume mixing ratios with the gas_pcnst third-dimension (30 for
+MAM4-MOM), not mass mixing ratios with pcnst=35. The header pcnst value
+is gas_pcnst = 30 (in `mam4_dump_state.F90`'s `dump_snapshot`, the call
+passes `gas_pcnst` rather than `pcnst` because the source arrays at
+that call site are vmr/vmrcw). PR-K2's JAX cloudchem test reads vmr
+directly; the JAX driver wrapper does the mmr↔vmr conversion around
+the call.
+
+Used by `tests/test_cloudchem.py` (PR-K2, pending). Same 9 other tags
+as the canonical `per_process_full_minus_pcarbon_aging/` fixture
+(written by the standard instrumentation hooks; values reflect the new
+cloud-chem-enabled trajectory and so differ from the cldn=0 fixture
+on most tracers).
+
+**Note on `amicphys_before` vs `amicphys_after` byte-identity.** For
+this fixture (and for `per_process_full_minus_pcarbon_aging/`),
+`amicphys_before.npz` and `amicphys_after.npz` are **byte-identical**:
+amicphys writes its tendencies into internal vmr arrays and then
+writes back to `q`/`qqcw` only at `amicphys_after_writeback` (the
+third hook fires after the writeback). The pair of "before" and
+"after" dumps is therefore redundant for these fixtures — kept in
+DUMP_TAGS for compatibility with the single-toggle captures (e.g.,
+`per_process_rename_only/`) where the writeback fires inside the
+sub-process. Not a capture bug.
 
 ### `per_process_amicphys_off/` — variant with the amicphys sub-processes disabled
 
