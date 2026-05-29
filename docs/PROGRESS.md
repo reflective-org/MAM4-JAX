@@ -6,6 +6,16 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-29 — M8 PR-K1c: rename cloudchem .npz slots q/qqcw → vmr/vmrcw (`diffrax-cloud` branch)
+
+- PR: [#54](https://github.com/reflective-org/MAM4-JAX/pull/54) (`m8/pr-k1c-vmr-slot-rename` → `diffrax-cloud`). Small follow-up to PR-K1 ([#53](https://github.com/reflective-org/MAM4-JAX/pull/53)) — addresses review-item #2's slot-overload (q/qqcw slots in cloudchem .npz files carry vmr/vmrcw semantics with `gas_pcnst=30`, not mmr/`pcnst=35`).
+- **Implementation pattern**: parallel `dump_snapshot_vmr` Fortran subroutine (same binary record format as `dump_snapshot`, different name encoding the call-site intent) + Python-side key rename in `capture_reference.py` (`q→vmr`, `qqcw→vmrcw` for any `cloudchem_*` tag). Existing `dump_snapshot` callers untouched; existing fixtures (mmr / pcnst=35) unchanged. Empirical values byte-identical to PR-K1 — the underlying binary writes the same float64 bytes; only the .npz key labels changed.
+- **Build-catch**: extending `mam4_dump_state.F90` with a new public subroutine requires extending `driver_instrumentation.patch`'s `use mam4_dump_state, only: ...` import list — otherwise the linker can't resolve the symbol (`Undefined symbols: dump_snapshot_vmr_`). Documented in the dump module's docstring so a future maintainer adding a new `dump_*` subroutine hits the right path on the first try.
+- **Architectural note for M14**: the `tag.startswith("cloudchem_")` predicate in `capture_reference.py` works for M8 (only one vmr-mode tag family). When M14 (cloudy-subarea amicphys) lands additional vmr-mode dumps, prefer an explicit `VMR_MODE_TAG_PREFIXES = ("cloudchem_", "cloudy_amicphys_")` enumeration over extending the `startswith` predicate. Flagged in `dump_snapshot_vmr`'s docstring.
+- **Test suite: 72 passed, 0 failed** — no regressions.
+
+---
+
 ## 2026-05-29 — M8 PR-K1: Fortran-side infrastructure + per-process cloudchem fixture (`diffrax-cloud` branch)
 
 - PR: [#53](https://github.com/reflective-org/MAM4-JAX/pull/53) (`m8/pr-k1-fortran-reference-capture` → `diffrax-cloud`). First M8 sub-PR. Plan: `docs/plans/019-m8-cloudchem.md` ([PR #52](https://github.com/reflective-org/MAM4-JAX/pull/52)).

@@ -184,6 +184,19 @@
          ! capture the state across cloudchem_simple_sub, which operates
          ! on vmr / vmrcw in driver.F90's amicphys-vmr-context block.
          !
+         ! ***Binary format MUST stay in lock-step with dump_snapshot***
+         ! Any record-layout change (e.g., adding a new written field)
+         ! must be mirrored to both subroutines, or the Python parser
+         ! (_read_dump in capture_reference.py, used for both formats)
+         ! will mis-parse one or the other. The Python side currently
+         ! reads format-blindly from the header dims; if that diverges,
+         ! either add a magic byte to differentiate or split _read_dump
+         ! into two parsers. See M14 follow-up: when cloudy-subarea
+         ! amicphys lands additional vmr-mode dump tags, this is the
+         ! moment to also enumerate the vmr-tag prefixes explicitly in
+         ! capture_reference.py rather than relying on `startswith
+         ! ("cloudchem_")`.
+         !
          character(len=*), intent(in) :: tag
          integer,          intent(in) :: istep, ncol, pver, gas_pcnst, ntot_amode
          real(r8),         intent(in) :: vmr(:,:,:), vmrcw(:,:,:)
