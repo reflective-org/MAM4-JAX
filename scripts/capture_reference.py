@@ -733,6 +733,16 @@ def run_instrumented(nstep: int, no_aitacc_transfer: bool = False,
         if not bin_path.is_file():
             raise RuntimeError(f"expected dump missing: {bin_path}")
         arrays = _read_dump(bin_path)
+        # M8 PR-K1c: cloudchem dumps are written by dump_snapshot_vmr —
+        # the binary format is identical but the slots carry vmr / vmrcw
+        # (gas_pcnst third-dim), not q / qqcw (pcnst third-dim). Rename
+        # the keys on the way to .npz so downstream consumers read the
+        # semantic-appropriate names with no runtime dim-check needed.
+        if tag.startswith("cloudchem_"):
+            arrays = {
+                ("vmr" if k == "q" else "vmrcw" if k == "qqcw" else k): v
+                for k, v in arrays.items()
+            }
         npz_path = out_dir / f"{tag}.npz"
         np.savez(npz_path, **arrays)
         written.append(npz_path)

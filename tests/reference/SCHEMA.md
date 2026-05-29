@@ -364,15 +364,16 @@ either extreme. Time-varying `cldn` profiles are deferred to M9
 **Two extra tags for cloudchem**: `cloudchem_before.npz` and
 `cloudchem_after.npz` written by the `cloudchem_hook.patch` overlay
 (applied in every `--instrumented` build). These bracket the call to
-`cloudchem_simple_sub` at `driver.F90:1265`. **The slots named `q` and
-`qqcw` in the cloudchem .npz files actually contain `vmr` and `vmrcw`**
-— volume mixing ratios with the gas_pcnst third-dimension (30 for
-MAM4-MOM), not mass mixing ratios with pcnst=35. The header pcnst value
-is gas_pcnst = 30 (in `mam4_dump_state.F90`'s `dump_snapshot`, the call
-passes `gas_pcnst` rather than `pcnst` because the source arrays at
-that call site are vmr/vmrcw). PR-K2's JAX cloudchem test reads vmr
-directly; the JAX driver wrapper does the mmr↔vmr conversion around
-the call.
+`cloudchem_simple_sub` at `driver.F90:1265`. **The cloudchem .npz
+files use slot names `vmr` / `vmrcw` instead of `q` / `qqcw`** —
+volume mixing ratios with `gas_pcnst = 30` third-dim for MAM4-MOM,
+not mass mixing ratios with `pcnst = 35`. The Fortran-side dump uses
+a parallel `dump_snapshot_vmr` subroutine (same binary format as
+`dump_snapshot`); the Python-side reader (`capture_reference.py`)
+renames the keys at the .npz boundary. JAX consumers can read
+`np.load(...)["vmr"]` and `["vmrcw"]` directly without runtime
+dim-check assertions. The JAX driver wrapper does the mmr↔vmr
+conversion around the cloudchem call (PR-K3).
 
 Used by `tests/test_cloudchem.py` (PR-K2, pending). Same 9 other tags
 as the canonical `per_process_full_minus_pcarbon_aging/` fixture
