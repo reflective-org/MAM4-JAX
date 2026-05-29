@@ -6,6 +6,22 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-29 — M8 PR-K1: Fortran-side infrastructure + per-process cloudchem fixture (`diffrax-cloud` branch)
+
+- PR: [#53](https://github.com/reflective-org/MAM4-JAX/pull/53) (`m8/pr-k1-fortran-reference-capture` → `diffrax-cloud`). First M8 sub-PR. Plan: `docs/plans/019-m8-cloudchem.md` ([PR #52](https://github.com/reflective-org/MAM4-JAX/pull/52)).
+- **What landed:** two new Fortran patches (`cloudchem_enable.patch` sets `cld = 0.5` + `mdo_cloudchem = 1`; `cloudchem_hook.patch` dumps `vmr/vmrcw` around `cloudchem_simple_sub` at `driver.F90:1265`); extended `mam4_dump_state.F90::dump_indices` to capture gas pcnst slots for `H2SO4/SO2/NH3/HCL/HNO3/SOAG` via `cnst_get_ind`; new `instrumented-cloudchem-only` capture mode; 11-file per-process fixture under `tests/reference/per_process_cloudchem/` (~430 KB).
+- **Settles plan-019's open questions empirically:** `_CW_AMODE` index tables already populated (`lmassptrcw_amode` + `numptrcw_amode`); NH3 absent in MAM4-MOM (`l_nh3g = -1` — JAX cloudchem will skip the NH3 branch); gas pcnst slots discoverable via the extended dump (`h2so4=6`, `so2=7`, `soag=9` in 0-based).
+- **Cloudchem dumps use vmr/vmrcw, not q/qqcw.** The fixture's `cloudchem_{before,after}.npz` files contain volume mixing ratios with `gas_pcnst = 30` third-dim (matching `cloudchem_simple_sub`'s signature, which operates on vmr-form arrays). Other tags in the same fixture (`amicphys_before` etc.) keep the standard q/qqcw mmr semantics with `pcnst = 35`. Documented in `tests/reference/SCHEMA.md`.
+- **Empirical sanity check** (post-step 0, cldn=0.5, dt=30s, τ=1800s):
+  - SO2 (vmr slot 2): `4.521e-05 → 2.298e-05` — remains `1 - tmpf*exp(-deltat/τ) = 1 - 0.4917 = 0.5083` fraction of input. ✓
+  - H2SO4 (vmr slot 1): `3.253e-14 → 1.627e-14` — halved by `tmpf = cldn = 0.5`. ✓
+  - Cloud-borne accum-sulfate (qqcw slot 5): `0 → 2.223e-05` — gas-phase SO2+H2SO4 transferred per `tmpd * (tmpa + tmpb)`. ✓
+- **Always-on instrumentation overhead negligible**: the cloudchem hook adds two `dump_snapshot` calls per step in every `--instrumented` build. Timing on a 60-step capture: ~0.07 s user time total (well within noise). For non-cloudchem modes, `cloudchem_before == cloudchem_after` byte-identical (no physics fired).
+- **Plan-019 updated** to note the K1/K1b scope split (this PR is K1; K1b carries the ~50 MB 24h sweep fixture).
+- **Test suite: 72 passed, 0 failed** — no regressions; new fixture isn't tested until PR-K2 lands the JAX port. M8 status: `proposed → in progress`.
+
+---
+
 ## 2026-05-28 — `diffrax-v0.1.0` tag + M6/M7 status doc hygiene (`diffrax` branch)
 
 - Tag: `diffrax-v0.1.0` (annotated) at `5ea6330` on `diffrax`. Marks M7 (diffrax migration) + M6 (JAX-idiom optimization) complete. Parallels `v0.1.0` on `main` (the handwritten-solver baseline from PR-I1). 18 commits past `v0.1.0`.

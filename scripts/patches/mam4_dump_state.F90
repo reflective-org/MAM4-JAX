@@ -110,6 +110,9 @@
 
          ! Gas pcnst slots — 1-based as returned by cnst_get_ind. Converted to
          ! 0-based with -1 sentinel for absent species on the Python side.
+         ! Species names are case-sensitive — they match the cnst registry
+         ! exactly. Configs that register species under different casing
+         ! (e.g. 'h2so4') will silently return -1 from these lookups.
          call cnst_get_ind( 'H2SO4', l_h2so4g, .false. )
          call cnst_get_ind( 'SO2',   l_so2g,   .false. )
          call cnst_get_ind( 'NH3',   l_nh3g,   .false. )

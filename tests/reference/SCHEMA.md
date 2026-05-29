@@ -380,6 +380,17 @@ as the canonical `per_process_full_minus_pcarbon_aging/` fixture
 cloud-chem-enabled trajectory and so differ from the cldn=0 fixture
 on most tracers).
 
+**Note on `amicphys_before` vs `amicphys_after` byte-identity.** For
+this fixture (and for `per_process_full_minus_pcarbon_aging/`),
+`amicphys_before.npz` and `amicphys_after.npz` are **byte-identical**:
+amicphys writes its tendencies into internal vmr arrays and then
+writes back to `q`/`qqcw` only at `amicphys_after_writeback` (the
+third hook fires after the writeback). The pair of "before" and
+"after" dumps is therefore redundant for these fixtures — kept in
+DUMP_TAGS for compatibility with the single-toggle captures (e.g.,
+`per_process_rename_only/`) where the writeback fires inside the
+sub-process. Not a capture bug.
+
 ### `per_process_amicphys_off/` — variant with the amicphys sub-processes disabled
 
 Same six tags and same per-record arrays as `per_process/`, captured from a build that wrote the namelist with `mdo_gasaerexch=mdo_rename=mdo_newnuc=mdo_coag=0`. Under these toggles `modal_aero_amicphys_intr` is a true bit-exact passthrough: `amicphys_after` matches `amicphys_before` for every captured array across all 60 timesteps.
