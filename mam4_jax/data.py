@@ -719,10 +719,22 @@ LPTR_NH4_CW_AMODE: tuple[int, ...] = _lookup_cw_amode("ammonium")
 VMR_H2SO4: int = _to_vmr_slot(PCNST_H2SO4_GAS)
 #: vmr slot of SO2 gas.
 VMR_SO2:   int = _to_vmr_slot(PCNST_SO2_GAS)
-#: vmr slot of NH3 gas (-1 if absent).
+#: vmr slot of NH3 gas. ``-1`` in MAM4-MOM (NH3 absent). Defined for
+#: forward-compatibility: if a future MAM4 config registers NH3, the
+#: cloudchem NH3 → NH4 branch (currently omitted) can be enabled by
+#: gating on ``VMR_NH3 >= 0`` without a data.py change. Not consumed
+#: by any current call site.
 VMR_NH3:   int = _to_vmr_slot(PCNST_NH3_GAS)
 #: vmr slot of SOAG gas.
 VMR_SOAG:  int = _to_vmr_slot(PCNST_SOAG_GAS)
+
+# Cross-check: PCNST_H2SO4_GAS and PCNST_SOAG_GAS duplicate LMAP_GAS's
+# entries (amicphys's gas list). If a future MAM4 config shifts either,
+# both paths must update. Module-load assertion catches drift early.
+assert int(LMAP_GAS[0]) == PCNST_SOAG_GAS, \
+    f"LMAP_GAS[0] = {int(LMAP_GAS[0])} drifted from PCNST_SOAG_GAS = {PCNST_SOAG_GAS}"
+assert int(LMAP_GAS[1]) == PCNST_H2SO4_GAS, \
+    f"LMAP_GAS[1] = {int(LMAP_GAS[1])} drifted from PCNST_H2SO4_GAS = {PCNST_H2SO4_GAS}"
 
 #: Per-mode vmrcw slot of cloud-borne aerosol number.
 VMRCW_NUM: tuple[int, ...] = tuple(_to_vmr_slot(s) for s in NUMPTRCW_AMODE)

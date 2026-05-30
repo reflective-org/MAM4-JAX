@@ -100,15 +100,38 @@ def test_cloudchem_cycle_threshold_zeros_tendencies():
         np.testing.assert_array_equal(np.asarray(vmrcw_out), np.asarray(vmrcw_in))
 
 
-def test_cloudchem_soag_unmodified(cloudchem_fixture):
-    """SOAG gas is not touched by cloudchem (negative-control tracer).
+def test_cloudchem_jax_soag_unmodified(cloudchem_fixture):
+    """JAX cloudchem leaves SOAG byte-identical (negative-control tracer).
 
-    The fixture captures step 0 through step 59 in the post-cloudchem
-    state. SOAG sits at vmr[..., VMR_SOAG] and should be byte-identical
-    between cloudchem_before and cloudchem_after for every step.
+    Cloudchem doesn't read or write SOAG; the JAX port must preserve
+    SOAG bit-for-bit. We verify this directly by running JAX on each
+    step's before-state and asserting JAX's output SOAG equals the
+    input SOAG. Catches a hypothetical bug where the JAX port
+    accidentally touched the SOAG slot (e.g., via a wrong index
+    constant); ``test_cloudchem_matches_fortran_per_step`` would also
+    catch it, but this test isolates the failure mode.
+
+    Also asserts (as a sanity-anchor) that the Fortran fixture itself
+    has identical SOAG before/after, confirming the Fortran reference
+    matches the test's expectation.
     """
     from mam4_jax import data
     before, after = cloudchem_fixture
-    soag_before = before["vmr"][:, :, :, data.VMR_SOAG]
-    soag_after  = after["vmr"][:,  :, :, data.VMR_SOAG]
-    np.testing.assert_array_equal(soag_before, soag_after)
+    cldn = jnp.full((1, 1), CLDN_FIXTURE)
+
+    # JAX-side: cloudchem must preserve SOAG exactly.
+    for step in range(N_STEPS):
+        vmr_in   = jnp.asarray(before["vmr"][step])
+        vmrcw_in = jnp.asarray(before["vmrcw"][step])
+        vmr_out, _ = cloudchem_simple_sub(vmr_in, vmrcw_in, cldn, DT_FIXTURE)
+        np.testing.assert_array_equal(
+            np.asarray(vmr_out[..., data.VMR_SOAG]),
+            np.asarray(vmr_in[..., data.VMR_SOAG]),
+            err_msg=f"JAX cloudchem touched SOAG at step {step}",
+        )
+
+    # Sanity-anchor: Fortran fixture should also show no SOAG change.
+    np.testing.assert_array_equal(
+        before["vmr"][:, :, :, data.VMR_SOAG],
+        after["vmr"][:,  :, :, data.VMR_SOAG],
+    )

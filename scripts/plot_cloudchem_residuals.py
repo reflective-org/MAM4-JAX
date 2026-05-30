@@ -121,6 +121,12 @@ def main() -> None:
     ax.legend(loc="best", fontsize=8)
 
     # ----- Row 2 col 1: scatter, all 7 tracers (JAX y vs Fortran x)
+    # Note: zero-valued points are masked from the axis-range computation
+    # (a value of 0 can't be plotted on a log-log axis). Most notably,
+    # vmrcw[SO4_cw_accum / aitken] is 0 at the first fixture step (before
+    # cloudchem fires); those points are dropped from the diagonal bounds
+    # but still scattered (matplotlib silently drops the log-of-zero ones).
+    # Expected on-screen point count ≈ 60 × 7 − (zero entries) < 420.
     ax = axes[1, 1]
     cmap = plt.cm.tab10
     all_min, all_max = np.inf, -np.inf
@@ -173,10 +179,12 @@ def main() -> None:
     ax.legend(loc="best", fontsize=8)
 
     fig.suptitle(
-        f"M8 PR-K2: cloudchem_simple_sub — JAX vs Fortran "
+        f"M8 PR-K2: cloudchem_simple_sub — per-process JAX vs Fortran "
         f"(cldn = {CLDN_FIXTURE}, dt = {DT_FIXTURE:.0f}s, "
-        f"{N_STEPS} steps, vmr-space)",
-        fontsize=11,
+        f"{N_STEPS} per-step comparisons, vmr-space). "
+        f"NOT a JAX-driven trajectory — each point is JAX cloudchem "
+        f"applied to a Fortran-captured before-state.",
+        fontsize=10,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.97))
 
