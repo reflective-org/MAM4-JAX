@@ -6,6 +6,19 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-05-29 — M8 PR-K2: JAX cloudchem_simple_sub + per-process validation (`diffrax-cloud` branch)
+
+- PR: pending (`m8/pr-k2-cloudchem-port` → `diffrax-cloud`). Second M8 sub-PR. Plan: `docs/plans/019-m8-cloudchem.md`.
+- **JAX port lands at machine ε.** `mam4_jax/processes/cloudchem.py` (~110 LOC including docstring) mirrors Fortran's `cloudchem_simple_sub` exactly: cloud-fraction weight `tmpf = min(1, cldn)`, accum/aitken number-distribution `tmpd / tmpe`, SO2 e-folding with `τ = 1800 s`, H2SO4 100 % cloud-water transfer, gas updates, cloud-borne sulfate deposition. Cycle replaced by `jnp.where(cldn > 0.009, tendencies, 0.0)`. NH3 → NH4 branch omitted (`l_nh3g = -1` in MAM4-MOM, structurally dead). **Max rel-err vs Fortran across 60 fixture steps × 7 tracers = `0.0` (bit-exact).** Cloudchem is algebraic, so float64 determinism gives an exact match without any tolerance.
+- **`mam4_jax/data.py` extensions:** hard-coded `PCNST_H2SO4_GAS = 6`, `PCNST_SO2_GAS = 7`, `PCNST_NH3_GAS = -1` (absent), `PCNST_SOAG_GAS = 9` (from PR-K1's extended `dump_indices`); `AMICPHYS_LOFFSET = 5` for the pcnst→vmr slot conversion; `COARSE_MODE_IDX = 2` (was missing); derived tables `LPTR_SO4_CW_AMODE = (10, 18, 25, -1)` and `LPTR_NH4_CW_AMODE = (-1, -1, -1, -1)` via `_lookup_cw_amode(species_name)` walking `LSPECTYPE_AMODE` + `LMASSPTRCW_AMODE`; vmr-space convenience aliases `VMR_H2SO4 = 1`, `VMR_SO2 = 2`, `VMR_SOAG = 4`, `VMRCW_NUM`, `VMRCW_SO4` for the cloudchem port to consume without doing slot arithmetic at call sites.
+- **Tests** (`tests/test_cloudchem.py`, 3 new tests): (a) per-step JAX-vs-Fortran match at `rtol=1e-6, atol=1e-30` across all 60 fixture steps — passes at machine ε; (b) cycle threshold no-op at `cldn ∈ {0, 0.005, 0.009}` — output bit-identical to input; (c) SOAG byte-identity before/after (negative control — cloudchem doesn't touch SOAG). **Test suite: 75 passed, 0 failed** (was 72; +3 from this PR).
+- **Residual figure** (`docs/figures/cloudchem_residuals.png`, 2×3 grid via `scripts/plot_cloudchem_residuals.py`):
+  - Row 1: H2SO4, SO2, SOAG gas trajectories (vmr-space, log-y). Fortran solid + JAX dashed overlay perfectly (bit-clean match). SOAG declines across the 60 steps not because cloudchem touches it (it doesn't) but because gasaerexch consumes it in the same operator-splitting block; the per-step before/after byte-identity is verified by `test_cloudchem_soag_unmodified`.
+  - Row 2: per-mode SO4_cw (accum / aitken / coarse — pcarbon absent per `LPTR_SO4_CW_AMODE[3] = -1`; coarse is the in-panel negative control — flat because cloudchem only writes accum and aitken); JAX-vs-Fortran scatter for 7 tracers (sits on the diagonal); max rel-err vs step with reference lines at ADR-003 `1e-6` and ADR-015 `3 %`. Rel-err line plots at `1e-18` floor since the actual value is `0`.
+- **What's NOT in this PR** (PR-K3 territory): wiring cloudchem into `mam4_jax/driver.py`'s `run_step` (replacing the no-op stub); the mmr↔vmr conversion wrapper around the cloudchem call (driver-side); end-to-end 60-step trajectory test with `mdo_cloudchem=1`; FEATURES.md flip ("sulfur chemistry beyond stubs is out of scope" → "cloudchem_simple's parameterized SO2→SO4 ported"); 24h sweep fixtures via PR-K1b.
+
+---
+
 ## 2026-05-29 — M8 PR-K1c: rename cloudchem .npz slots q/qqcw → vmr/vmrcw (`diffrax-cloud` branch)
 
 - PR: [#54](https://github.com/reflective-org/MAM4-JAX/pull/54) (`m8/pr-k1c-vmr-slot-rename` → `diffrax-cloud`). Small follow-up to PR-K1 ([#53](https://github.com/reflective-org/MAM4-JAX/pull/53)) — addresses review-item #2's slot-overload (q/qqcw slots in cloudchem .npz files carry vmr/vmrcw semantics with `gas_pcnst=30`, not mmr/`pcnst=35`).
