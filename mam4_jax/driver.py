@@ -9,9 +9,12 @@ Composes the per-step microphysics sequence from
     3. *gas-chem*        — currently embedded inside ``gasaerexch``'s
                             H₂SO₄ analytical solver as ``pxt = 1e-16
                             mol/mol/s``; see "Gas-chem placement" below.
-    4. *cloud-chem*      — no-op for the box-model fixture (``cldn=0`` →
-                            Fortran's ``if (cld > 1e-6)`` gate at
-                            ``driver.F90:1263`` never fires).
+    4. ``cloudchem_simple_sub`` — parameterized aqueous SO₂→SO₄ via the
+                            JAX port in ``mam4_jax.processes.cloudchem``
+                            (M8 PR-K2). Conditional on ``state["cldn"]``:
+                            cycles when ``cldn ≤ 0.009`` (bit-exact
+                            identity), fires otherwise. Driver wrapper
+                            handles the mmr↔vmr conversion.
     5. ``amicphys``      — gasaerexch → rename → newnuc → coag, all the
                             way through the vmr→mmr writeback (implicit
                             via ``_repack_amicphys_view_to_state``).
@@ -47,12 +50,30 @@ layer if any future fixture toggles gasaerexch off.
 Cloud-chem placement
 --------------------
 
-``cambox_config.box.in`` sets ``mdo_cloudchem=0``, and the box-model
-fixture has ``cldn=0``. Even at ``mdo_cloudchem=1``, Fortran's
-``if (mdo_cloudchem > 0 .and. maxval(cld_ncol) > 1.0e-6)`` gate at
-``driver.F90:1263`` skips cloud-chem because ``cld=0``. So we don't
-need cloud-chem in the box-model trajectory test. Stubbed as a no-op
-to keep the operator-splitting sequence structurally faithful.
+M8 PR-K3 wires ``cloudchem_simple_sub`` from
+``mam4_jax.processes.cloudchem``. The driver wrapper below converts
+``q``/``qqcw`` (mmr, pcnst=35) to ``vmr``/``vmrcw`` (gas_pcnst=30),
+calls the ported physics, and applies the delta back to ``q``/``qqcw``
+in mmr-space.
+
+**Conditional firing.** No Python-static ``mdo_cloudchem`` flag —
+the cloudchem function unconditionally executes but cycles internally
+when ``state["cldn"] <= 0.009`` (matching Fortran's per-gridcell
+``if (cldn <= 0.009) cycle``). The driver wrapper uses a
+*delta-based* update (``q += vmr_to_mmr_factor * (vmr_out − vmr_in)``),
+so cldn-zero state-dicts pass through with bit-exact identity (the
+delta is exactly zero; no round-trip ULP drift). All pre-M8 tests
+with cldn=0 stay byte-identical.
+
+**Gas-chem ordering note.** Fortran applies the gas-chem source
+(``vmr[H₂SO₄] += 1e-16·dt``, ``driver.F90:1249``) *before* cloudchem.
+The current JAX path absorbs gas-chem into ``amicphys``'s H₂SO₄ ODE
+*after* cloudchem. For ``cldn=0`` this is mathematically equivalent
+(cloudchem is a no-op, so order doesn't matter). For ``cldn>0`` it
+introduces a per-step ordering bias of ~``0.5 · 1e-16 · dt`` on
+H₂SO₄ — small at low ``dt``, accumulates over a trajectory. Quantified
+by the new ``test_run_step_with_cloudchem_matches_fortran`` test;
+revisited in PR-K3b if the measured bar misses ADR-015's 3 %.
 """
 from __future__ import annotations
 
@@ -62,21 +83,99 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
+from . import data
 from .processes.amicphys import amicphys
 from .processes.calcsize import calcsize
+from .processes.cloudchem import (
+    cloudchem_simple_sub as _cloudchem_simple_sub_vmr,
+)
 from .processes.wateruptake import wateruptake
 
 
-def cloud_chem_simple_sub(state: dict[str, Any]) -> dict[str, Any]:
-    """No-op for the box-model fixture (``cldn=0``).
+#: Constant H₂SO₄ gas-chem source rate (mol/mol/s) from
+#: ``driver.F90:1249``. M8 PR-K3: extracted to the driver level so it
+#: runs *before* cloudchem (matching Fortran's per-step ordering), with
+#: ``amicphys`` called with ``qgas_netprod_h2so4=0`` to avoid double-
+#: counting the same source inside the H₂SO₄ ODE.
+GAS_CHEM_H2SO4_RATE_VMR: float = 1.0e-16
 
-    Mirrors ``driver.F90:1263``'s gate: cloud chem only fires when
-    ``mdo_cloudchem>0 AND maxval(cldn) > 1e-6``. The box-model namelist
-    sets ``mdo_cloudchem=0`` and the initial state has ``cldn=0``, so
-    this is structurally dead — leave as a stub so the operator-splitting
-    sequence reads correctly. Implement when a future fixture demands it.
+
+def gas_chem_simple_step(state: dict[str, Any]) -> dict[str, Any]:
+    """Driver-level gas-chem source — ``q[H₂SO₄] += rate · dt`` in mmr-space.
+
+    Mirrors ``driver.F90:1249`` (``vmr(:,:,lmz_h2so4g) = vmr + 1e-16·dt``).
+    Fortran applies this in vmr-space; JAX state-dict carries ``q`` in
+    mmr-space, so we convert via ``data.VMR_TO_MMR[PCNST_H2SO4_GAS]``
+    (= ``adv_mass[H₂SO₄] / mwdry``).
+
+    Why driver-level (M8 PR-K3): the pre-M8 path absorbed this source
+    into ``amicphys``'s H₂SO₄ ODE (``qgas_netprod_h2so4 = 1e-16``).
+    That works at ``cldn = 0`` (cloudchem is a no-op) but mis-orders
+    with cloudchem when ``cldn > 0`` — Fortran reduces the gas-chem-
+    applied H₂SO₄ by ``tmpf`` before amicphys, whereas the in-ODE
+    source would add ``1e-16·dt`` *after* cloudchem's halving. The
+    structural fix is to apply gas-chem here (before cloudchem) and
+    pass ``qgas_netprod_h2so4=0`` to amicphys.
     """
-    return state
+    q = state["q"]
+    deltat = state["deltat"]
+    factor_vmr_to_mmr = data.VMR_TO_MMR[data.PCNST_H2SO4_GAS]
+    add_mmr = GAS_CHEM_H2SO4_RATE_VMR * deltat * factor_vmr_to_mmr
+    new_q = q.at[..., data.PCNST_H2SO4_GAS].add(add_mmr)
+    return {**state, "q": new_q}
+
+
+def cloudchem_simple_sub(state: dict[str, Any]) -> dict[str, Any]:
+    """Driver-level wrapper around ``processes.cloudchem.cloudchem_simple_sub``.
+
+    Mirrors ``driver.F90:1263-1270`` (the call site bracketed by the
+    ``mdo_cloudchem`` + ``maxval(cldn) > 1e-6`` gate). Converts the
+    state-dict's ``q``/``qqcw`` (mmr, pcnst=35) to ``vmr``/``vmrcw``
+    (gas_pcnst=30), invokes the physics, and projects the delta back
+    into mmr-space — so:
+
+    - When ``cldn <= 0.009`` everywhere, the cloudchem cycle mask
+      returns ``vmr_out == vmr`` exactly; the projected delta is zero;
+      ``q`` and ``qqcw`` are unchanged bit-for-bit. Pre-M8 tests pass
+      through unaffected.
+    - When ``cldn > 0.009``, the physics fires; only the slots cloudchem
+      touches (H₂SO₄, SO₂ in ``q``; SO4_cw accum and aitken in
+      ``qqcw``) move.
+
+    The ``state["cldn"]`` field is required (already set by all
+    fixtures and the run-state builders since M4 PR-A).
+    """
+    q       = state["q"]
+    qqcw    = state["qqcw"]
+    cldn    = state["cldn"]
+    deltat  = state["deltat"]
+
+    # Slice the chem-tracer portion [LOFFSET:] of q (pcnst=35 → gas_pcnst=30).
+    factor_to_vmr = data.MMR_TO_VMR[data.AMICPHYS_LOFFSET:]   # (30,)
+    factor_to_mmr = data.VMR_TO_MMR[data.AMICPHYS_LOFFSET:]   # (30,)
+
+    q_chem    = q[...,    data.AMICPHYS_LOFFSET:]              # (..., 30)
+    qqcw_chem = qqcw[..., data.AMICPHYS_LOFFSET:]
+
+    vmr   = q_chem    * factor_to_vmr
+    vmrcw = qqcw_chem * factor_to_vmr
+
+    vmr_out, vmrcw_out = _cloudchem_simple_sub_vmr(
+        vmr, vmrcw, cldn, deltat,
+    )
+
+    # Delta-based update so the cldn=0 path is bit-exact identity.
+    # (vmr_out − vmr) is exactly zero when cloudchem cycles; nonzero
+    # only on the H₂SO₄, SO₂, SO4_cw_accum, SO4_cw_aitken slots when
+    # the body fires.
+    new_q    = q.at[...,    data.AMICPHYS_LOFFSET:].add(
+        (vmr_out   - vmr)   * factor_to_mmr,
+    )
+    new_qqcw = qqcw.at[..., data.AMICPHYS_LOFFSET:].add(
+        (vmrcw_out - vmrcw) * factor_to_mmr,
+    )
+
+    return {**state, "q": new_q, "qqcw": new_qqcw}
 
 
 @jax.jit
@@ -99,8 +198,9 @@ def run_step(state: dict[str, Any]) -> dict[str, Any]:
     """
     state = calcsize(state)
     state = wateruptake(state)
-    state = cloud_chem_simple_sub(state)   # currently a no-op
-    state = amicphys(state)                # all four mdo_* default to 1
+    state = gas_chem_simple_step(state)    # H2SO4 source: q += 1e-16·dt (vmr-space rate)
+    state = cloudchem_simple_sub(state)    # bit-exact no-op when cldn ≤ 0.009
+    state = amicphys(state, qgas_netprod_h2so4=0.0)  # source already applied above
     return state
 
 
