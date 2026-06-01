@@ -6,6 +6,20 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-06-01 — M8 PR-K3: cloudchem wired into driver + gas-chem refactor (`diffrax-cloud` branch)
+
+- PR: pending (`m8/pr-k3-driver-wiring-and-features` → `diffrax-cloud`). Third M8 sub-PR. Plan: `docs/plans/019-m8-cloudchem.md`.
+- **What landed**: (1) `driver.py` renames `cloud_chem_simple_sub` → `cloudchem_simple_sub`; the function is now a real call into `mam4_jax.processes.cloudchem.cloudchem_simple_sub` via an mmr↔vmr wrapper that uses a delta-based update so `cldn=0` fixtures stay bit-exact identity. (2) Gas-chem source (`vmr[H2SO4] += 1e-16·dt` per `driver.F90:1249`) extracted from amicphys's internal H2SO4 ODE into a new `gas_chem_simple_step` driver-level function, so it runs *before* cloudchem (matching Fortran's per-step ordering). (3) `amicphys` accepts a new `qgas_netprod_h2so4` kwarg (default `1e-16` preserves all pre-M8 call sites bit-exact); the driver now passes `0.0` to avoid double-counting the source.
+- **Refactor verification**: all 75 pre-M8 tests pass unchanged (cldn=0 path: gas-chem applied externally in mmr-space + amicphys ODE with no source ≈ amicphys ODE with internal source, differs only at O(1e-16·dt·uptkaer·dt) ≈ 1e-22 per step — well below any existing tolerance).
+- **Cloudchem trajectory validation: NOT YET CLOSED.** Two new diagnostic-only tests in `tests/test_driver.py`:
+  - `test_run_step_with_cloudchem_per_step_diagnostic`: per-step JAX-vs-Fortran. Asserts `qqcw < 1e-10` (cloudchem is bit-exact per PR-K2; this holds). Records `q` max rel-err (PR-K3 measurement: ~0.96 at step 39 on accum-mode number, slot 17).
+  - `test_run_timesteps_with_cloudchem_trajectory_diagnostic`: full 60-step trajectory. NOT GATED. Records cumulative max rel-err on all six trajectory fields. PR-K3 measurement: `q ~ 1.8e1` at step 19 (accum number doubles within a single step at certain intermediate states).
+- **Open issue for PR-K3b** (closes M8): the per-step accum-number divergence isn't from cloudchem itself (PR-K2 showed cloudchem-only is bit-exact) and isn't from the gas-chem reordering (refactored ordering still has this gap). Likely root cause: a rename/coag interaction with the cloudchem-modified qqcw at certain mode-population regimes — diagnostic work needed. M8 stays at "in progress" until PR-K3b lands.
+- **What's deferred to PR-K3b**: the bug investigation + full FEATURES.md flip ("sulfur chemistry beyond stubs → cloudchem_simple ported"). PR-K3 does NOT touch FEATURES.md or move M8 to "done."
+- **Test suite: 77 passed, 0 failed** (was 75; +2 from this PR's two diagnostic tests).
+
+---
+
 ## 2026-05-29 — M8 PR-K2: JAX cloudchem_simple_sub + per-process validation (`diffrax-cloud` branch)
 
 - PR: pending (`m8/pr-k2-cloudchem-port` → `diffrax-cloud`). Second M8 sub-PR. Plan: `docs/plans/019-m8-cloudchem.md`.

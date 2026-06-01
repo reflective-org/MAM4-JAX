@@ -431,25 +431,37 @@ def _repack_amicphys_view_to_state(state: dict[str, Any],
 
 def amicphys(state: dict[str, Any], params=None, config=None, *,
              mdo_gasaerexch: int = 1, mdo_rename: int = 1,
-             mdo_newnuc: int = 1, mdo_coag: int = 1) -> dict[str, Any]:
+             mdo_newnuc: int = 1, mdo_coag: int = 1,
+             qgas_netprod_h2so4: float = 1.0e-16) -> dict[str, Any]:
     """ADR-009 entry point — see module docstring.
 
     The four ``mdo_*`` keywords mirror the Fortran namelist toggles and
     let callers (and tests) bypass any subset of the sub-processes.
     When all four are 0 the function is a true state passthrough,
     matching the captured ``per_process_amicphys_off`` Fortran reference.
+
+    ``qgas_netprod_h2so4`` is the constant H₂SO₄ source rate (mol/mol/s)
+    applied inside ``_mam_gasaerexch_1subarea``'s H₂SO₄ analytical solver.
+    Defaults to ``1e-16`` matching Fortran's ``driver.F90:1249`` gas-chem
+    stub — preserves bit-exact behavior for pre-M8 callers that don't
+    apply gas-chem externally. When the driver applies the gas-chem
+    source before amicphys (M8 PR-K3 path, so that cloudchem reduces the
+    gas-chem-applied H₂SO₄ in the correct order), this kwarg should be
+    passed as ``0.0`` to avoid double-counting the source.
     """
     del params, config
     return _mam_amicphys_1gridcell(
         state,
         mdo_gasaerexch=mdo_gasaerexch, mdo_rename=mdo_rename,
         mdo_newnuc=mdo_newnuc,         mdo_coag=mdo_coag,
+        qgas_netprod_h2so4=qgas_netprod_h2so4,
     )
 
 
 def _mam_amicphys_1gridcell(state: dict[str, Any], *,
                             mdo_gasaerexch: int, mdo_rename: int,
-                            mdo_newnuc: int, mdo_coag: int) -> dict[str, Any]:
+                            mdo_newnuc: int, mdo_coag: int,
+                            qgas_netprod_h2so4: float = 1.0e-16) -> dict[str, Any]:
     """Port of ``mam_amicphys_1gridcell``.
 
     The Fortran routine splits each grid cell into clear and cloudy
@@ -468,12 +480,14 @@ def _mam_amicphys_1gridcell(state: dict[str, Any], *,
         state,
         mdo_gasaerexch=mdo_gasaerexch, mdo_rename=mdo_rename,
         mdo_newnuc=mdo_newnuc,         mdo_coag=mdo_coag,
+        qgas_netprod_h2so4=qgas_netprod_h2so4,
     )
 
 
 def _mam_amicphys_1subarea_clear(state: dict[str, Any], *,
                                  mdo_gasaerexch: int, mdo_rename: int,
-                                 mdo_newnuc: int, mdo_coag: int) -> dict[str, Any]:
+                                 mdo_newnuc: int, mdo_coag: int,
+                                 qgas_netprod_h2so4: float = 1.0e-16) -> dict[str, Any]:
     """Port of ``mam_amicphys_1subarea_clear``.
 
     Unpacks the outer ``q[pcnst]`` state into amicphys's local view,
@@ -507,6 +521,7 @@ def _mam_amicphys_1subarea_clear(state: dict[str, Any], *,
             state["dgncur_a"], state["dgncur_awet"], state["wetdens"],
             state["t"], state["pmid"], state["deltat"],
             jnp.asarray(data.FAC_M2V_AER),
+            qgas_netprod_h2so4=qgas_netprod_h2so4,
         )
 
     # qaer_delsub_grow4rnam = change made by gasaerexch in this sub-area.
@@ -544,7 +559,8 @@ def _mam_amicphys_1subarea_clear(state: dict[str, Any], *,
 
 def _mam_gasaerexch_1subarea(qgas, qaer, qnum, qwtr,
                              dgn_a, dgn_awet, wetdens,
-                             temp, pmid, deltat, fac_m2v_aer):
+                             temp, pmid, deltat, fac_m2v_aer,
+                             *, qgas_netprod_h2so4: float = 1.0e-16):
     """Port of ``mam_gasaerexch_1subarea`` (``modal_aero_amicphys.F90:3279-3584``).
 
     H₂SO₄ analytical-solver path only — SOA exchange (separate sub-call
@@ -619,7 +635,10 @@ def _mam_gasaerexch_1subarea(qgas, qaer, qnum, qwtr,
     # expect h2so4_gas to match Fortran tighter than soag_gas does.
     qgas_h2so4_prv = qgas[..., igas_h2so4]                  # (...,)
     qaer_h2so4_prv = qaer[..., iaer_h2so4, :]               # (..., NTOT_AMODE)
-    qgas_netprod_h2so4 = 1.0e-16                            # mol/mol/s (driver.F90:1248)
+    # qgas_netprod_h2so4 is the H2SO4 source rate (mol/mol/s, driver.F90:1248).
+    # Default 1e-16 matches the in-amicphys gas-chem stub. When the driver
+    # applies gas-chem externally (M8 PR-K3 path), pass 0.0 here to avoid
+    # double-counting the source.
 
     g_h2so4_init = jnp.maximum(qgas_h2so4_prv, 0.0)
     a_h2so4_init = jnp.maximum(qaer_h2so4_prv, 0.0)

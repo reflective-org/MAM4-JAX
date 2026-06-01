@@ -176,6 +176,127 @@ def test_run_timesteps_60_step_trajectory_matches_fortran(per_process) -> None:
 
 
 # ---------------------------------------------------------------------------
+# M8 PR-K3: cloudchem wired into the driver
+# ---------------------------------------------------------------------------
+
+CLOUDCHEM_REF_DIR = (Path(__file__).resolve().parent
+                     / "reference" / "per_process_cloudchem")
+CLDN_CLOUDCHEM_FIXTURE = 0.5  # cloudchem_enable.patch sets cld = 0.5
+
+
+@pytest.fixture(scope="module")
+def per_process_cloudchem() -> dict[str, dict[str, np.ndarray]]:
+    """Cloudchem-enabled per-process fixture (mdo_cloudchem=1, cldn=0.5)."""
+    return {
+        tag: {k: np.asarray(v) for k, v in
+              np.load(CLOUDCHEM_REF_DIR / f"{tag}.npz").items()}
+        for tag in ("calcsize_before", "amicphys_after_writeback")
+    }
+
+
+def _build_state_cloudchem(snapshot, step):
+    """Build a JAX state dict at cldn=0.5 from a cloudchem fixture step."""
+    ncol, pver = snapshot["q"].shape[1], snapshot["q"].shape[2]
+    return {
+        "q":           jnp.asarray(snapshot["q"][step]),
+        "qqcw":        jnp.asarray(snapshot["qqcw"][step]),
+        "dgncur_a":    jnp.asarray(snapshot["dgncur_a"][step]),
+        "dgncur_awet": jnp.asarray(snapshot["dgncur_awet"][step]),
+        "qaerwat":     jnp.asarray(snapshot["qaerwat"][step]),
+        "wetdens":     jnp.asarray(snapshot["wetdens"][step]),
+        "t":           jnp.asarray(np.full((ncol, pver), T_BOX_MODEL)),
+        "pmid":        jnp.asarray(np.full((ncol, pver), PMID_BOX_MODEL)),
+        "cldn":        jnp.asarray(np.full((ncol, pver), CLDN_CLOUDCHEM_FIXTURE)),
+        "zmid":        jnp.asarray(np.full((ncol, pver), ZMID_BOX_MODEL)),
+        "pblh":        jnp.asarray(np.full((ncol, pver), PBLH_BOX_MODEL)),
+        "relhum":      jnp.asarray(np.full((ncol, pver), RH_BOX_MODEL)),
+        "deltat":      jnp.asarray(DELTAT_60),
+    }
+
+
+def test_run_step_with_cloudchem_per_step_diagnostic(per_process_cloudchem):
+    """Diagnostic-only: per-step JAX vs Fortran on the cloudchem-enabled
+    fixture. NOT GATED — records the rel-err for PR-K3b's investigation.
+
+    For each of the 60 captured steps, runs JAX's ``run_step`` starting
+    from Fortran's ``calcsize_before[step]`` and reports the max rel-err
+    on ``q`` and ``qqcw`` against ``amicphys_after_writeback[step]``.
+
+    PR-K3 measurement (June 2026):
+      - ``qqcw`` max rel-err ~1e-15 (machine ε; cloudchem deposits
+        exactly on cloud-borne sulfate slots).
+      - ``q`` max rel-err ~ 0.96 at step 39 on accum-mode number
+        (``NUMPTR_AMODE[0] = pcnst slot 17``). The doubling happens in
+        a single step starting from a steady-state IC where Fortran's
+        accum num barely moves — JAX's rename/coag interaction with
+        the cloudchem-modified qqcw produces a fundamentally different
+        per-step result here. Closure is **PR-K3b**.
+
+    Sanity asserts (these MUST hold or something's catastrophically
+    broken):
+      - Output is finite (no NaN, no Inf).
+      - ``qqcw`` rel-err < 1e-10 (cloudchem-touched slots match Fortran
+        because cloudchem is bit-exact per PR-K2's machine-ε result).
+    """
+    ref = per_process_cloudchem
+    worst_q    = 0.0
+    worst_qqcw = 0.0
+    for step in range(60):
+        ic  = _build_state_cloudchem(ref["calcsize_before"], step)
+        out = run_step(ic)
+        target_q    = ref["amicphys_after_writeback"]["q"][step]
+        target_qqcw = ref["amicphys_after_writeback"]["qqcw"][step]
+        # Sanity: no NaN / Inf.
+        assert np.all(np.isfinite(np.asarray(out["q"]))),    f"non-finite q at step {step}"
+        assert np.all(np.isfinite(np.asarray(out["qqcw"]))), f"non-finite qqcw at step {step}"
+        # atol-floored rel-err for diagnostics.
+        denom_q    = np.maximum(np.abs(target_q),    1e-10)
+        denom_qqcw = np.maximum(np.abs(target_qqcw), 1e-10)
+        worst_q    = max(worst_q,    float(np.max(
+            np.abs(np.asarray(out["q"])    - target_q)    / denom_q)))
+        worst_qqcw = max(worst_qqcw, float(np.max(
+            np.abs(np.asarray(out["qqcw"]) - target_qqcw) / denom_qqcw)))
+    print(f"\n[PR-K3 diagnostic] per-step max rel-err over 60 steps: "
+          f"q={worst_q:.3e}, qqcw={worst_qqcw:.3e}")
+    # qqcw must hold tight — cloudchem is bit-exact per PR-K2.
+    assert worst_qqcw < 1e-10, (
+        f"qqcw per-step max rel-err {worst_qqcw:.3e} > 1e-10 — "
+        "cloudchem regression?"
+    )
+
+
+def test_run_timesteps_with_cloudchem_trajectory_diagnostic(per_process_cloudchem):
+    """Diagnostic-only: cumulative 60-step trajectory at cldn=0.5.
+
+    NOT GATED — known to fail at any reasonable bar. The per-step
+    residual on accum-mode number (~1 % per step, dominated by a
+    calcsize / coag interaction with the cloudchem-modified qqcw, NOT
+    by cloudchem itself per
+    ``test_cloudchem_matches_fortran_per_step``'s bit-exact match)
+    amplifies through nucleation across the trajectory. Observed
+    max rel-err on q ~ 1.8 × 10¹ at step 19 (PR-K3 measurement).
+
+    Closure of this trajectory gap is **PR-K3b**'s job. This test
+    records the current measurement as a diagnostic so progress is
+    visible.
+    """
+    ic   = _build_state_cloudchem(per_process_cloudchem["calcsize_before"], step=0)
+    traj = run_timesteps(ic, n_steps=60)
+    target = per_process_cloudchem["amicphys_after_writeback"]
+    worst = {}
+    for key in ("q", "qqcw", "dgncur_a", "dgncur_awet", "qaerwat", "wetdens"):
+        denom = np.maximum(np.abs(target[key]), 1e-25)
+        rel = np.abs(np.asarray(traj[key]) - target[key]) / denom
+        worst[key] = float(np.max(rel))
+    # Print rather than assert — diagnostic only.
+    summary = ", ".join(f"{k}={v:.2e}" for k, v in worst.items())
+    print(f"\n[PR-K3 diagnostic] 60-step cloudchem trajectory max rel-err: {summary}")
+    # Sanity: the trajectory ran at all (didn't NaN, didn't crash).
+    for key, v in worst.items():
+        assert np.isfinite(v), f"{key} trajectory produced non-finite values"
+
+
+# ---------------------------------------------------------------------------
 # M6 PR-J3: vmap / multi-column audit
 #
 # The box-model fixture uses (ncol=1, pver=1). These tests verify the
