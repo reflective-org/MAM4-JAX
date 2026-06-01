@@ -5,13 +5,6 @@ Things explicitly **not** being done now, with a brief note on **why**. Anything
 The point of this file is to keep the *decided to skip for now* knowledge out of people's heads.
 
 ---
-
-## License selection
-
-- **Status:** deferred. **Tracked as issue [#47](https://github.com/reflective-org/MAM4-JAX/issues/47).**
-- **Why:** No license file at the repo root yet (`README.md` notes this explicitly). The vendored Fortran reference retains its upstream license under `mam4-original-src-code/LICENSE`. Choosing a license for the JAX port (MIT? Apache-2.0? BSD-3-Clause?) is a decision that needs the owner + reflective-org alignment.
-- **Resurface when:** before announcing the repo publicly or accepting external contributions.
-
 ## Stripping `__pycache__/*.pyc` from the vendored Fortran subtree
 
 - **Status:** deferred. **Tracked as issue [#49](https://github.com/reflective-org/MAM4-JAX/issues/49).**
