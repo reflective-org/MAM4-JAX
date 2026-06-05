@@ -6,6 +6,20 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-06-05 — M14 PR-A: subarea split mechanics in amicphys (`diffrax-cloud` branch)
+
+- PR: pending (`m14/pr-A-subarea-split` → `diffrax-cloud`). First M14 sub-PR — replaces the assumption in `_mam_amicphys_1gridcell` that `cldn = 0` everywhere with the actual gridcell ↔ subarea split mathematics. Closes the *structural* gap diagnosed in PR-K3b's substep investigation: amicphys-clear was being fed gridcell-aggregate state when it expected clear-subarea-concentrated state.
+- **What landed**: `_mam_amicphys_1gridcell` builds clear- and cloudy-sub-area state dicts and aggregates outputs.
+  - Interstitial aerosol slots (per `_PCNST_INTERSTITIAL_MASK = LMAP_NUM ∪ valid LMAP_AER`, slots [10..34] for MAM4-MOM) get `q_clear = q_gridcell / (1 - cldn)` and `q_cloudy = 0`. Aerosol water (`qaerwat`) scales the same. Cloud-borne aerosols (`qqcw`) get the inverse: `qqcw_clear = 0`, `qqcw_cloudy = qqcw_gridcell / cldn`. Gases (`LMAP_GAS` + other registered gas slots [0..9]) pass through unscaled (intensive).
+  - Cloudy-sub-area is a **stub** (`_mam_amicphys_1subarea_cloudy_stub` returns input unchanged) — PR-M14-B will replace it with the real port of Fortran's `mam_amicphys_1subarea_cloudy` (`modal_aero_amicphys.F90:1504-2059`).
+  - Aggregation: `gridcell_out = (1-cldn) · clear_out + cldn · cloudy_out` for `q`, `qqcw`, and `qaerwat`.
+- **`cldn = 0` bit-exact preserved**: `f_clear = max(1-0, 1e-30) = 1.0` (no scaling); cloudy weight `cldn = 0` drops the cloudy stub contribution entirely. All 77 pre-PR tests pass byte-identical.
+- **`cldn = 0.5` measurement**: clear-sub-area scaling verified working — `qnum_clear[accum]` at rename_before now reads 3.61e6, matching Fortran's per-subarea capture (PR-K3 measured 1.80e6 = gridcell value before the split). Per-step rel-err on `q[17]` at step 39 drops slightly from 0.96 → 0.95 (~19 % reduction in clear-subarea coag's `n²` loss term thanks to the correct concentration). **The cumulative trajectory bar is NOT yet met** — at the same step, JAX still produces `q[17] = 2.6e6` vs Fortran's `1.34e6`. The residual gap is the missing cloudy-subarea physics: even with correct subarea split mechanics, the gridcell aggregation needs a non-trivial cloudy-subarea contribution that the stub doesn't provide.
+- **What's deferred to PR-M14-B**: port Fortran's `mam_amicphys_1subarea_cloudy` (~555 LOC). Reuses existing JAX gasaerexch + rename ports but extends them to handle the cloud-borne tracer codepaths that were dead in the clear-mode-only call sites. Capture a single-toggle cloudy-only Fortran fixture for validation. M8 trajectory bar closes when PR-M14-B lands.
+- **Test suite: 77 passed, 0 failed** — no regressions; the cldn>0 diagnostic tests still record the residual (now with the split applied, slightly improved per-step but unchanged at trajectory level).
+
+---
+
 ## 2026-06-01 — M8 PR-K3: cloudchem wired into driver + gas-chem refactor (`diffrax-cloud` branch)
 
 - PR: pending (`m8/pr-k3-driver-wiring-and-features` → `diffrax-cloud`). Third M8 sub-PR. Plan: `docs/plans/019-m8-cloudchem.md`.
