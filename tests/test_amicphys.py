@@ -313,3 +313,75 @@ def test_amicphys_returns_all_state_keys(captured) -> None:
     new_state = amicphys(state)
     for key in ("t", "pmid", "cldn", "deltat"):
         assert key in new_state, f"amicphys dropped state key {key!r}"
+
+
+# ---------------------------------------------------------------------------
+# M14 PR-A: gridcell ↔ subarea split mechanics
+# ---------------------------------------------------------------------------
+
+def test_amicphys_subarea_split_cldn_zero_is_identity(captured) -> None:
+    """At cldn=0, ``_mam_amicphys_1gridcell``'s split path produces
+    byte-identical output to calling ``_mam_amicphys_1subarea_clear``
+    directly (no scaling, no cloudy contribution).
+
+    Locks in the load-bearing safety property: PR-M14-A's introduction
+    of the subarea split must not perturb any pre-M14 result. If a
+    future refactor breaks this (wrong scaling factor, wrong mask,
+    bad aggregation), this test catches it.
+    """
+    from mam4_jax.processes.amicphys import (
+        _mam_amicphys_1gridcell, _mam_amicphys_1subarea_clear,
+    )
+
+    before, _ = captured
+    state = _build_state(before)
+    # Force cldn = 0 across the entire (nstep, ncol, pver) shape.
+    state_cldn0 = {**state, "cldn": jnp.zeros_like(state["cldn"])}
+
+    via_gridcell = _mam_amicphys_1gridcell(
+        state_cldn0,
+        mdo_gasaerexch=1, mdo_rename=1, mdo_newnuc=1, mdo_coag=1,
+        qgas_netprod_h2so4=1.0e-16,
+    )
+    via_direct = _mam_amicphys_1subarea_clear(
+        state_cldn0,
+        mdo_gasaerexch=1, mdo_rename=1, mdo_newnuc=1, mdo_coag=1,
+        qgas_netprod_h2so4=1.0e-16,
+    )
+    for key in ("q", "qqcw", "qaerwat"):
+        np.testing.assert_array_equal(
+            np.asarray(via_gridcell[key]),
+            np.asarray(via_direct[key]),
+            err_msg=f"subarea split at cldn=0 drifted from direct call on {key!r}",
+        )
+
+
+def test_amicphys_subarea_split_cldn_nonzero_conservation(captured) -> None:
+    """At cldn=0.5 with all mdo_*=0 (amicphys is a passthrough),
+    the gridcell roundtrip preserves the input state bit-exactly.
+
+    Tests the split + aggregation in isolation from amicphys's
+    nonlinearity. Math: the split scales interstitial by 1/(1-cldn)
+    going in and weights clear-out by (1-cldn) coming back (cloudy
+    contributes 0). For cloud-borne: scaled by 1/cldn going in,
+    weighted by cldn coming back (clear contributes 0). With
+    passthrough sub-areas, both round-trips are bijective.
+    """
+    before, _ = captured
+    state = _build_state(before)
+    state_cldn05 = {**state, "cldn": jnp.full_like(state["cldn"], 0.5)}
+
+    # All four mdo_* off → amicphys-clear is a passthrough
+    # (see _mam_amicphys_1subarea_clear's all-mdo-off early-return).
+    # The cloudy stub is unconditionally passthrough.
+    out = amicphys(
+        state_cldn05,
+        mdo_gasaerexch=0, mdo_rename=0, mdo_newnuc=0, mdo_coag=0,
+    )
+    for key in ("q", "qqcw", "qaerwat"):
+        np.testing.assert_allclose(
+            np.asarray(out[key]),
+            np.asarray(state_cldn05[key]),
+            rtol=1e-12, atol=0.0,
+            err_msg=f"subarea split + aggregation lost mass on {key!r}",
+        )

@@ -488,6 +488,14 @@ def _mam_amicphys_1subarea_cloudy_stub(state: dict[str, Any]) -> dict[str, Any]:
     uptake in the cloudy sub-area pass through unchanged, and
     cloud-borne aerosols (``qqcw``) are unprocessed.
 
+    **Correctness contract**: this stub's "interstitial in cloudy = 0"
+    behavior depends on the caller (``_mam_amicphys_1gridcell``) having
+    pre-zeroed interstitial slots in the cloudy state-dict. The stub
+    does NOT zero them on its own. If a future caller forgets the
+    pre-zero step, the stub silently returns nonzero interstitial in
+    cloudy and the aggregation double-counts. See
+    ``_mam_amicphys_1gridcell`` state assembly.
+
     PR-M14-B replaces this stub with a port of Fortran's
     ``mam_amicphys_1subarea_cloudy`` (``modal_aero_amicphys.F90:
     1504-2059``). At that point the M8 cloudchem trajectory bar
@@ -529,6 +537,9 @@ def _mam_amicphys_1gridcell(state: dict[str, Any], *,
     PR-K3). Cloudy-subarea is stubbed, so gases and cloud-borne
     aerosols still pass through unchanged — residual until PR-M14-B.
     """
+    # Caller contract: ``state`` must contain a ``cldn`` array.
+    # The driver (``run_step``) sets it; tests that call amicphys
+    # directly must also provide it.
     cldn = state["cldn"]                                  # (..., )
 
     # Avoid /0 at the extremes. cldn ∈ [0, 1] in physical sense; the
@@ -579,6 +590,14 @@ def _mam_amicphys_1gridcell(state: dict[str, Any], *,
     # average. For arrays the sub-areas don't write (dgncur_a, dgncur_awet,
     # wetdens, met fields, deltat), the clear-subarea-out values pass
     # through (they were not modified by either sub-area).
+    #
+    # TODO (PR-M14-B): if the real ``_mam_amicphys_1subarea_cloudy``
+    # ever modifies ``dgncur_a``/``dgncur_awet``/``wetdens`` (e.g., by
+    # re-running wateruptake internally), extend the aggregation below
+    # to include those fields. Today neither the clear sub-area code
+    # nor the stub touches them, so the gridcell out inherits from
+    # clear's out unchanged — which is the same as the inputs since
+    # calcsize/wateruptake run upstream of amicphys.
     f_c = (1.0 - cldn)[..., None]                          # (..., 1)
     f_d = cldn[..., None]
     out = {**state_clear_out}
