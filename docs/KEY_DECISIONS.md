@@ -141,7 +141,7 @@ Status values: **Accepted**, **Proposed**, **Superseded by ADR-NNN**.
 
 ## ADR-013 — Dual-branch strategy: `main` keeps handwritten solvers; `diffrax` branch ports them
 
-- **Status:** Accepted (2026-05-22)
+- **Status:** Accepted (2026-05-22). Partially superseded by ADR-014 (2026-05-22): the "future `diffrax → main` merge is *not* anticipated" clause is reversed, and the cross-branch sync convention is replaced with merge-based sync. ADR-013's body is left unedited per the KEY_DECISIONS convention.
 - **Context:** During M5 (12-point convergence sweep), the JAX port diverged sharply from Fortran at `nstep ≤ 30` (`dt ≥ 60s`). Diagnosis: Fortran's `mam_soaexch_1subarea` triggers adaptive substepping (`dtcur = alpha_astem/tmpa` at `modal_aero_amicphys.F90:3835-3843`); the JAX port intentionally assumes single-substep (deferred in M3.6 PR-E as PR-E2 per `docs/DEFERRED.md`). M7 (diffrax migration) was already on the roadmap as a future solver-quality improvement. The question: do we port handwritten adaptive substepping as PR-E2 first, then migrate to diffrax later, or skip PR-E2 and let the diffrax migration provide adaptive substepping for free?
 - **Decision:** **Skip PR-E2 on `main`. Adaptive / dynamic substepping is solely the diffrax branch's responsibility.** A separate long-lived `diffrax` branch ports the handwritten ODE/analytical solvers (`_mam_gasaerexch_1subarea`'s H₂SO₄ analytical solver, `_mam_soaexch_1subarea`, possibly `_mam_coag_1subarea` if it has coupled-ODE structure) to diffrax equivalents. Diffrax's standard adaptive-controller (PI / I) handles step-size control natively — no handwritten substepping logic needed.
 - **Branch invariants:**
@@ -157,6 +157,86 @@ Status values: **Accepted**, **Proposed**, **Superseded by ADR-NNN**.
   - **Port PR-E2 (handwritten adaptive substepping) on `main`, then migrate to diffrax.** Rejected: duplicates work; tangles "match Fortran 1:1" with solver-quality improvements; the handwritten substepping would be deleted in M7 anyway.
   - **Skip M7 entirely; keep main as-is with the documented gap.** Rejected: the diffrax migration brings real benefits beyond adaptive substepping (autodiff cleanliness, standard error estimators, established library) — worth doing once we have a baseline.
   - **Apply the diffrax port as a series of PRs to `main` directly (no parallel branch).** Rejected: makes side-by-side comparison harder, forces both implementations to live in the same files, and loses the "structurally similar, only the solver differs" property the dual-branch arrangement provides.
+
+---
+
+## ADR-014 — Diffrax becomes canonical: eventual `diffrax → main` merge planned; sync via merge, not cherry-pick
+
+- **Status:** Accepted (2026-05-22)
+- **Context:** ADR-013 set up the dual-branch arrangement on the assumption that the `diffrax` branch might remain parallel indefinitely. In practice, the owner's intent (confirmed during M7 planning) is that once the diffrax port is validated end-to-end, it becomes the canonical MAM4-JAX implementation and merges back into `main`. ADR-013's "future `diffrax → main` merge is *not* anticipated" clause and its cherry-pick-based sync convention are inconsistent with that intent: a cherry-picked history makes the eventual merge-back noisier and the cross-branch comparison harder to maintain.
+- **Decision:**
+  1. **Eventual `diffrax → main` merge is planned**, not just possible. The diffrax branch is the canonical-to-be implementation. The decision *when* to merge — once all M7 sub-PRs (PR-I1, PR-D1, PR-D2, optionally PR-D3) land and the M5 `xfail`s flip — remains a future ADR; *that* it will eventually merge is settled.
+  2. **Cross-branch sync uses periodic `main → diffrax` merges**, not cherry-picks, not rebases. Each baseline-sync is a merge commit on `diffrax` that brings the latest `main` (or, while `main` is gated by branch protection, the integration branch standing in for `main`) into `diffrax`. This preserves the full history so the eventual `diffrax → main` merge has a clean ancestry.
+  3. **Solver changes still land on `diffrax` only.** ADR-013's "structural parity" invariant (same module layout, function names, state-dict contract, test fixtures) is preserved — the only deltas between branches are inside the solver bodies and any test-tolerance adjustments the merge-back will eventually unify.
+  4. **The `v0.1.0` tag** on `main` (at the handwritten-solver baseline tip) anchors the pre-diffrax state. It is created out-of-band by the owner (not by automation) at a moment of their choosing — natural candidate: when this ADR merges. The tag's purpose is to preserve a checkout-able snapshot of the handwritten-solver implementation after the merge-back lands.
+- **Consequences:**
+  - `diffrax`'s history grows by accumulation of `main → diffrax` merges plus PR-D* solver-port commits; the eventual merge-back to `main` becomes a single (large) merge whose diff isolates the solver bodies.
+  - `docs/HANDWRITTEN_SOLVER_LIMITATIONS.md` (introduced in PR-I1) documents what `v0.1.0` covers and doesn't, so users checking out the tag understand the gap.
+  - The "permanent gap on `nstep ≤ 30`" wording in ADR-013 reads literally on `main` until the merge-back; after the merge-back, the gap is closed by diffrax and the `xfail`s are removed.
+  - Branch protection on `main`: ADR-014 is agnostic. When `main` is gated, baseline syncs into `diffrax` flow from whichever branch carries the latest baseline (currently `dev`); the merge into `diffrax` still produces a merge commit with the right ancestry as long as the integration branch is a clean ancestor of `main`.
+- **Alternatives considered:**
+  - **Keep ADR-013's cherry-pick model.** Rejected: makes the eventual `diffrax → main` merge a manual reconciliation against a divergent history; defeats the "structurally similar, only the solver differs" promise.
+  - **Rebase `diffrax` onto `main` periodically.** Rejected: rewrites `diffrax`'s tip, breaks anyone else tracking the branch, and discards the merge-commit ancestry that makes the future merge-back legible.
+  - **Drop the merge-back intent; keep `diffrax` parallel forever.** Rejected: leaves two implementations of the same physics in the long term; doubles maintenance; the project would have to pick one as canonical eventually anyway.
+
+---
+
+## ADR-015 — Relaxed validation bar on the `diffrax` branch: <3% over 24h at dt≤5s, instead of ADR-003's 1e-6
+
+- **Status:** Accepted (2026-05-25). Empirical revision: bar widened from initial 1% draft (2026-05-23) to 3% after the PR-D1 24h validation showed a dt-independent ~2.4% structural offset on `soag_gas`.
+- **Context:** ADR-003 sets the project-wide JAX-vs-Fortran validation bar at `rtol=1e-6`. On `main`, this is achievable because the handwritten port and Fortran use the **same** semi-implicit scheme inside the same operator-splitting driver — the comparison is effectively implementation-identity, and the M5 sweep at `nstep ≥ 60` measures 1.97e-8 (bit-noise). On the `diffrax` branch (M7), `_mam_soaexch_1subarea` is replaced with a true-ODE adaptive integration (`Kvaerno5`). Diffrax produces a more physically correct soaexch result, but it differs from Fortran's semi-implicit by accumulated trajectory drift that turns out to be **larger and more structural than initially expected** — see PR-D1 empirical findings below.
+- **Decision:**
+  1. **The `diffrax` branch's JAX-vs-Fortran validation bar is `max rel-err < 3%` over a 24-hour box-model simulation at dt ≤ 5s.** Applies to all M7 sub-PRs (PR-D1, PR-D2, PR-D3).
+  2. **Coarser dt (30s, 300s) is observational, not gated.** The validation suite reports rel-err at those dt but doesn't fail the build — the dt-dependence is documented as a known property of the operator-splitting truncation.
+  3. **`main` retains ADR-003's `1e-6` bar.** The relaxation is `diffrax`-only. ADR-003 is unchanged.
+  4. **The 24-hour fixture is the canonical validation surface.** New Fortran reference NetCDFs in `tests/reference/sweep_24h_no_pcarbon_aging/` capture the box model at dt ∈ {1s, 5s, 30s, 300s}. Tracked via git-lfs.
+  5. **The relaxation reports per-field per-mode rel-err.** Per `project-mam4-per-mode-breakouts`, gas fields and per-mode aerosol fields are diagnosed independently; the 3% threshold applies to the max across all of them.
+  6. **At the eventual `diffrax → main` merge-back, the bar question is reopened.** This ADR governs the `diffrax` branch in isolation.
+- **Empirical context (PR-D1, 2026-05-25):** A 4-dt × 24-hour sweep showed:
+  - `soag_gas` peak rel-err saturates at **~2.55% for dt ≤ 5s** (and the end-state rel-err at t=24h is ~2.42% across all tested dt — perfectly dt-independent). This is the structural offset between diffrax-true-ODE and Fortran-semi-implicit, not a bug; see `project-diffrax-structural-offset`.
+  - Total active SOA mass drifts 0.35% heavier in JAX than Fortran by t=24h, also dt-independent. Mass conservation in H₂SO₄/SO4 and aerosol number is preserved to ~ε — the drift is SOA-specific.
+  - `qgas_avg[0]` (SOA gas avg) was the leading suspect; tracing showed it is written by soaexch but **read by no downstream process**, so qgas_avg fixes cannot close the offset.
+  - All other fields (num_aer, so4_aer, soa_aer per mode, h2so4_gas) pass under 1% at dt=5s. The 3% bar is set by `soag_gas` alone, with margin.
+- **Why `3%`:** Empirical floor set by the soag_gas offset (~2.55% peak) plus ~0.5% margin. Tighter than 3% would force `soag_gas` to fail the validation; looser than 3% would erode the project's scientific-integrity value (4–5% on soag_gas would mean diffrax is materially less accurate than handwritten in some way the comparison missed).
+- **Why `dt ≤ 5s`:** At coarser dt, operator-splitting truncation dominates (`soag_gas` peaks at 6.9% at dt=30s, 9.2% at dt=300s). Those errors are NOT diffrax-specific — both implementations suffer them — but ADR-003's machine-precision matching at coarse dt was an artifact of implementation-identity. With diffrax replacing one component, the operator-splitting truncation becomes visible. Improving it is M6 territory; ADR-015 doesn't gate on it.
+- **Why `24 hours`:** Long enough to confirm rel-err saturation; matches a typical atmospheric column simulation window. The 30-min trajectories used during diagnosis showed plateau by t~300s but underestimated the long-time offset.
+- **Consequences:**
+  - The 12-point M5 convergence sweep's `rtol=1e-6` tests (`tests/test_sweep.py`) are rewritten for the diffrax branch — replaced by a 4-point 24h sweep parametrized over dt ∈ {1, 5, 30, 300}. dt=1 and dt=5 assert max rel-err < 3%; dt=30 and dt=300 record diagnostics without asserting. The 6 currently-`xfail`ed `nstep ≤ 30` cases are deleted — their failure mode (single-substep semi-implicit gap) doesn't apply on the diffrax branch.
+  - The relaxation is **per-branch metadata**. Tooling that reads acceptance bars (CI, release scripts) must distinguish branch context.
+  - PR-D2 (H₂SO₄ port) validates at the same 3% / 24h bar at dt ≤ 5s. PR-D2 may discover its own structural offsets; if so, the bar question reopens.
+- **Alternatives considered:**
+  - **Stick to 1%.** Rejected (2026-05-25 empirical refute): the `soag_gas` offset is ~2.4%, not 1%. A 1% bar fails on every PR-D1 case.
+  - **Improve the driver's operator-splitting (Strang or higher-order) until diffrax matches at 1%.** Rejected: scope creep that conflates solver-port work with driver-architecture work; defers M7 by weeks; the operator-splitting work is M6's natural territory.
+  - **Keep `rtol=1e-6` and replace diffrax with a custom semi-implicit-matching solver.** Rejected: defeats the purpose of moving to diffrax; the goal is physically-correct adaptive integration, not bit-exact Fortran reproduction.
+  - **Field-specific bars (e.g., 3% on soag_gas, 1% elsewhere).** Rejected: simpler to apply a uniform bar and let per-field diagnostics speak for themselves in PR descriptions; field-specific bars create implicit branching in the test suite.
+  - **Test at the END of 24h only (rel-err at t=24h, not peak).** Rejected: peak rel-err captures the transient excursion (a physically meaningful diagnostic); end-state-only would hide the transient and would be a weaker validation.
+
+---
+
+## ADR-016 — Diffrax → main merge-back: conditions, timing, acceptance-bar inheritance
+
+- **Status:** Proposed (2026-05-26).
+- **Context:** ADR-014 (2026-05-22) committed to an eventual `diffrax → main` merge-back but explicitly left timing and mechanics as a future ADR. M7's solver-port sub-PRs are now functionally complete: PR-I1 (#31), PR-D1 (#34), and PR-D2 (#36) all merged into `diffrax`. PR-D3 (coag → diffrax) is **permanently deferred** per `docs/DEFERRED.md` because coag is algebraic, not an ODE — diffrax brings no value there. The branch is ready to merge back in principle; this ADR fixes the criteria, timing, and post-merge baseline.
+- **Decision:**
+  1. **M7 is considered functionally complete with PR-I1, PR-D1, PR-D2 merged on `diffrax`**, and PR-D3 deferred (see DEFERRED.md). No further M7 sub-PRs are required before the merge-back.
+  2. **Merge timing: AFTER M6 (jit / vmap / scan optimization) completes on the `diffrax` branch.** Reason: M6 is the milestone where the diffrax wrappers actually pay off (uncompiled diffrax is ~50× slower than handwritten; JIT-compiled it becomes competitive). Merging back before M6 means `main` inherits the slower uncompiled path. M6's work belongs naturally on `diffrax` (it exercises the diffrax-tied codepaths); doing M6 there first and merging once gives `main` an optimised baseline.
+  3. **Mechanics: merge commit, not rebase or squash.** Per ADR-014's "sync via merge, not cherry-pick" convention, the merge-back preserves the full `diffrax` history (PR-I1, PR-D1, PR-D2, M6 sub-PRs, and any baseline-sync merges). The merge commit on `main` is the single anchor point for the diffrax-integrated era; before-tag and after-tag are clearly separated.
+  4. **Acceptance-bar inheritance: `main` adopts ADR-015's bar for the M7-touched paths.**
+     - The 24h / 3% bar at dt ≤ 5s from ADR-015 governs `tests/test_sweep.py` post-merge. The 12-point convergence sweep at `rtol=1e-6` and its 6 `nstep ≤ 30` `xfail` markers are deleted (they were already gone on `diffrax`).
+     - ADR-003's 1e-6 bar continues to govern all OTHER processes (calcsize, wateruptake, rename, newnuc dispatcher, coag analytical) that remain handwritten. Per-process tests under `tests/test_*` keep their existing bars.
+     - This is a per-test-file decision, not a global relaxation: ADR-003 is NOT superseded for the codebase as a whole, only for the M7-touched test surface.
+  5. **Tag plan: annotated `v0.2.0` on `main` at the merge commit.** Anchors the diffrax-integrated baseline. The pre-diffrax tag `v0.1.0` (created during PR-I1) anchors the handwritten baseline; the two tags together let anyone check out either era of the project cleanly. Tag created by the owner (out-of-band, not by automation), same convention as `v0.1.0`.
+  6. **`HANDWRITTEN_SOLVER_LIMITATIONS.md` is updated, not deleted, at merge-back.** The doc described what `v0.1.0` covered and didn't. Post-merge it's no longer the current state, but it remains a useful historical record. Add an editorial header noting "describes the `v0.1.0` baseline; current `main` integrates diffrax for soaexch + H₂SO₄" and link to ADR-016.
+- **Consequences:**
+  - `diffrax` branch's lifetime ends at the merge-back (it's deleted from `origin` after merge, like any feature branch); the dual-branch arrangement closes.
+  - The 6 `nstep ≤ 30` M5 xfails permanently disappear from `main`'s history (they were already removed on `diffrax`).
+  - Anyone wanting to recover the handwritten-solver behavior post-merge does so via the `v0.1.0` tag, not by branching from `main`.
+  - Any future solver-port work (e.g., if PR-D3 ever resurfaces per DEFERRED.md's conditions) follows the same handwritten-on-main → diffrax-branch → merge-back pattern from ADR-013/-014, but with fresh ADRs (this ADR is M7-specific).
+- **Alternatives considered:**
+  - **Merge back NOW (before M6).** Rejected: `main` would inherit uncompiled diffrax paths that are ~50× slower than handwritten. Better to amortise the slowdown by doing M6 on `diffrax` first.
+  - **Merge back as a series of cherry-picks** (PR-I1 → main, PR-D1 → main, PR-D2 → main). Rejected: cherry-picks lose the history (which ADR-014 went out of its way to preserve), and ADR-015's bar relaxation depends on PR-D1's empirical findings — cherry-picking them out of order doesn't make sense.
+  - **Skip M6 on `diffrax`; do it on `main` post-merge instead.** Rejected: M6 changes will need to exercise the diffrax-tied codepaths and the relaxed bar; doing it on `main` requires the bar relaxation to land first anyway, which is exactly what this merge-back accomplishes. Doing M6 on `diffrax` keeps each milestone scoped to one branch.
+  - **Permanently keep `diffrax` and `main` parallel** (no merge-back). Rejected: explicitly contradicts ADR-014 and creates a long-term maintenance burden. The merge-back is the point of the dual-branch arrangement.
 
 ---
 

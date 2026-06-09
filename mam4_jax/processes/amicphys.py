@@ -58,7 +58,12 @@ import jax.numpy as jnp
 import numpy as np
 from jax.scipy.special import erfc
 
+import diffrax
+
 from .. import data
+from .. import newnuc as nn_mod
+from .. import solvers
+from ..coag import getcoags_wrapper_f
 from ..constants import RGAS
 
 
@@ -80,18 +85,58 @@ _PSTD              = 101325.0        # Pa
 # that (RGAS in mam4_jax.constants is J/K/kmole — divide by 1000).
 
 
+def _h2so4_rhs(t, y, args):
+    """RHS of the H2SO4 gas/aerosol uptake ODE (PR-D2).
+
+    State ``y`` (last axis length ``NTOT_AMODE + 1``):
+        y[..., 0]      = g (H2SO4 gas)
+        y[..., 1:]     = a[mode] (sulfate aerosol per mode)
+
+    ``args = (uptkaer_per_mode, qgas_netprod)``, both constant over
+    the integration interval.
+
+    Linear in g — no nonlinear coupling. Mass balance for the
+    H2SO4 system is `d(g + sum(a))/dt = qgas_netprod` (not zero —
+    constant gas-chem source from `driver.F90:1248`). See plan 017.
+    """
+    uptkaer, src = args
+    g = y[..., 0]
+    flux = uptkaer * g[..., None]                       # (..., NTOT_AMODE)
+    dg = -jnp.sum(flux, axis=-1) + src
+    return jnp.concatenate([dg[..., None], flux], axis=-1)
+
+
+def _soaexch_rhs(t, y, args):
+    """RHS of the SOA gas/aerosol exchange ODE.
+
+    State ``y`` (last axis length ``NTOT_AMODE + 1``):
+        y[..., 0]      = g_soa  (gas-phase SOA)
+        y[..., 1:]     = a_soa[mode]  (per-mode aerosol-phase SOA)
+
+    ``args = (g0_soa, a_opoa, uptkaer_soag)``, all closed over per
+    integration interval; ``uptkaer_soag == 0`` for skipped modes
+    naturally produces zero flux for those components.
+
+    Mass-conserving: ``dg/dt = -sum(flux)``, ``da[i]/dt = flux[i]``.
+    """
+    g0_soa, a_opoa, uptkaer_soag = args
+    g = y[..., 0]
+    a = y[..., 1:]
+    a_ooa_sum = a_opoa + a
+    g_star = (g0_soa[..., None] / jnp.maximum(a_ooa_sum, _A_MIN1)) * a
+    flux = uptkaer_soag * (g[..., None] - g_star)
+    dg = -jnp.sum(flux, axis=-1)
+    return jnp.concatenate([dg[..., None], flux], axis=-1)
+
+
 def _mam_soaexch_1subarea(qgas_cur, qgas_avg, qaer_cur,
                           dtsubstep, temp, pmid, uptkaer):
     """Port of ``mam_soaexch_1subarea`` (``modal_aero_amicphys.F90:3589-3918``).
 
-    **Non-adaptive (single-substep) variant** — assumes ``dtmax * tmpa
-    <= alpha_astem`` so the Fortran's while-loop exits after one
-    iteration. A runtime assertion in the calling test trips loudly if
-    this ever fails. PR-E2 (TBD) will add adaptive sub-stepping via
-    ``jax.lax.while_loop``; per the math, single-substep suffices for
-    the box-model fixture (with `sum(uptkaer_h2so4) ≈ 1e-3 /s` and SOA
-    scaled at 0.81×, `dtmax*tmpa < 1` while `alpha_astem = 0.05` is
-    much larger relative to the threshold... — see plan 005).
+    Integrates the SOA gas/aerosol exchange ODE adaptively via diffrax
+    (Kvaerno5 + PIDController per ``solvers.SolverConfig`` defaults).
+    Replaces the handwritten step-1/step-2 semi-implicit solver from
+    the M3.6 PR-E port; resolves the M5 ``nstep ≤ 30`` gap (ADR-013).
 
     Operates on the amicphys-local view per (col, level). Inputs:
     ``qgas_cur, qgas_avg`` shape ``(..., AMICPHYS_NGAS)``;
@@ -105,9 +150,7 @@ def _mam_soaexch_1subarea(qgas_cur, qgas_avg, qaer_cur,
 
     Simplifications relative to Fortran for MAM4-MOM:
     * ``nsoa = 1``: collapse the per-species loop to scalar operations.
-    * ``ntot_soamode = 4``: SOA can condense onto all four modes
-      (accum/aitken/coarse via `lptr2_soa_a_amode > 0`; pcarbon via
-      `mode_aging_optaa = 1`). Hard-coded via `LPTR2_SOA_A_AMODE_PRESENT`.
+    * ``ntot_soamode = 4``: SOA can condense onto all four modes.
     * ``nufi = -1``: no ultrafine mode to skip.
     * ``opoa_frac = 0.1`` everywhere except primary_carbon (= 0.0).
     """
@@ -140,10 +183,9 @@ def _mam_soaexch_1subarea(qgas_cur, qgas_avg, qaer_cur,
     skip_mode = (uptkaer_ll <= 1.0e-15) | (~eligible)
     uptkaer_soag = jnp.where(skip_mode, 0.0, uptkaer_ll)
 
-    # Load g_soa, a_soa, tot_soa, a_opoa.
-    g_soa = jnp.maximum(qgas_prv, 0.0)                     # (...,)
-    a_soa = jnp.where(skip_mode, 0.0, jnp.maximum(qaer_prv, 0.0))
-    tot_soa = g_soa + jnp.sum(a_soa, axis=-1)              # (...,)
+    # Load g_soa, a_soa, a_opoa for the integration.
+    g_soa_init = jnp.maximum(qgas_prv, 0.0)                # (...,)
+    a_soa_init = jnp.where(skip_mode, 0.0, jnp.maximum(qaer_prv, 0.0))
 
     qaer_pom = qaer_cur[..., iaer_pom, :]                  # (..., NTOT_AMODE)
     a_opoa = jnp.where(
@@ -151,54 +193,40 @@ def _mam_soaexch_1subarea(qgas_cur, qgas_avg, qaer_cur,
         opoa_frac_per_mode * jnp.maximum(qaer_pom, 0.0),
     )
 
-    # Initial sat / g_star / phi for the time-step check.
-    a_ooa_sum = a_opoa + a_soa                             # (..., NTOT_AMODE)
-    sat = g0_soa[..., None] / jnp.maximum(a_ooa_sum, _A_MIN1)
-    g_star = sat * a_soa
-    phi = (g_soa[..., None] - g_star) / jnp.maximum(
-        jnp.maximum(g_soa[..., None], g_star), _G_MIN1,
-    )
-    phi = jnp.where(skip_mode, 0.0, phi)
-    tmpa_check = jnp.sum(uptkaer_soag * jnp.abs(phi), axis=-1)   # (...,)
-
-    # Single-substep assumption: dtmax * tmpa <= alpha_astem.
-    dtcur = dtsubstep                                      # = dtmax = dtfull
-    # The runtime assertion is checked by the caller (jax tracing
-    # forbids data-dependent control flow in pure functions). The
-    # `tmpa_check` value is the input to that assertion.
-
-    # Step 1: explicit estimate of new a_soa using "old" g_soa.
-    beta = dtcur * uptkaer_soag                            # (..., NTOT_AMODE)
-    del_g_soa = g_soa[..., None] - g_star
-    a_soa_tmp = jnp.where(del_g_soa > 0.0,
-                          a_soa + beta * del_g_soa, a_soa)
-    a_ooa_sum_step1 = a_opoa + a_soa_tmp
-    sat_step1 = jnp.where(
-        del_g_soa > 0.0,
-        g0_soa[..., None] / jnp.maximum(a_ooa_sum_step1, _A_MIN1),
-        sat,
+    # Pack ODE state and integrate. State magnitudes are ~1e-13 to
+    # ~1e-10 (kg/kg mixing ratios for trace species), so atol must be
+    # set well below those to avoid atol-bounded per-step error
+    # dominating. PR-D1 finding: atol=1e-12 (default) accumulates to
+    # ~1.7% rel-err on soa_aer accum at dt=1s over 24h; atol=1e-20 keeps
+    # the floor far below the smallest state.
+    y0 = jnp.concatenate([g_soa_init[..., None], a_soa_init], axis=-1)
+    soaexch_cfg = solvers.SolverConfig(rtol=1e-9, atol=1e-20)
+    result = solvers.solve_ivp(
+        _soaexch_rhs,
+        y0=y0,
+        t0=0.0,
+        t1=dtsubstep,
+        args=(g0_soa, a_opoa, uptkaer_soag),
+        saveat=diffrax.SaveAt(t0=True, t1=True),
+        config=soaexch_cfg,
     )
 
-    # Step 2: semi-implicit solve. Math: gather sums over modes, then
-    # solve a single scalar implicit equation per (col, level) for the
-    # new g_soa.
-    denom = 1.0 + beta * sat_step1                         # (..., NTOT_AMODE)
-    safe_denom = jnp.where(skip_mode, 1.0, denom)          # avoid /0 for skipped
-    tmpa_sum = jnp.sum(jnp.where(skip_mode, 0.0, a_soa / safe_denom), axis=-1)
-    tmpb_sum = jnp.sum(jnp.where(skip_mode, 0.0, beta  / safe_denom), axis=-1)
-
-    g_soa_new = (tot_soa - tmpa_sum) / (1.0 + tmpb_sum)
-    g_soa_new = jnp.maximum(0.0, g_soa_new)                # (...,)
-
+    # Endpoint state. The non-negativity clamp is a numerical safety
+    # net (plan 016 §"Boundary conditions"): the math does not
+    # guarantee non-negative aerosol when the gas depletes, so we
+    # close the loop here.
+    y_end = result.ys[-1]                                  # (..., NTOT_AMODE + 1)
+    g_soa_new = jnp.maximum(0.0, y_end[..., 0])            # (...,)
     a_soa_new = jnp.where(
         skip_mode,
         qaer_prv,                                          # untouched
-        (a_soa + beta * g_soa_new[..., None]) / safe_denom,
+        jnp.maximum(0.0, y_end[..., 1:]),
     )
 
-    # Pack back. Single-substep means qgas_avg = (qgas_prv + g_soa_new) / 2,
-    # then max(0, .). Fortran accumulates `dtcur*(qgas_prv + 0.5*tmpc)`
-    # and divides by `dtsum_qgas_avg = dtcur` → just (qgas_prv + g_soa_new) / 2.
+    # Trapezoidal qgas_avg over the integration interval. Matches the
+    # handwritten port's formula `qgas_prv + 0.5 * (g_soa_new - qgas_prv)`
+    # so qgas_avg sees pre-clamp qgas_prv (not max(qgas_prv, 0)). For the
+    # box-model fixture qgas_prv is always >= 0 in practice.
     qgas_avg_new = jnp.maximum(
         0.0, qgas_prv + 0.5 * (g_soa_new - qgas_prv),
     )
@@ -584,66 +612,48 @@ def _mam_gasaerexch_1subarea(qgas, qaer, qnum, qwtr,
         qgas, qgas_avg, qaer, deltat, temp, pmid, uptkaer_stacked,
     )
 
-    # Stage B: analytical solver for H2SO4 condensation.
-    # qgas_prv = qgas (saved before the solver).
+    # Stage B: diffrax integration of the H2SO4 uptake ODE (PR-D2).
+    # Replaces the handwritten 3-branch tmp_kxt closed-form. Both
+    # the handwritten and diffrax sides solve the SAME exact linear
+    # ODE — no semi-implicit truncation gap like soaexch had — so we
+    # expect h2so4_gas to match Fortran tighter than soag_gas does.
     qgas_h2so4_prv = qgas[..., igas_h2so4]                  # (...,)
     qaer_h2so4_prv = qaer[..., iaer_h2so4, :]               # (..., NTOT_AMODE)
-
-    tmpa = jnp.sum(uptkaer_h2so4, axis=-1)                  # (...,)
-    tmp_kxt = tmpa * deltat
     qgas_netprod_h2so4 = 1.0e-16                            # mol/mol/s (driver.F90:1248)
-    tmp_pxt = qgas_netprod_h2so4 * deltat
 
-    tmp_q1 = qgas_h2so4_prv
-
-    # Two analytical branches depending on tmp_kxt magnitude.
-    # Branch A: tmp_kxt > 0.001 → use exp(-tmp_kxt).
-    # Branch B: tmp_kxt <= 0.001 → Taylor series (avoids cancellation).
-    # Branch C: tmp_kxt < 1e-20 → uptake negligible, no qaer update.
-    tmp_kxt2 = tmp_kxt * tmp_kxt
-    safe_kxt = jnp.where(tmp_kxt > 0.0, tmp_kxt, 1.0)       # avoid 0/0
-    tmp_pok = tmp_pxt / safe_kxt
-    e = jnp.exp(-tmp_kxt)
-
-    q3_A = (tmp_q1 - tmp_pok) * e + tmp_pok
-    q4_A = (tmp_q1 - tmp_pok) * (1.0 - e) / safe_kxt + tmp_pok
-    q3_B = tmp_q1 * (1.0 - tmp_kxt + tmp_kxt2 * 0.5) + \
-           tmp_pxt * (1.0 - tmp_kxt * 0.5 + tmp_kxt2 / 6.0)
-    q4_B = tmp_q1 * (1.0 - tmp_kxt * 0.5 + tmp_kxt2 / 6.0) + \
-           tmp_pxt * (0.5 - tmp_kxt / 6.0 + tmp_kxt2 / 24.0)
-    q3_C = tmp_q1 + tmp_pxt           # tmp_kxt < 1e-20 (uptake essentially zero)
-    q4_C = tmp_q1 + tmp_pxt * 0.5
-
-    use_A = tmp_kxt > 0.001
-    use_C = tmp_kxt < 1.0e-20
-    use_B = (~use_A) & (~use_C)
-
-    tmp_q3 = jnp.where(use_A, q3_A, jnp.where(use_B, q3_B, q3_C))
-    tmp_q4 = jnp.where(use_A, q4_A, jnp.where(use_B, q4_B, q4_C))
-
-    new_qgas_h2so4 = tmp_q3
-    tmp_qdel_cond = (tmp_q1 + tmp_pxt) - tmp_q3              # (...,)
-
-    # Distribute the gas-phase loss across modes (proportional to per-mode uptake).
-    # Match Fortran's operator order at line 3536: tmpc = tmp_qdel_cond * (uptkaer/tmpa).
-    # The parenthesization (uptkaer/tmpa) BEFORE the multiplication is 1 ULP
-    # different from (tmp_qdel_cond * uptkaer) / tmpa, so we replicate it.
-    safe_tmpa = jnp.where(tmpa > 0.0, tmpa, 1.0)
-    frac_per_mode = jnp.where(
-        uptkaer_h2so4 > 0.0, uptkaer_h2so4 / safe_tmpa[..., None], 0.0,
+    g_h2so4_init = jnp.maximum(qgas_h2so4_prv, 0.0)
+    a_h2so4_init = jnp.maximum(qaer_h2so4_prv, 0.0)
+    y0_h = jnp.concatenate(
+        [g_h2so4_init[..., None], a_h2so4_init], axis=-1,
     )
-    delta_qaer_h2so4 = tmp_qdel_cond[..., None] * frac_per_mode
-    # When tmp_kxt < 1e-20, the Fortran skips the qaer update entirely
-    # (line 3556-3563). Zero-out the delta in that case.
-    delta_qaer_h2so4 = jnp.where(use_C[..., None], 0.0, delta_qaer_h2so4)
-    new_qaer_h2so4 = qaer_h2so4_prv + delta_qaer_h2so4       # (..., NTOT_AMODE)
+    h2so4_cfg = solvers.SolverConfig(rtol=1e-9, atol=1e-20)
+    h2so4_result = solvers.solve_ivp(
+        _h2so4_rhs,
+        y0=y0_h,
+        t0=0.0,
+        t1=deltat,
+        args=(uptkaer_h2so4, qgas_netprod_h2so4),
+        saveat=diffrax.SaveAt(t0=True, t1=True),
+        config=h2so4_cfg,
+    )
+    y_h_end = h2so4_result.ys[-1]
+    new_qgas_h2so4 = jnp.maximum(0.0, y_h_end[..., 0])
+    new_qaer_h2so4 = jnp.maximum(0.0, y_h_end[..., 1:])
+
+    # Endpoint-trapezoidal qgas_avg over the substep. Per plan 017
+    # §"qgas_avg integration strategy", default to endpoint
+    # trapezoidal; if 24h validation shows a dt-INDEPENDENT rel-err
+    # on h2so4_gas (PR-D1 soag_gas signature), switch to a denser
+    # SaveAt. The formula uses pre-clamp qgas_h2so4_prv to match the
+    # soaexch pattern (matches the closed-form `q4` mean-of-endpoints
+    # when h2so4 is non-negative, which is the box-model regime).
+    tmp_q4 = jnp.maximum(
+        0.0, qgas_h2so4_prv + 0.5 * (new_qgas_h2so4 - qgas_h2so4_prv),
+    )
 
     # Stage C: pack back into qgas / qaer / qgas_avg arrays.
     new_qgas = qgas.at[..., igas_h2so4].set(new_qgas_h2so4)
     new_qaer = qaer.at[..., iaer_h2so4, :].set(new_qaer_h2so4)
-    # `tmp_q4` is the analytical-solver's time-averaged H2SO4 vmr
-    # over the substep — Fortran's `qgas_avg(igas_h2so4)` (line 3533).
-    # Newnuc (PR-F3) consumes this when `newnuc_h2so4_conc_optaa == 2`.
     new_qgas_avg = qgas_avg.at[..., igas_h2so4].set(tmp_q4)
 
     return new_qgas, new_qaer, new_qgas_avg
@@ -833,8 +843,6 @@ def _mam_newnuc_1subarea(qgas_cur, qgas_avg, qnum_cur, qaer_cur, qwtr_cur,
       skipped — we hardcode the default optaa=2 path.
     - Diagnostic-output blocks are omitted.
     """
-    from .. import newnuc as nn_mod   # mam4_jax.newnuc (sibling pkg)
-
     nait     = data.AITKEN_MODE_IDX
     iaer_soa = data.AMICPHYS_IAER_SOA
     iaer_so4 = data.AMICPHYS_IAER_SOA + 1   # so4 follows SOA in amicphys ordering
@@ -970,8 +978,6 @@ def _mam_coag_1subarea(qnum_cur, qaer_cur, qwtr_cur,
 
     Returns updated ``(qnum_cur, qaer_cur)``.
     """
-    from ..coag import getcoags_wrapper_f
-
     nait = data.AITKEN_MODE_IDX
     nacc = data.ACCUM_MODE_IDX
     npca = data.PCARBON_MODE_IDX

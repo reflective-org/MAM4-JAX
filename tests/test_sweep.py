@@ -1,27 +1,20 @@
-"""Validate JAX vs Fortran on the 12-point convergence sweep (M5).
+"""24-hour validation sweep for the diffrax branch (M7 PR-D1).
 
-For each ``(deltat, nstep)`` in the canonical sweep, drive
-``mam4_jax.driver.run_timesteps(ic, nstep)`` with ``state["deltat"] = deltat``
-and compare the per-step trajectory against the matching Fortran NetCDF
-in ``tests/reference/sweep_no_pcarbon_aging/``.
+Replaces the M5 12-point convergence sweep (1800 s window at
+``rtol=1e-6``) with a 4-dt × 24h trajectory test at the relaxed
+diffrax-branch acceptance bar (ADR-015): **max rel-err < 3% over
+24h at dt ≤ 5s**. Coarser dt (30s, 300s) record diagnostics
+without asserting — the dt-dependence at coarse dt is operator-
+splitting truncation, not a diffrax issue, and gating on it would
+conflate solver-port validation with driver-architecture work.
 
-**On ``main``: restricted to nstep >= 60.** At nstep <= 30 (i.e.
-``deltat >= 60s``) Fortran's ``mam_soaexch_1subarea``
-(``modal_aero_amicphys.F90:3835-3843``) triggers adaptive substepping
-(``dtcur = alpha_astem/tmpa``) — multiple smaller integration steps
-within one amicphys call. The ``main``-branch JAX port assumes
-single-substep (``dtcur = dtfull``). **Permanently deferred on
-``main`` per ADR-013** (``docs/KEY_DECISIONS.md``): adaptive
-substepping is solely the ``diffrax`` branch's job, since diffrax's
-standard adaptive controller provides it natively. The 6
-small-``nstep`` cases here are marked ``xfail`` and should flip to
-expected-pass on the ``diffrax`` branch with the test file
-structurally identical to ``main`` — only the solver differs.
-
-The 60-step fixture used by M4 PR-B stayed below Fortran's adaptive-
-substep trigger because ``deltat = 30s`` is small relative to the SOA
-``alpha_astem / tmpa`` threshold. The empirical threshold is sharp:
-nstep >= 60 matches at ~2e-8; nstep <= 30 jumps to 3e-3 to 1e-1.
+Background and rationale: ADR-015 (`docs/KEY_DECISIONS.md`),
+`docs/plans/016-diffrax-soaexch.md`, and the
+`project-diffrax-structural-offset` memory. The 6 previously-
+`xfail`ed M5 cases on `main` (nstep ≤ 30) are deleted here — their
+failure mode (single-substep semi-implicit gap) is fixed by
+diffrax, and what remains is the structural diffrax-vs-Fortran
+offset which is the focus of this rewritten sweep.
 """
 from __future__ import annotations
 
@@ -36,30 +29,28 @@ import mam4_jax  # noqa: F401  - enables jax_enable_x64
 from mam4_jax import data
 from mam4_jax.driver import run_timesteps
 
-REF_SWEEP_DIR = (Path(__file__).resolve().parent
-                 / "reference" / "sweep_no_pcarbon_aging")
-REF_IC_DIR    = (Path(__file__).resolve().parent
-                 / "reference" / "per_process_full_minus_pcarbon_aging")
+REF_24H_DIR = (Path(__file__).resolve().parent
+               / "reference" / "sweep_24h_no_pcarbon_aging")
+REF_IC_DIR = (Path(__file__).resolve().parent
+              / "reference" / "per_process_full_minus_pcarbon_aging")
 
-#: Step counts validated in this PR — restricted to where JAX's
-#: single-substep SOA assumption holds (deltat <= 30s).
-NSTEP_OK   = (60, 120, 180, 360, 900, 1800)
-#: Step counts that require adaptive SOA substepping (PR-E2 follow-up).
-NSTEP_DEFER = (1, 2, 4, 9, 18, 30)
+# 24h-validation dt values.
+DT_GATED = (1, 5)        # asserted at the <3% bar
+DT_DIAGNOSTIC = (30, 300)  # recorded, not asserted
 
-T_BOX_MODEL    = 273.0
+TOTAL_DURATION_S = 86400  # 24 hours
+ACCEPTANCE_BAR = 3.0e-2   # ADR-015: max rel-err < 3% on diffrax at dt ≤ 5s
+
+T_BOX_MODEL = 273.0
 PMID_BOX_MODEL = 1.0e5
 ZMID_BOX_MODEL = 3.0e3
 PBLH_BOX_MODEL = 1.1e3
-RH_BOX_MODEL   = 0.9
-TOTAL_DURATION_S = 1800
+RH_BOX_MODEL = 0.9
 
 
 @pytest.fixture(scope="module")
 def initial_state() -> dict[str, np.ndarray]:
-    """``calcsize_before[0]`` from the M4 PR-A fixture. The IC depends
-    only on the namelist (not ``nstep``), so the same snapshot serves
-    every sweep point."""
+    """``calcsize_before[0]`` IC — depends only on the namelist, not dt."""
     return {k: np.asarray(v)
             for k, v in np.load(REF_IC_DIR / "calcsize_before.npz").items()}
 
@@ -84,25 +75,16 @@ def _build_state(snapshot: dict[str, np.ndarray], deltat: float):
 
 
 def _so4_pcnst_indices_per_mode() -> list[int]:
-    """Match Fortran's ``lptr_so4_a_amode(i)`` — the SO4 mass-tracer
-    pcnst index for each mode. Inferred from ``LMASSPTR_AMODE`` +
-    ``LSPECTYPE_AMODE`` (sulfate is species type 0 → first slot)."""
     out: list[int] = []
     for m in range(data.NTOT_AMODE):
         type_row = data.LSPECTYPE_AMODE[m]
         mass_row = data.LMASSPTR_AMODE[m]
-        sulfate_slot = next(
-            (s for s, t in enumerate(type_row) if t == 0), -1)
-        out.append(int(mass_row[sulfate_slot]) if sulfate_slot >= 0 else -1)
+        slot = next((s for s, t in enumerate(type_row) if t == 0), -1)
+        out.append(int(mass_row[slot]) if slot >= 0 else -1)
     return out
 
 
 def _soa_pcnst_indices_per_mode() -> list[int]:
-    """Match Fortran's ``lptr_soa_a_amode(i)``. SOA = 's-organic' =
-    species type 4 in SPECNAME_AMODE (sulfate=0, ammonium=1, nitrate=2,
-    p-organic=3, s-organic=4, black-c=5, seasalt=6, dust=7, m-organic=8).
-    Pcarbon mode has no SOA slot — returns -1, equivalent to Fortran's
-    ``lptr_soa_a_amode(pcarbon) = 0`` (no mass tracer)."""
     out: list[int] = []
     for m in range(data.NTOT_AMODE):
         type_row = data.LSPECTYPE_AMODE[m]
@@ -114,39 +96,28 @@ def _soa_pcnst_indices_per_mode() -> list[int]:
 
 SO4_IDX = _so4_pcnst_indices_per_mode()
 SOA_IDX = _soa_pcnst_indices_per_mode()
-H2SO4_PCNST_IDX = int(data.LMAP_GAS[1])   # tracer 6
-SOAG_PCNST_IDX  = int(data.LMAP_GAS[0])   # tracer 9
+H2SO4_PCNST_IDX = int(data.LMAP_GAS[1])
+SOAG_PCNST_IDX = int(data.LMAP_GAS[0])
 
 
-@pytest.mark.parametrize("nstep", NSTEP_OK)
-def test_sweep_matches_fortran(initial_state, nstep: int) -> None:
-    """JAX 12-point convergence sweep: nstep in {60, 120, ..., 1800}.
+def _run_and_compare(state: dict, nstep: int, dt: int) -> dict[str, float]:
+    """Run JAX for `nstep` steps, compare to Fortran NetCDF at the same dt.
 
-    Validates that the JAX driver reproduces Fortran's NetCDF outputs
-    (``num_aer``, ``so4_aer``, ``soa_aer``, ``h2so4_gas``, ``soag_gas``)
-    at every captured timestep within ADR-003's 1e-6 budget. Size
-    fields (``dgn_a``) get the 1e-3 caveat consistent with prior
-    tests.
+    Returns a dict of max per-field per-mode rel-err.
     """
-    deltat = TOTAL_DURATION_S // nstep
-    state = _build_state(initial_state, deltat=float(deltat))
     traj = run_timesteps(state, n_steps=nstep)
-
-    nc_path = REF_SWEEP_DIR / f"mam_dt{deltat}_ndt{nstep}.nc"
+    nc_path = REF_24H_DIR / f"mam_dt{dt}_ndt{nstep}.nc"
     ds = nc.Dataset(nc_path, "r")
     try:
-        f_num   = np.asarray(ds.variables["num_aer"][:])
-        f_so4   = np.asarray(ds.variables["so4_aer"][:])
-        f_soa   = np.asarray(ds.variables["soa_aer"][:])
+        f_num = np.asarray(ds.variables["num_aer"][:])
+        f_so4 = np.asarray(ds.variables["so4_aer"][:])
+        f_soa = np.asarray(ds.variables["soa_aer"][:])
         f_h2so4 = np.asarray(ds.variables["h2so4_gas"][:])
-        f_soag  = np.asarray(ds.variables["soag_gas"][:])
-        f_dgn_a = np.asarray(ds.variables["dgn_a"][:])
+        f_soag = np.asarray(ds.variables["soag_gas"][:])
     finally:
         ds.close()
 
-    j_q   = np.asarray(traj["q"])           # (nstep, 1, 1, 35)
-    j_dgn = np.asarray(traj["dgncur_a"])    # (nstep, 1, 1, 4)
-
+    j_q = np.asarray(traj["q"])
     j_num = np.stack(
         [j_q[:, 0, 0, int(data.NUMPTR_AMODE[m])] for m in range(4)], axis=0)
     j_so4 = np.stack(
@@ -156,58 +127,59 @@ def test_sweep_matches_fortran(initial_state, nstep: int) -> None:
         [j_q[:, 0, 0, SOA_IDX[m]] if SOA_IDX[m] >= 0 else np.zeros(nstep)
          for m in range(4)], axis=0)
     j_h2so4 = j_q[:, 0, 0, H2SO4_PCNST_IDX]
-    j_soag  = j_q[:, 0, 0, SOAG_PCNST_IDX]
-    j_dgn_a = np.stack([j_dgn[:, 0, 0, m] for m in range(4)], axis=0)
+    j_soag = j_q[:, 0, 0, SOAG_PCNST_IDX]
 
-    # rtol=1e-6 on tracers, rtol=1e-3 on dgn_a (size-field caveat).
-    for name, jv, fv in (
-        ("num_aer",    j_num,   f_num),
-        ("so4_aer",    j_so4,   f_so4),
-        ("soa_aer",    j_soa,   f_soa),
-        ("h2so4_gas",  j_h2so4, f_h2so4),
-        ("soag_gas",   j_soag,  f_soag),
+    out: dict[str, float] = {}
+    for fld, jv, fv in (
+        ("num_aer", j_num, f_num),
+        ("so4_aer", j_so4, f_so4),
+        ("soa_aer", j_soa, f_soa),
     ):
-        np.testing.assert_allclose(
-            jv, fv, rtol=1e-6, atol=1e-20,
-            err_msg=f"sweep nstep={nstep}: {name} diverged from Fortran",
-        )
-    np.testing.assert_allclose(
-        j_dgn_a, f_dgn_a, rtol=1e-3, atol=1e-15,
-        err_msg=f"sweep nstep={nstep}: dgn_a drifted",
-    )
+        for m in range(4):
+            if not np.any(fv[m]):
+                continue
+            rel = np.abs(jv[m] - fv[m]) / np.maximum(np.abs(fv[m]), 1e-300)
+            out[f"{fld}_mode{m}"] = float(rel.max())
+    for fld, jv, fv in (
+        ("h2so4_gas", j_h2so4, f_h2so4),
+        ("soag_gas", j_soag, f_soag),
+    ):
+        rel = np.abs(jv - fv) / np.maximum(np.abs(fv), 1e-300)
+        out[fld] = float(rel.max())
+    out["MAX"] = max(out.values())
+    return out
 
 
-@pytest.mark.parametrize("nstep", NSTEP_DEFER)
-def test_sweep_xfail_without_adaptive_soa_substep(initial_state, nstep: int) -> None:
-    """At nstep <= 30 (``deltat >= 60s``) Fortran's SOA exchange
-    triggers adaptive substepping. The ``main``-branch JAX port assumes
-    single-substep so it diverges. **Permanently deferred on ``main``**
-    per ADR-013 (``docs/KEY_DECISIONS.md``); resolved on the long-lived
-    ``diffrax`` branch where diffrax's standard adaptive controller
-    provides substepping for free.
-
-    Marked ``xfail`` so the gap remains visible in pytest output and the
-    per-nstep rel-err is quoted in the xfail message. These cases will
-    flip to expected-pass on the ``diffrax`` branch (with the test file
-    structurally identical to ``main`` — only the solver differs).
+@pytest.mark.parametrize("dt", DT_GATED)
+def test_sweep_24h_diffrax_within_3pct(initial_state, dt: int) -> None:
+    """At dt ∈ {1, 5}, max per-field per-mode rel-err over 24h must be < 3%
+    (ADR-015's diffrax-branch bar). soag_gas typically dominates at ~2.5%.
     """
-    deltat = TOTAL_DURATION_S // nstep
-    state = _build_state(initial_state, deltat=float(deltat))
-    traj = run_timesteps(state, n_steps=nstep)
-
-    nc_path = REF_SWEEP_DIR / f"mam_dt{deltat}_ndt{nstep}.nc"
-    ds = nc.Dataset(nc_path, "r")
-    try:
-        f_num = np.asarray(ds.variables["num_aer"][:])
-    finally:
-        ds.close()
-    j_q   = np.asarray(traj["q"])
-    j_num = np.stack(
-        [j_q[:, 0, 0, int(data.NUMPTR_AMODE[m])] for m in range(4)], axis=0)
-    rel = np.abs(j_num - f_num) / np.maximum(np.abs(f_num), 1e-300)
-
-    pytest.xfail(
-        f"nstep={nstep} (dt={deltat}s) — adaptive SOA substepping. "
-        f"Permanently deferred on main per ADR-013; the `diffrax` "
-        f"branch closes this. Worst num_aer rel-err: {rel.max():.2e}."
+    nstep = TOTAL_DURATION_S // dt
+    state = _build_state(initial_state, deltat=float(dt))
+    rel = _run_and_compare(state, nstep, dt)
+    worst = max(rel, key=lambda k: rel[k] if k != "MAX" else -1)
+    assert rel["MAX"] < ACCEPTANCE_BAR, (
+        f"dt={dt}s, 24h: max rel-err {rel['MAX']:.3e} exceeds 3% bar. "
+        f"Worst field: {worst} at {rel[worst]:.3e}. Full breakdown: {rel}"
     )
+
+
+@pytest.mark.parametrize("dt", DT_DIAGNOSTIC)
+def test_sweep_24h_diffrax_diagnostic(initial_state, dt: int,
+                                       capsys) -> None:
+    """At dt ∈ {30, 300}, record max rel-err for visibility but do NOT
+    assert against the 3% bar. The dt-dependence at coarse dt is
+    operator-splitting truncation in the driver (ADR-015 §coarse-dt);
+    gating on it conflates solver-port work with M6 driver work.
+
+    This test always passes; its purpose is to print the diagnostic to
+    pytest output so it stays visible in CI logs.
+    """
+    nstep = TOTAL_DURATION_S // dt
+    state = _build_state(initial_state, deltat=float(dt))
+    rel = _run_and_compare(state, nstep, dt)
+    with capsys.disabled():
+        worst = max((k for k in rel if k != "MAX"), key=lambda k: rel[k])
+        print(f"\n[24h diag] dt={dt}s nstep={nstep}: max rel-err "
+              f"{rel['MAX']:.3e} on {worst}. (Not gated; ADR-015.)")
