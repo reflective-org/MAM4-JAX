@@ -28,6 +28,30 @@ class SolverConfig:
     dt0: Optional[float] = None
 
 
+# Process-global overrides applied by `solve_ivp` on top of the per-call
+# `SolverConfig`. Lets a host (e.g. jax-gcm) dial the speed/accuracy/robustness
+# tradeoff without threading config through every call site:
+#   * rtol/atol — looser tolerances => far fewer adaptive steps (the dominant
+#     cost; atol=1e-20 default forces float64 + many tiny steps).
+#   * throw=False — a cell that hits ``max_steps`` returns its best estimate
+#     with a non-success ``result`` code instead of raising, so one pathological
+#     cell can't abort (or, with a raised cap, crawl) the whole vmap batch.
+# All ``None`` => upstream behaviour is unchanged.
+_OVERRIDE: dict = {"rtol": None, "atol": None, "max_steps": None, "throw": None}
+
+
+def configure(rtol=None, atol=None, max_steps=None, throw=None) -> None:
+    """Set process-global solver overrides (any ``None`` leaves that unchanged)."""
+    if rtol is not None:
+        _OVERRIDE["rtol"] = float(rtol)
+    if atol is not None:
+        _OVERRIDE["atol"] = float(atol)
+    if max_steps is not None:
+        _OVERRIDE["max_steps"] = int(max_steps)
+    if throw is not None:
+        _OVERRIDE["throw"] = bool(throw)
+
+
 @dataclass(frozen=True)
 class SolverResult:
     """Standardized return from `solve_ivp`.
@@ -62,6 +86,11 @@ def solve_ivp(
 
     JIT-traceable in `y0` / `args`; not in `config` or `saveat`.
     """
+    rtol = _OVERRIDE["rtol"] if _OVERRIDE["rtol"] is not None else config.rtol
+    atol = _OVERRIDE["atol"] if _OVERRIDE["atol"] is not None else config.atol
+    max_steps = (_OVERRIDE["max_steps"] if _OVERRIDE["max_steps"] is not None
+                 else config.max_steps)
+    throw = _OVERRIDE["throw"] if _OVERRIDE["throw"] is not None else True
     solver_cls = getattr(diffrax, config.solver)
     sol = diffrax.diffeqsolve(
         diffrax.ODETerm(rhs),
@@ -72,9 +101,8 @@ def solve_ivp(
         y0=y0,
         args=args,
         saveat=saveat if saveat is not None else diffrax.SaveAt(t1=True),
-        stepsize_controller=diffrax.PIDController(
-            rtol=config.rtol, atol=config.atol,
-        ),
-        max_steps=config.max_steps,
+        stepsize_controller=diffrax.PIDController(rtol=rtol, atol=atol),
+        max_steps=max_steps,
+        throw=throw,
     )
     return SolverResult(ts=sol.ts, ys=sol.ys, stats=sol.stats)
