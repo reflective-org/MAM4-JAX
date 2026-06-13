@@ -127,7 +127,10 @@ def test_getcoags_finite_in_float32() -> None:
     was = jax.config.read("jax_enable_x64")
     try:
         jax.config.update("jax_enable_x64", False)
-        f32 = lambda a: jnp.asarray(a, jnp.float32)
+
+        def f32(a):
+            return jnp.asarray(a, jnp.float32)
+
         dgatk = f32(d["dgnumA"])
         dgacc = f32(d["dgnumB"])
         sgatk = jnp.full_like(dgatk, SG_ATK)
