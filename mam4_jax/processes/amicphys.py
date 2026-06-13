@@ -79,6 +79,7 @@ _G_MIN1            = 1.0e-20
 _DELH_VAP_SOA      = 156.0e3         # J / mol (heat of vaporization of SOA gas)
 _P0_SOA_298        = 1.0e-10         # atm (eq. vapor pressure at 298 K)
 _ALPHA_ASTEM       = 0.05            # adaptive time-step parameter
+_NITER_MAX_ASTEM   = 1000            # max adaptive substeps (Fortran niter_max)
 _FLAG_PCARBON_OPOA_ZERO = True       # set opoa_frac=0 for primary-carbon mode
 _PSTD              = 101325.0        # Pa
 # Note: the Fortran sub-routine declares `rgas = 8.3144 J/K/mol`. The
@@ -116,19 +117,27 @@ def configure_condensation(backend=None, n_substeps=None) -> None:
 
     Parameters
     ----------
-    backend : {"diffrax", "substep"}, optional
+    backend : {"diffrax", "substep", "astem"}, optional
         ``"diffrax"`` (the default) keeps the adaptive Kvaerno5 solve.
         ``"substep"`` switches to the operator-split backend: analytic
-        (exact) H2SO4 condensation plus an N-substep semi-implicit SOA
-        exchange. ``None`` leaves the current backend unchanged.
+        (exact) H2SO4 condensation plus an ``n_substeps`` fixed-substep
+        SOA exchange integrated with the EXACT closed form of the
+        frozen-``g_star`` linear ODE per substep (fast; no per-cell loop).
+        ``"astem"`` is the Fortran-faithful adaptive scheme: the same
+        analytic H2SO4, but the SOA exchange uses the upstream
+        semi-implicit step1/step2 Euler update with an adaptive substep
+        ``dtcur = alpha_astem / tmpa`` (``jax.lax.while_loop``), matching
+        ``mam_soaexch_1subarea`` exactly. ``None`` leaves it unchanged.
     n_substeps : int, optional
         Number of fixed substeps for the SOA exchange when
-        ``backend == "substep"``. ``None`` leaves it unchanged.
+        ``backend == "substep"`` (ignored by ``"astem"``, which chooses
+        its substeps adaptively). ``None`` leaves it unchanged.
     """
     if backend is not None:
-        if backend not in ("diffrax", "substep"):
+        if backend not in ("diffrax", "substep", "astem"):
             raise ValueError(
-                f"backend must be 'diffrax' or 'substep', got {backend!r}"
+                f"backend must be 'diffrax', 'substep' or 'astem', "
+                f"got {backend!r}"
             )
         _COND["backend"] = backend
     if n_substeps is not None:
@@ -450,6 +459,155 @@ def _mam_soaexch_1subarea_substep(qgas_cur, qgas_avg, qaer_cur,
     qgas_avg_out = qgas_avg.at[..., ll].set(qgas_avg_new)
     qaer_cur_out = qaer_cur.at[..., iaer_soa, :].set(a_soa_new)
 
+    return qgas_cur_out, qgas_avg_out, qaer_cur_out
+
+
+def _mam_soaexch_1subarea_astem(qgas_cur, qgas_avg, qaer_cur,
+                                dtsubstep, temp, pmid, uptkaer):
+    """Fortran-faithful adaptive ASTEM SOA exchange.
+
+    A direct port of the ``mam_soaexch_1subarea`` time loop
+    (``modal_aero_amicphys.F90:3753-3909``): the SAME inputs, return
+    signature and physics as :func:`_mam_soaexch_1subarea`, integrated
+    with the upstream's own adaptive operator-split scheme rather than
+    diffrax or the fixed-substep closed form.
+
+    Each substep:
+
+    1. Picks an adaptive step ``dtcur`` so the fractional gas/aerosol
+       change is bounded: ``tmpa = max_ll sum_n uptkaer*|phi|`` with
+       ``phi = (g - g_star)/max(g, g_star, g_min1)``; if
+       ``(dtfull-tcur)*tmpa <= alpha_astem`` it takes the final step to
+       ``dtfull``, else ``dtcur = alpha_astem/tmpa``.
+    2. **Step 1** (explicit predictor): for condensing modes
+       (``del_g = g - g_star > 0``) advances ``a_soa`` with ``beta =
+       dtcur*uptkaer`` and recomputes the saturation ratio ``sat``.
+    3. **Step 2** (implicit corrector, mass-conserving): solves for the
+       new gas ``g = (tot_soa - sum a/(1+beta*sat)) / (1 + sum
+       beta/(1+beta*sat))`` and the new ``a_soa`` semi-implicitly.
+
+    The loop runs via ``jax.lax.while_loop`` until ``tcur`` reaches
+    ``dtfull`` (or ``niter_max`` substeps). Under ``vmap`` this is a
+    batched while-loop: it iterates while ANY cell is unfinished, with
+    finished cells masked out (``dtcur=0``) so their state and
+    ``qgas_avg`` accumulator are frozen — i.e. the batch is paced by its
+    worst (stiffest) cell, the price of exactly matching the upstream
+    adaptive stepping. ``qgas_avg`` is the trapezoidal time-mean the
+    upstream accumulates (``sum dtcur*(qgas_prv + 0.5*dg) / sum dtcur``),
+    the input newnuc expects.
+
+    nsoa = 1, so the per-species loop collapses to scalar ops; see
+    :func:`_mam_soaexch_1subarea` for the mode/skip bookkeeping.
+    """
+    ll = 0
+    iaer_soa = data.AMICPHYS_IAER_SOA
+    iaer_pom = data.AMICPHYS_IAER_POM
+
+    opoa_frac_per_mode = jnp.full(data.NTOT_AMODE, 0.1, dtype=jnp.float64)
+    if _FLAG_PCARBON_OPOA_ZERO and data.AMICPHYS_NPCA >= 0:
+        opoa_frac_per_mode = opoa_frac_per_mode.at[data.AMICPHYS_NPCA].set(0.0)
+
+    r_univ_J_per_K_per_mol = RGAS / 1.0e3
+    p0_soa = _P0_SOA_298 * jnp.exp(
+        -(_DELH_VAP_SOA / r_univ_J_per_K_per_mol) *
+        (1.0 / temp - 1.0 / 298.0)
+    )
+    g0_soa = _PSTD * p0_soa / pmid           # (...,)
+
+    qgas_prv0 = qgas_cur[..., ll]            # (...,)
+    qaer_prv0 = qaer_cur[..., iaer_soa, :]   # (..., NTOT_AMODE)
+
+    uptkaer_ll = uptkaer[..., ll, :]                       # (..., NTOT_AMODE)
+    eligible = jnp.asarray(data.LPTR2_SOA_A_AMODE_PRESENT[:, ll]) | \
+               (jnp.asarray(data.MODE_AGING_OPTAA) > 0)    # (NTOT_AMODE,)
+    skip_mode = (uptkaer_ll <= 1.0e-15) | (~eligible)
+    uptkaer_soag = jnp.where(skip_mode, 0.0, uptkaer_ll)   # (..., NTOT_AMODE)
+
+    # a_opoa is fixed across substeps (the POA aerosol it depends on is not
+    # touched by soaexch).
+    qaer_pom = qaer_cur[..., iaer_pom, :]
+    a_opoa = jnp.where(
+        skip_mode, 0.0, opoa_frac_per_mode * jnp.maximum(qaer_pom, 0.0),
+    )
+    g0_soa_e = g0_soa[..., None]                           # (..., 1)
+
+    dtfull = dtsubstep
+    g_soa0 = jnp.maximum(qgas_prv0, 0.0)
+    a_soa0 = jnp.where(skip_mode, 0.0, jnp.maximum(qaer_prv0, 0.0))
+    tcur0 = jnp.zeros_like(g_soa0)
+    qavg0 = jnp.zeros_like(g_soa0)
+    dtsum0 = jnp.zeros_like(g_soa0)
+
+    def _cond(carry):
+        g_soa, a_soa, qavg, dtsum, tcur, niter = carry
+        return (niter < _NITER_MAX_ASTEM) & jnp.any(tcur < dtfull - 1.0e-3)
+
+    def _body(carry):
+        g_soa, a_soa, qavg, dtsum, tcur, niter = carry
+        active = tcur < dtfull - 1.0e-3                    # (...,) bool
+        active_m = active[..., None]
+
+        qgas_prv = g_soa
+        g_cur = jnp.maximum(qgas_prv, 0.0)                 # (...,)
+        a_cur = jnp.where(skip_mode, 0.0, jnp.maximum(a_soa, 0.0))
+        tot_soa = g_cur + jnp.sum(a_cur, axis=-1)          # (...,)
+
+        # --- determine adaptive dtcur ---
+        a_ooa_sum = a_opoa + a_cur                         # (..., NTOT)
+        sat = g0_soa_e / jnp.maximum(a_ooa_sum, _A_MIN1)   # (..., NTOT)
+        g_star = sat * a_cur
+        phi = (g_cur[..., None] - g_star) / jnp.maximum(
+            jnp.maximum(g_cur[..., None], g_star), _G_MIN1)
+        tmpa = jnp.sum(uptkaer_soag * jnp.abs(phi), axis=-1)   # (...,)
+
+        dtmax = dtfull - tcur
+        final = (dtmax * tmpa) <= _ALPHA_ASTEM
+        tmpa_safe = jnp.where(tmpa > 0.0, tmpa, 1.0)
+        dtcur = jnp.where(final, dtmax, _ALPHA_ASTEM / tmpa_safe)
+        dtcur = jnp.where(active, dtcur, 0.0)              # freeze done cells
+        tcur_new = jnp.where(final, dtfull, tcur + dtcur)
+        tcur_new = jnp.where(active, tcur_new, tcur)
+
+        # --- step 1: explicit predictor + sat update for condensing modes ---
+        beta = dtcur[..., None] * uptkaer_soag             # (..., NTOT)
+        del_g = g_cur[..., None] - g_star
+        cond = del_g > 0.0
+        a_tmp = jnp.where(cond, a_cur + beta * del_g, a_cur)
+        a_ooa_sum2 = a_opoa + a_tmp
+        sat_new = g0_soa_e / jnp.maximum(a_ooa_sum2, _A_MIN1)
+        sat = jnp.where(cond, sat_new, sat)
+
+        # --- step 2: semi-implicit corrector (mass-conserving in tot_soa) ---
+        denom = 1.0 + beta * sat
+        sum_a = jnp.sum(a_cur / denom, axis=-1)            # (...,)
+        sum_b = jnp.sum(beta / denom, axis=-1)             # (...,)
+        g_new = jnp.maximum(0.0, (tot_soa - sum_a) / (1.0 + sum_b))
+        a_new = (a_cur + beta * g_new[..., None]) / denom
+
+        # commit only for active cells; skip modes keep their prior aerosol.
+        g_soa_out = jnp.where(active, g_new, g_soa)
+        a_new = jnp.where(skip_mode, a_soa, a_new)
+        a_soa_out = jnp.where(active_m, a_new, a_soa)
+
+        tmpc = g_new - qgas_prv
+        qavg_out = qavg + dtcur * (qgas_prv + 0.5 * tmpc)
+        dtsum_out = dtsum + dtcur
+
+        return (g_soa_out, a_soa_out, qavg_out, dtsum_out, tcur_new, niter + 1)
+
+    g_soa_end, a_soa_end, qavg_end, dtsum_end, _, _ = jax.lax.while_loop(
+        _cond, _body,
+        (g_soa0, a_soa0, qavg0, dtsum0, tcur0, jnp.asarray(0, jnp.int32)),
+    )
+
+    g_soa_new = jnp.maximum(0.0, g_soa_end)
+    a_soa_new = jnp.where(skip_mode, qaer_prv0, jnp.maximum(0.0, a_soa_end))
+    dtsum_safe = jnp.where(dtsum_end > 0.0, dtsum_end, 1.0)
+    qgas_avg_new = jnp.maximum(0.0, qavg_end / dtsum_safe)
+
+    qgas_cur_out = qgas_cur.at[..., ll].set(g_soa_new)
+    qgas_avg_out = qgas_avg.at[..., ll].set(qgas_avg_new)
+    qaer_cur_out = qaer_cur.at[..., iaer_soa, :].set(a_soa_new)
     return qgas_cur_out, qgas_avg_out, qaer_cur_out
 
 
@@ -823,15 +981,19 @@ def _mam_gasaerexch_1subarea(qgas, qaer, qnum, qwtr,
     # substep — relies on dtmax*tmpa <= alpha_astem on this fixture
     # (see plan 005 §"Scope decisions").
     #
-    # Backend selectable via ``configure_condensation``: the default
-    # "diffrax" path is the adaptive Kvaerno5 solve; "substep" uses the
-    # N-substep operator-split SOA integrator (frozen g_star + closed
-    # form per substep).
+    # Backend selectable via ``configure_condensation``: "diffrax" is the
+    # adaptive Kvaerno5 solve; "substep" the fixed-N closed-form
+    # operator-split integrator (frozen g_star + exact per-substep form);
+    # "astem" the Fortran-faithful adaptive semi-implicit step1/step2 loop.
     uptkaer_stacked = jnp.stack([uptkaer_soa, uptkaer_h2so4], axis=-2)
     if _COND["backend"] == "substep":
         qgas, qgas_avg, qaer = _mam_soaexch_1subarea_substep(
             qgas, qgas_avg, qaer, deltat, temp, pmid, uptkaer_stacked,
             _COND["n_substeps"],
+        )
+    elif _COND["backend"] == "astem":
+        qgas, qgas_avg, qaer = _mam_soaexch_1subarea_astem(
+            qgas, qgas_avg, qaer, deltat, temp, pmid, uptkaer_stacked,
         )
     else:
         qgas, qgas_avg, qaer = _mam_soaexch_1subarea(
@@ -841,8 +1003,8 @@ def _mam_gasaerexch_1subarea(qgas, qaer, qnum, qwtr,
     # Stage B: H2SO4 uptake ODE. This ODE is LINEAR in the gas, so it has
     # an EXACT closed form. The "diffrax" backend solves it adaptively
     # (same exact linear ODE — adaptive integration of a closed-form
-    # solvable system is pure waste); the "substep" backend uses the
-    # analytic closed form directly (~machine precision, one shot).
+    # solvable system is pure waste); the "substep" and "astem" backends
+    # use the analytic closed form directly (~machine precision, one shot).
     qgas_h2so4_prv = qgas[..., igas_h2so4]                  # (...,)
     qaer_h2so4_prv = qaer[..., iaer_h2so4, :]               # (..., NTOT_AMODE)
     qgas_netprod_h2so4 = 1.0e-16                            # mol/mol/s (driver.F90:1248)
@@ -850,7 +1012,7 @@ def _mam_gasaerexch_1subarea(qgas, qaer, qnum, qwtr,
     g_h2so4_init = jnp.maximum(qgas_h2so4_prv, 0.0)
     a_h2so4_init = jnp.maximum(qaer_h2so4_prv, 0.0)
 
-    if _COND["backend"] == "substep":
+    if _COND["backend"] in ("substep", "astem"):
         # Exact closed form. g_avg here is the EXACT time-mean of the gas
         # over the step — the proper input to newnuc (the diffrax path
         # below approximates this with endpoint-trapezoidal `tmp_q4`).

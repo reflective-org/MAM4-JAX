@@ -354,3 +354,33 @@ def test_condensation_substep_matches_fortran(gasaerexch_captured) -> None:
             )
     finally:
         _amic.configure_condensation(**saved)
+
+
+def test_condensation_astem_matches_fortran(gasaerexch_captured) -> None:
+    """The Fortran-faithful ``astem`` backend reproduces the gasaerexch
+    fixture.
+
+    ``astem`` IS the upstream's own adaptive semi-implicit step1/step2
+    SOA scheme (plus the exact analytic H2SO4), so it should be at least
+    as faithful as the diffrax path. We assert the diffrax-branch bar
+    (``rtol=1e-2`` on ``q``/``qqcw``) holds and the result is finite,
+    then restore the process-global default.
+    """
+    from mam4_jax.processes import amicphys as _amic
+    before, aw = gasaerexch_captured
+    state = _build_state(before)
+    saved = dict(_amic._COND)
+    try:
+        _amic.configure_condensation(backend="astem")
+        new_state = amicphys(state,
+                             mdo_gasaerexch=1, mdo_rename=0,
+                             mdo_newnuc=0, mdo_coag=0)
+        for key in ("q", "qqcw"):
+            arr = np.asarray(new_state[key])
+            assert np.all(np.isfinite(arr)), f"astem produced non-finite {key!r}"
+            np.testing.assert_allclose(
+                arr, aw[key], rtol=1e-2, atol=1e-12,
+                err_msg=f"astem gasaerexch diverged from Fortran on {key!r}",
+            )
+    finally:
+        _amic.configure_condensation(**saved)
