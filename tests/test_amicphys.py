@@ -313,3 +313,44 @@ def test_amicphys_returns_all_state_keys(captured) -> None:
     new_state = amicphys(state)
     for key in ("t", "pmid", "cldn", "deltat"):
         assert key in new_state, f"amicphys dropped state key {key!r}"
+
+
+def test_condensation_backend_default_is_diffrax() -> None:
+    """The substep backend is strictly opt-in: nothing changes unless a
+    host calls ``configure_condensation``."""
+    from mam4_jax.processes import amicphys as _amic
+    assert _amic._COND["backend"] == "diffrax"
+
+
+def test_condensation_substep_matches_fortran(gasaerexch_captured) -> None:
+    """The operator-split ``substep`` backend reproduces the Fortran
+    gasaerexch+soaexch fixture at the SAME bar as the diffrax backend.
+
+    The substep path replaces the adaptive Kvaerno5 SOA solve with an
+    N-substep frozen-``g_star`` integrator and the H2SO4 solve with its
+    exact closed form. It must be at least as faithful to Fortran as the
+    diffrax path it replaces — Fortran itself is operator-split, so the
+    substep scheme is structurally closer to it. We assert the existing
+    diffrax-branch tolerance (``rtol=1e-2`` on ``q``/``qqcw``) holds.
+
+    Restores the process-global backend afterwards so the opt-in default
+    doesn't leak into other tests sharing this process.
+    """
+    from mam4_jax.processes import amicphys as _amic
+    before, aw = gasaerexch_captured
+    state = _build_state(before)
+    saved = dict(_amic._COND)
+    try:
+        _amic.configure_condensation(backend="substep", n_substeps=4)
+        new_state = amicphys(state,
+                             mdo_gasaerexch=1, mdo_rename=0,
+                             mdo_newnuc=0, mdo_coag=0)
+        for key in ("q", "qqcw"):
+            arr = np.asarray(new_state[key])
+            assert np.all(np.isfinite(arr)), f"substep produced non-finite {key!r}"
+            np.testing.assert_allclose(
+                arr, aw[key], rtol=1e-2, atol=1e-12,
+                err_msg=f"substep gasaerexch diverged from Fortran on {key!r}",
+            )
+    finally:
+        _amic.configure_condensation(**saved)
