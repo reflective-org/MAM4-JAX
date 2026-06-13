@@ -154,7 +154,6 @@ def getcoags(lamda, kfmatac, kfmat, kfmac, knc,
     sqdgac  = jnp.sqrt(dgacc)
     sqdgat5 = dgat2 * sqdgat
     sqdgac5 = dgac2 * sqdgac
-    sqdgat7 = dgat3 * sqdgat
 
     # xm2/xm3 are computed in the Fortran but not used in any output —
     # keep them out of the JAX port (would force unused computation).
@@ -233,13 +232,23 @@ def getcoags(lamda, kfmatac, kfmat, kfmac, knc,
     qs21 = coagacat2 * bm2ji_v
 
     # --- intermodal: third moment (lines 2724–2747) -----------------------
-    coagnc3 = knc * dgat3 * (
+    # qv12 = coagnc3*coagfm3/(coagnc3+coagfm3) with both terms ∝ dgat3 = d³.
+    # In SI metres d³ ~ (3e-8 m)³ ~ 1e-23, so both terms land at ~1e-38 and in
+    # float32 BOTH underflow to 0 → 0/0 = NaN (the only spot in the MAM4 core
+    # that is not float32-safe). Factor the shared dgat3 out of the harmonic
+    # mean — using sqdgat7 = dgat3*sqdgat — so the harmonic mean is taken over
+    # normal-range values and only the final (clean) multiply by dgat3 is tiny:
+    #     coagnc3 = dgat3 * nc3,   coagfm3 = dgat3 * (sqdgat * fm3)
+    #     qv12    = dgat3 * nc3*(sqdgat*fm3) / (nc3 + sqdgat*fm3)
+    # This is algebraically identical (float64 result unchanged to round-off)
+    # but removes the underflow-driven 0/0.
+    nc3 = knc * (
         2.0 * esat36
         + _A * kngat * (esat16 + r2 * esat04 * esac04)
         + _A * kngac * (esat36 * esac04 + ri2 * esat64 * esac16)
         + r2 * esat16 * esac04 + ri2 * esat64 * esac04
     )
-    coagfm3 = kfmatac * sqdgat7 * bm3i_v * (
+    fm3 = kfmatac * sqdgat * bm3i_v * (
         esat49
         + r * esat36 * esac01
         + 2.0 * r2 * esat25 * esac04
@@ -247,8 +256,7 @@ def getcoags(lamda, kfmatac, kfmat, kfmac, knc,
         + ri3 * esat100 * esac09
         + 2.0 * ri1 * esat64 * esac01
     )
-    coagatac3 = coagnc3 * coagfm3 / (coagnc3 + coagfm3)
-    qv12 = coagatac3
+    qv12 = dgat3 * (nc3 * fm3) / (nc3 + fm3)
 
     # --- intramodal: zeroeth moment (lines 2757–2787) ---------------------
     coagnc_at = knc * (1.0 + esat08 + _A * kngat * (esat20 + esat04))
