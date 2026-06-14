@@ -132,6 +132,44 @@ def configure_condensation(backend=None, n_substeps=None) -> None:
         Number of fixed substeps for the SOA exchange when
         ``backend == "substep"`` (ignored by ``"astem"``, which chooses
         its substeps adaptively). ``None`` leaves it unchanged.
+
+    Notes
+    -----
+    **Autodiff compatibility**:
+
+    - ``"diffrax"`` and ``"substep"`` are reverse-mode differentiable
+      (PR-J5 audited the diffrax path; ``"substep"`` uses ``lax.scan``
+      which is grad-OK). Use either of these for ``jax.grad``-based
+      workflows (e.g., M9 calibration).
+    - ``"astem"`` uses ``jax.lax.while_loop`` for the adaptive substep
+      iteration, which is **NOT reverse-mode differentiable**.
+      ``jax.grad`` through ``run_step`` / ``amicphys`` with the astem
+      backend selected will raise ``TypeError: Reverse-mode
+      differentiation does not work for lax.while_loop``. The contract
+      is locked in by ``test_astem_backend_not_grad_compatible``.
+
+    **Adaptive-substep cap (astem only)**: the inner ``lax.while_loop``
+    is capped at ``_NITER_MAX_ASTEM = 1000`` iterations (per the Fortran
+    source). When a cell reaches this cap, the loop exits **silently
+    with the unconverged state** — no error is raised. Under ``vmap``
+    the batched loop is paced by the stiffest cell. The host is
+    responsible for downstream finite-check / sanity-gating of cells
+    that exhaust the cap. The substep and diffrax backends don't have
+    this failure mode.
+
+    **JIT cache contract** (same as ``solvers.configure``): this
+    function's effects are read at JIT *trace* time and baked into the
+    cached binary. ``solve_ivp`` and ``amicphys`` are called from
+    inside ``@jax.jit``-decorated paths; reconfiguring after a path has
+    been traced has no effect on the cached binary — only a new trace
+    (different array shapes, fresh process start) picks up the new
+    backend selection. **Pattern**: call ``configure_condensation``
+    once at process startup, before any traced path runs.
+
+    **Thread safety**: :data:`_COND` is a module-level mutable dict
+    with no locking. Single-threaded use is safe; single-process
+    multi-threaded hosts calling this function from different threads
+    can observe non-deterministic interleaving. Set once at startup.
     """
     if backend is not None:
         if backend not in ("diffrax", "substep", "astem"):
