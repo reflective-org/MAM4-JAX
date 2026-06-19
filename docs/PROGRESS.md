@@ -25,6 +25,19 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-06-13 — solvers: process-global `configure()` for tolerances / max_steps / throw (`main`)
+
+- PR: [#58](https://github.com/reflective-org/MAM4-JAX/pull/58) (`feat/configurable-solver-tolerances` → `main`). External contribution by @duncanwp motivated by jax-gcm integration (T63L47, 866 k cells, A100 profile).
+- **What landed**: process-global `solvers.configure(rtol, atol, max_steps, throw, reset)` hook applied inside `solve_ivp` on top of the per-call `SolverConfig`. All-`None` (the default) leaves upstream behavior unchanged.
+- **Motivation**: looser tolerances cut adaptive PI-controller step count sharply — empirical 2.8× speedup at `rtol=1e-6 / atol=1e-15` with 0.13 % per-step rel-err vs the tight `rtol=1e-9 / atol=1e-20` defaults baked into call sites. `throw=False` separately addresses the "one pathological cell aborts the vmap batch" failure mode in `vmap`ed hosts.
+- **Contract documented**: `configure` reads happen at JIT *trace* time and bake into the cached binary. Pattern is "set once at process startup, before any `run_step` / `amicphys` path is traced." Reconfiguring mid-run only takes effect on uncompiled call sites. Thread-safety caveat ("not thread-safe; set once at startup") documented for single-process multi-threaded hosts.
+- **`solver` / `dt0` intentionally NOT overridable** — structural choices per call site (different stability regions, different memory cost); a host that wants a different solver should fork the call site or vendor a new `SolverConfig`. Documented in `SolverConfig` docstring.
+- **Tests** (`tests/test_solvers.py`, 6 new): uses a synthetic stiff ODE so no MAM4 fixture dependency. Covers `rtol` reducing step count, `configure()` no-op default, `throw=False` not raising on `max_steps` exhaustion, `throw=True` (default) still raising, `reset=True` clearing overrides, and `reset=True` with kwargs applying after reset. An `autouse` fixture resets overrides around every test so order doesn't matter.
+- **Plan**: `docs/plans/021-solver-tolerance-configure.md`.
+- **Test suite**: 6 new tests pass; existing suite unchanged at all-`None` default.
+
+---
+
 ## 2026-05-28 — `diffrax-v0.1.0` tag + M6/M7 status doc hygiene (`diffrax` branch)
 
 - Tag: `diffrax-v0.1.0` (annotated) at `5ea6330` on `diffrax`. Marks M7 (diffrax migration) + M6 (JAX-idiom optimization) complete. Parallels `v0.1.0` on `main` (the handwritten-solver baseline from PR-I1). 18 commits past `v0.1.0`.
