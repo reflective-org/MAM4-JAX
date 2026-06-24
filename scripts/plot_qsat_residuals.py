@@ -24,7 +24,7 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-import mam4_jax  # noqa: F401  - enables jax_enable_x64
+import mam4_jax  # noqa: F401  - enables jax_enable_x64 by default; JAX_ENABLE_X64=0 to opt out
 from mam4_jax.saturation import qsat_ice, qsat_water
 
 REFERENCE_NPZ = REPO_ROOT / "tests" / "reference" / "qsat" / "reference.npz"

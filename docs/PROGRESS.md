@@ -6,6 +6,20 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-06-24 — Float32-safe coag + `JAX_ENABLE_X64=0` opt-out (`main`)
+
+- PR: [#60](https://github.com/reflective-org/MAM4-JAX/pull/60) (`feat/coag-f32-safe` → `main`). External contribution by @duncanwp motivated by float32 jax-gcm integration (halves memory, doubles throughput on A100).
+- **What landed**: two surgical changes that let a host opt the entire coupled model into float32 when paired with the `"substep"` / `"astem"` condensation backends from PR #59 (plan 022):
+  1. **`mam4_jax/coag.py:getcoags`** — refactor the `qv12` third-moment intermodal coagulation coefficient from a direct harmonic mean of two `~1e-38` operands to a `dgat3`-factored harmonic mean of normal-range operands. Algebraically identical in float64 (the f64 reference test still passes at `rtol=1e-6`); in float32 `qv12` is now finite at rel-err ~5.9e-8 vs the f64 reference (vs `0/0 = NaN` before). Also defensively `.astype(input_dtype)` the module-level `_BM*` lookup tables inside `getcoags` so a host that toggles `jax_enable_x64` in-process doesn't trigger float32×float64 promotion warnings.
+  2. **`mam4_jax/__init__.py`** — gate the import-time `jax.config.update("jax_enable_x64", True)` behind the standard JAX env var `JAX_ENABLE_X64`. Honors JAX's own truthy values (`1`/`true`/`yes`/`on`, case-insensitive); anything else (including `0`/`false`) leaves x64 off. Emits a one-time `UserWarning` at import when x64 is off, listing the modules that still hard-cast to float64 and noting the `"diffrax"` backend is numerically unsafe in float32. `mam4_jax.x64_enabled` is now a live PEP 562 `__getattr__` read so callers always see JAX's current state.
+- **ADR-018 (new)**: amends ADR-002 — "x64 by default" rather than "x64 always." Documents the opt-out contract, the per-call vs trajectory bars (ADR-017's 1e-2 for substep/astem; no trajectory bar yet for the f32 coupled run), and the explicitly deferred items (audit the ~25 explicit-f64 casts across kohler/wateruptake/calcsize/amicphys/newnuc).
+- **Tests** (`tests/test_coag.py`, 2 new): `test_getcoags_finite_in_float32` — full reference sweep in true float32 with the new per-tier assertions (zeroth-moment at `rtol=2e-6`, qv12 at `rtol=1e-6` above the `atol=1e-33` physically-nil floor, second-moment finite-only). `test_jax_enable_x64_zero_opts_out` — subprocess-isolated test that imports `mam4_jax` with `JAX_ENABLE_X64=0` set and verifies the env var is honored, `mam4_jax.x64_enabled is False`, and the import-time `UserWarning` fires. `tests/test_scaffolding.py`'s `test_x64_enabled` / `test_default_dtype_is_float64` `pytest.skip(...)` under the opt-out so they don't fail unrelatedly.
+- **Plan**: `docs/plans/023-coag-f32-safe-and-x64-optout.md`.
+- **Test suite**: 4/4 coag tests pass (was 2); strict-warning mode (`pytest -W error::UserWarning`) now green; existing suite unchanged at default x64=on.
+- **Known limitation (deferred)**: ~25 explicit `dtype=jnp.float64` casts across kohler/wateruptake/calcsize/amicphys/newnuc still hard-cast. Under the opt-out they silently downcast to float32 with a JAX warning. A follow-up PR must gate each on `mam4_jax.x64_enabled`. No trajectory-level acceptance bar for the f32 coupled run yet (owner approval + ADR addendum needed).
+
+---
+
 ## 2026-06-13 — Operator-split condensation backends for gasaerexch (`main`)
 
 - PR: [#59](https://github.com/reflective-org/MAM4-JAX/pull/59) (`feat/substep-condensation` → `main`). External contribution by @duncanwp motivated by jax-gcm integration at T63L47.
