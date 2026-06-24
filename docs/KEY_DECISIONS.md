@@ -241,3 +241,24 @@ Status values: **Accepted**, **Proposed**, **Superseded by ADR-NNN**.
 ---
 
 *Add new ADRs below this line. Number sequentially; never reuse numbers; never edit an Accepted ADR.*
+
+---
+
+## ADR-017 — Per-call equivalence bar for opt-in solver backends
+
+- **Status:** Accepted 2026-06-13. Introduced alongside PR [#59](https://github.com/reflective-org/MAM4-JAX/pull/59) (plan 022) — operator-split condensation backends.
+- **Context:** PR-J1 / PR-D1 / PR-D2 established `solve_ivp` as the single condensation solver, validated against Fortran at ADR-015's 3 % / 24 h / dt ≤ 5 s trajectory bar. PR #58 (plan 021) opened a host-level tolerance knob via `solvers.configure`; PR #59 (plan 022) adds two **opt-in** alternative solver backends (`"substep"`, `"astem"`) selectable via `amicphys.configure_condensation`. ADR-015's bar is a **trajectory** bar (24 h cumulative max rel-err) — it doesn't directly say what bar a single `solve_ivp` call from an opt-in backend should meet.
+- **Decision:**
+  1. **Per-call equivalence bar for opt-in backends:** ``rtol = 1e-2, atol = 1e-12`` on `q` / `qqcw` against the Fortran reference (same as the diffrax-branch `test_amicphys.py` convention). This is the bar for the per-call tests (`test_condensation_substep_matches_fortran`, `test_condensation_astem_matches_fortran`) plus the cross-validation test (`test_substep_and_astem_agree_per_call`).
+  2. **Trajectory bar for hosts using opt-in backends:** ADR-015's 3 % / 24 h / dt ≤ 5 s continues to govern. Hosts that need trajectory accuracy below 3 % (e.g., bit-comparison studies) should use the default `"diffrax"` backend with tight tolerances.
+  3. **The two bars are independent:** an opt-in backend can pass (1) at `1e-2` per call while still passing (2) at `3 %` per trajectory if its per-step errors don't accumulate adversarially. The PR-59 measurement (3-day ECHAM + JAM-MAM4 T21, substep vs astem agreement at 0.18 %) supports this empirically for the two backends added here.
+  4. **No retroactive change to existing tests:** the default `"diffrax"` backend's tests stay at their current bars (`1e-6` machine ε for most per-process tests, 3 % for the 24 h sweep). Only the new opt-in-backend tests inherit ADR-017's `1e-2` per-call bar.
+- **Consequences:**
+  - New opt-in backends land with a clear per-call validation contract that doesn't require running 24 h trajectories in CI.
+  - Cross-validation between opt-in backends (each pair compared at `1e-2`) becomes the project's way of catching regressions that wouldn't surface in single-backend Fortran-match tests.
+  - The trajectory bar (3 %) remains the load-bearing acceptance gate for shipping a backend to production hosts.
+  - Future opt-in backends (for newnuc, coag, etc.) inherit this ADR's `1e-2` per-call bar by default. Tighter bars are allowed when empirically measurable.
+- **Alternatives considered:**
+  - **Bit-match (`rtol=1e-9` per call) for opt-in backends.** Rejected: defeats the purpose of opt-in alternatives, which exist because the bit-tight bar costs ~55× the runtime. The whole point is "trade per-call precision for speed."
+  - **Extend ADR-015 in place rather than open a new ADR.** Rejected: ADR-015 governs the trajectory bar for the diffrax-branch core path; mixing the per-call backend-equivalence bar into the same ADR would conflate two distinct concerns (trajectory accuracy vs backend equivalence). Cleaner to keep them separate.
+  - **Per-backend per-call bars.** Rejected as premature: empirically all three backends (`"diffrax"`, `"substep"`, `"astem"`) clear the `1e-2` bar on the existing fixture. If a future backend needs a looser bar, a per-backend ADR addendum (or a new ADR) is the right place.

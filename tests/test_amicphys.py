@@ -313,3 +313,147 @@ def test_amicphys_returns_all_state_keys(captured) -> None:
     new_state = amicphys(state)
     for key in ("t", "pmid", "cldn", "deltat"):
         assert key in new_state, f"amicphys dropped state key {key!r}"
+
+
+def test_condensation_backend_default_is_diffrax() -> None:
+    """The substep backend is strictly opt-in: nothing changes unless a
+    host calls ``configure_condensation``."""
+    from mam4_jax.processes import amicphys as _amic
+    assert _amic._COND["backend"] == "diffrax"
+
+
+def test_condensation_substep_matches_fortran(gasaerexch_captured) -> None:
+    """The operator-split ``substep`` backend reproduces the Fortran
+    gasaerexch+soaexch fixture at the SAME bar as the diffrax backend.
+
+    The substep path replaces the adaptive Kvaerno5 SOA solve with an
+    N-substep frozen-``g_star`` integrator and the H2SO4 solve with its
+    exact closed form. It must be at least as faithful to Fortran as the
+    diffrax path it replaces — Fortran itself is operator-split, so the
+    substep scheme is structurally closer to it. We assert the existing
+    diffrax-branch tolerance (``rtol=1e-2`` on ``q``/``qqcw``) holds.
+
+    Restores the process-global backend afterwards so the opt-in default
+    doesn't leak into other tests sharing this process.
+    """
+    from mam4_jax.processes import amicphys as _amic
+    before, aw = gasaerexch_captured
+    state = _build_state(before)
+    saved = dict(_amic._COND)
+    try:
+        _amic.configure_condensation(backend="substep", n_substeps=4)
+        new_state = amicphys(state,
+                             mdo_gasaerexch=1, mdo_rename=0,
+                             mdo_newnuc=0, mdo_coag=0)
+        for key in ("q", "qqcw"):
+            arr = np.asarray(new_state[key])
+            assert np.all(np.isfinite(arr)), f"substep produced non-finite {key!r}"
+            np.testing.assert_allclose(
+                arr, aw[key], rtol=1e-2, atol=1e-12,
+                err_msg=f"substep gasaerexch diverged from Fortran on {key!r}",
+            )
+    finally:
+        _amic.configure_condensation(**saved)
+
+
+def test_condensation_astem_matches_fortran(gasaerexch_captured) -> None:
+    """The Fortran-faithful ``astem`` backend reproduces the gasaerexch
+    fixture.
+
+    ``astem`` IS the upstream's own adaptive semi-implicit step1/step2
+    SOA scheme (plus the exact analytic H2SO4), so it should be at least
+    as faithful as the diffrax path. We assert the diffrax-branch bar
+    (``rtol=1e-2`` on ``q``/``qqcw``) holds and the result is finite,
+    then restore the process-global default.
+    """
+    from mam4_jax.processes import amicphys as _amic
+    before, aw = gasaerexch_captured
+    state = _build_state(before)
+    saved = dict(_amic._COND)
+    try:
+        _amic.configure_condensation(backend="astem")
+        new_state = amicphys(state,
+                             mdo_gasaerexch=1, mdo_rename=0,
+                             mdo_newnuc=0, mdo_coag=0)
+        for key in ("q", "qqcw"):
+            arr = np.asarray(new_state[key])
+            assert np.all(np.isfinite(arr)), f"astem produced non-finite {key!r}"
+            np.testing.assert_allclose(
+                arr, aw[key], rtol=1e-2, atol=1e-12,
+                err_msg=f"astem gasaerexch diverged from Fortran on {key!r}",
+            )
+    finally:
+        _amic.configure_condensation(**saved)
+
+
+def test_substep_and_astem_agree_per_call(gasaerexch_captured) -> None:
+    """Cross-validate substep vs astem at per-call level.
+
+    Both opt-in backends are validated independently against the
+    Fortran reference (the two tests above), but a regression in just
+    one of them might still match Fortran if both drift together.
+    This test asserts the two opt-in backends agree with each other at
+    ``rtol=1e-2`` — the PR-59 measurement showed ~0.18 % agreement on
+    the 3-day global aerosol burden (T21), so per-call agreement
+    should be at least as tight.
+
+    Catches a future regression in either backend that wouldn't surface
+    via the Fortran-match tests alone.
+    """
+    from mam4_jax.processes import amicphys as _amic
+    before, _aw = gasaerexch_captured
+    state = _build_state(before)
+    saved = dict(_amic._COND)
+    try:
+        _amic.configure_condensation(backend="substep", n_substeps=4)
+        substep_out = amicphys(state,
+                               mdo_gasaerexch=1, mdo_rename=0,
+                               mdo_newnuc=0, mdo_coag=0)
+        _amic.configure_condensation(backend="astem")
+        astem_out = amicphys(state,
+                             mdo_gasaerexch=1, mdo_rename=0,
+                             mdo_newnuc=0, mdo_coag=0)
+        for key in ("q", "qqcw"):
+            np.testing.assert_allclose(
+                np.asarray(substep_out[key]), np.asarray(astem_out[key]),
+                rtol=1e-2, atol=1e-12,
+                err_msg=f"substep and astem disagree on {key!r}",
+            )
+    finally:
+        _amic.configure_condensation(**saved)
+
+
+def test_astem_backend_not_grad_compatible(gasaerexch_captured) -> None:
+    """``astem`` uses ``jax.lax.while_loop`` for its adaptive substep
+    iteration, which is NOT reverse-mode differentiable.
+
+    Locks in the documented contract: hosts using ``jax.grad`` (e.g.,
+    M9 calibration workflows) must select ``"diffrax"`` or ``"substep"``
+    — both grad-clean per PR-J5's audit. If a future "fix" silently
+    swaps ``lax.while_loop`` for ``lax.fori_loop`` with a static cap
+    (or some other grad-compatible construct), this test fails and
+    the docstring contract should be reviewed.
+    """
+    import jax
+    from mam4_jax.processes import amicphys as _amic
+    before, _ = gasaerexch_captured
+    state = _build_state(before)
+    saved = dict(_amic._COND)
+    try:
+        _amic.configure_condensation(backend="astem")
+
+        def loss(q):
+            s = {**state, "q": q}
+            new_state = amicphys(s,
+                                 mdo_gasaerexch=1, mdo_rename=0,
+                                 mdo_newnuc=0, mdo_coag=0)
+            return jnp.sum(new_state["q"])
+
+        # `jax.grad` through `lax.while_loop` raises at trace time. We
+        # don't assert the exact exception type — diffrax/JAX may
+        # change it — only that an exception is raised. The message
+        # typically contains "while_loop" or "Reverse-mode".
+        with pytest.raises(Exception):
+            jax.grad(loss)(jnp.asarray(state["q"]))
+    finally:
+        _amic.configure_condensation(**saved)

@@ -6,6 +6,38 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-06-13 — Operator-split condensation backends for gasaerexch (`main`)
+
+- PR: [#59](https://github.com/reflective-org/MAM4-JAX/pull/59) (`feat/substep-condensation` → `main`). External contribution by @duncanwp motivated by jax-gcm integration at T63L47.
+- **What landed**: two opt-in alternative condensation backends inside `_mam_gasaerexch_1subarea`, selectable via a new process-global `amicphys.configure_condensation(backend, n_substeps)` hook. Default stays `"diffrax"` — pre-existing behavior is unchanged unless a host explicitly opts in. Mirrors `solvers.configure` (PR #58 / plan 021).
+- **Backends**:
+  - `"substep"` — analytic exact closed-form H₂SO₄ + `n_substeps` fixed-step SOA with `g_star` frozen per substep (each substep then a linear closed form). `lax.scan`, no per-cell loop. **~55× faster** than tight Kvaerno5 on T63L47/A100; per-call rel-err 0.28 %. Reverse-mode differentiable (`lax.scan` is grad-OK).
+  - `"astem"` — analytic exact H₂SO₄ + Fortran-faithful adaptive semi-implicit Euler (`mam_soaexch_1subarea` step1/step2) via `jax.lax.while_loop` capped at `_NITER_MAX_ASTEM = 1000`. ~38× faster; per-call rel-err 1.17 % (CAM/E3SM's own 1st-order discretization error, not a port defect). **NOT reverse-mode differentiable** — `jax.grad` raises through `lax.while_loop`. Hosts using `jax.grad` (M9 calibration) must select `"diffrax"` or `"substep"`.
+- **Cross-validation**: substep vs astem agree to 0.18 % on a 3-day ECHAM + JAM-MAM4 T21 trajectory; per-call agreement at `rtol=1e-2` is locked in by `test_substep_and_astem_agree_per_call`.
+- **`qgas_avg` semantics**: substep/astem produce the **exact time-mean** of the closed-form `g(t)` over each substep (better than diffrax's endpoint-trapezoidal approximation). Documented in plan 022; downstream consumers (newnuc) see strictly more faithful inputs.
+- **ADR-017 (new)**: per-call equivalence bar for opt-in solver backends. `rtol=1e-2, atol=1e-12` per call; ADR-015's 3 % / 24 h / dt ≤ 5 s continues to govern trajectory accuracy. The two bars are independent.
+- **JIT cache contract** (same pattern as `solvers.configure`): `configure_condensation` reads at trace time; reconfigure once at process startup before any traced path. Thread-safety caveat documented (not thread-safe; set once).
+- **`_NITER_MAX_ASTEM` silent unconverged**: under `vmap` a cell hitting the cap exits silently with unconverged state — host must downstream finite-check. Documented in the `configure_condensation` docstring.
+- **Tests** (`tests/test_amicphys.py`, 5 condensation tests total): default-is-diffrax, substep-matches-fortran, astem-matches-fortran, substep-and-astem-agree, astem-not-grad-compatible.
+- **Plan**: `docs/plans/022-condensation-backends.md`.
+- **Forward-looking note (plan 022 open question)**: PR #58's `_OVERRIDE` + PR #59's `_COND` = two module-level config dicts. If a third lands, revisit whether to centralize the runtime-config layer.
+- **Test suite**: 5 condensation tests pass (was 3 in duncanwp's initial commit; +2 from review fixups: cross-validation + autodiff-incompatibility).
+
+---
+
+## 2026-06-13 — solvers: process-global `configure()` for tolerances / max_steps / throw (`main`)
+
+- PR: [#58](https://github.com/reflective-org/MAM4-JAX/pull/58) (`feat/configurable-solver-tolerances` → `main`). External contribution by @duncanwp motivated by jax-gcm integration (T63L47, 866 k cells, A100 profile).
+- **What landed**: process-global `solvers.configure(rtol, atol, max_steps, throw, reset)` hook applied inside `solve_ivp` on top of the per-call `SolverConfig`. All-`None` (the default) leaves upstream behavior unchanged.
+- **Motivation**: looser tolerances cut adaptive PI-controller step count sharply — empirical 2.8× speedup at `rtol=1e-6 / atol=1e-15` with 0.13 % per-step rel-err vs the tight `rtol=1e-9 / atol=1e-20` defaults baked into call sites. `throw=False` separately addresses the "one pathological cell aborts the vmap batch" failure mode in `vmap`ed hosts.
+- **Contract documented**: `configure` reads happen at JIT *trace* time and bake into the cached binary. Pattern is "set once at process startup, before any `run_step` / `amicphys` path is traced." Reconfiguring mid-run only takes effect on uncompiled call sites. Thread-safety caveat ("not thread-safe; set once at startup") documented for single-process multi-threaded hosts.
+- **`solver` / `dt0` intentionally NOT overridable** — structural choices per call site (different stability regions, different memory cost); a host that wants a different solver should fork the call site or vendor a new `SolverConfig`. Documented in `SolverConfig` docstring.
+- **Tests** (`tests/test_solvers.py`, 6 new): uses a synthetic stiff ODE so no MAM4 fixture dependency. Covers `rtol` reducing step count, `configure()` no-op default, `throw=False` not raising on `max_steps` exhaustion, `throw=True` (default) still raising, `reset=True` clearing overrides, and `reset=True` with kwargs applying after reset. An `autouse` fixture resets overrides around every test so order doesn't matter.
+- **Plan**: `docs/plans/021-solver-tolerance-configure.md`.
+- **Test suite**: 6 new tests pass; existing suite unchanged at all-`None` default.
+
+---
+
 ## 2026-05-28 — `diffrax-v0.1.0` tag + M6/M7 status doc hygiene (`diffrax` branch)
 
 - Tag: `diffrax-v0.1.0` (annotated) at `5ea6330` on `diffrax`. Marks M7 (diffrax migration) + M6 (JAX-idiom optimization) complete. Parallels `v0.1.0` on `main` (the handwritten-solver baseline from PR-I1). 18 commits past `v0.1.0`.
