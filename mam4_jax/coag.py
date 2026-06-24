@@ -46,6 +46,10 @@ _BM0IJ   = jnp.asarray(_TABLES["bm0ij"])     # shape (10, 10, 10)
 _BM3I    = jnp.asarray(_TABLES["bm3i"])      # shape (10, 10, 10)
 _BM2IJ   = jnp.asarray(_TABLES["bm2ij"])     # shape (10, 10, 10)
 _BM2JI   = jnp.asarray(_TABLES["bm2ji"])     # shape (10, 10, 10)
+# Tables are baked at module load time in whatever dtype jax_enable_x64 was
+# at import; getcoags re-casts to the caller's dtype so that a host that
+# toggles x64 in-process (e.g. our float32 tests) doesn't hit float32×float64
+# promotion warnings on the lookup multiplications.
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +158,6 @@ def getcoags(lamda, kfmatac, kfmat, kfmac, knc,
     sqdgac  = jnp.sqrt(dgacc)
     sqdgat5 = dgat2 * sqdgat
     sqdgac5 = dgac2 * sqdgac
-    sqdgat7 = dgat3 * sqdgat
 
     # xm2/xm3 are computed in the Fortran but not used in any output —
     # keep them out of the JAX port (would force unused computation).
@@ -179,16 +182,21 @@ def getcoags(lamda, kfmatac, kfmat, kfmac, knc,
     n2a = _clip_index(4.0 * (sgacc - 0.75))
     n1  = _clip_index(1.0 + _DLGSQT2 * jnp.log(rat))
 
-    bm0_n2n     = _BM0[n2n]
-    bm0_n2a     = _BM0[n2a]
-    bm2ii_n2n   = _BM2II[n2n]
-    bm2ii_n2a   = _BM2II[n2a]
-    bm2iitt_n2n = _BM2IITT[n2n]
-    bm2iitt_n2a = _BM2IITT[n2a]
-    bm0ij_v     = _BM0IJ[n1, n2n, n2a]
-    bm3i_v      = _BM3I[n1, n2n, n2a]
-    bm2ij_v     = _BM2IJ[n1, n2n, n2a]
-    bm2ji_v     = _BM2JI[n1, n2n, n2a]
+    # Re-cast each looked-up coefficient to the caller's float dtype so that
+    # a host running getcoags in float32 (after toggling jax_enable_x64=False
+    # in-process) doesn't promote operands to float64 — the tables were baked
+    # at module-load time in whatever dtype was active then.
+    _dt = dgatk.dtype
+    bm0_n2n     = _BM0[n2n].astype(_dt)
+    bm0_n2a     = _BM0[n2a].astype(_dt)
+    bm2ii_n2n   = _BM2II[n2n].astype(_dt)
+    bm2ii_n2a   = _BM2II[n2a].astype(_dt)
+    bm2iitt_n2n = _BM2IITT[n2n].astype(_dt)
+    bm2iitt_n2a = _BM2IITT[n2a].astype(_dt)
+    bm0ij_v     = _BM0IJ[n1, n2n, n2a].astype(_dt)
+    bm3i_v      = _BM3I[n1, n2n, n2a].astype(_dt)
+    bm2ij_v     = _BM2IJ[n1, n2n, n2a].astype(_dt)
+    bm2ji_v     = _BM2JI[n1, n2n, n2a].astype(_dt)
 
     # --- intermodal: zeroeth moment (lines 2641–2661) ---------------------
     coagnc0 = knc * (
@@ -233,13 +241,21 @@ def getcoags(lamda, kfmatac, kfmat, kfmac, knc,
     qs21 = coagacat2 * bm2ji_v
 
     # --- intermodal: third moment (lines 2724–2747) -----------------------
-    coagnc3 = knc * dgat3 * (
+    # qv12 = coagnc3*coagfm3/(coagnc3+coagfm3) with both terms ∝ dgat3 = d³.
+    # In SI metres d³ ~ (3e-8 m)³ ~ 1e-23, so both terms land at ~1e-38 and in
+    # float32 BOTH underflow to 0 → 0/0 = NaN. Factor the shared dgat3 out of
+    # the harmonic mean — coagnc3 = dgat3 * nc3 and coagfm3 = dgat3 * fm3
+    # (the old sqdgat7 = dgat3*sqdgat is absorbed by dropping the dgat3 factor
+    # from fm3, leaving only the sqdgat) — so the harmonic mean is taken over
+    # normal-range values and only the final multiply by dgat3 is tiny.
+    # Algebraically identical in float64; removes the underflow-driven 0/0.
+    nc3 = knc * (
         2.0 * esat36
         + _A * kngat * (esat16 + r2 * esat04 * esac04)
         + _A * kngac * (esat36 * esac04 + ri2 * esat64 * esac16)
         + r2 * esat16 * esac04 + ri2 * esat64 * esac04
     )
-    coagfm3 = kfmatac * sqdgat7 * bm3i_v * (
+    fm3 = kfmatac * sqdgat * bm3i_v * (
         esat49
         + r * esat36 * esac01
         + 2.0 * r2 * esat25 * esac04
@@ -247,8 +263,7 @@ def getcoags(lamda, kfmatac, kfmat, kfmac, knc,
         + ri3 * esat100 * esac09
         + 2.0 * ri1 * esat64 * esac01
     )
-    coagatac3 = coagnc3 * coagfm3 / (coagnc3 + coagfm3)
-    qv12 = coagatac3
+    qv12 = dgat3 * (nc3 * fm3) / (nc3 + fm3)
 
     # --- intramodal: zeroeth moment (lines 2757–2787) ---------------------
     coagnc_at = knc * (1.0 + esat08 + _A * kngat * (esat20 + esat04))

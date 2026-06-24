@@ -40,17 +40,25 @@ def test_package_imports_cleanly() -> None:
 
 
 def test_x64_enabled() -> None:
+    """In the default configuration (no ``JAX_ENABLE_X64`` opt-out),
+    ``import mam4_jax`` turns ``jax_enable_x64`` on. Skip when the host
+    has opted out via the standard JAX env var (ADR-018)."""
     import mam4_jax
 
+    if not jax.config.read("jax_enable_x64"):
+        pytest.skip("JAX_ENABLE_X64 opt-out: x64 intentionally off (ADR-018)")
     assert mam4_jax.x64_enabled is True
     assert jax.config.read("jax_enable_x64") is True
 
 
 def test_default_dtype_is_float64() -> None:
-    import mam4_jax  # noqa: F401  - import for the side-effect of enabling x64
+    """Same skip-when-opted-out semantics as :func:`test_x64_enabled`."""
+    import mam4_jax  # noqa: F401  - enables jax_enable_x64 by default; JAX_ENABLE_X64=0 to opt out
 
     import jax.numpy as jnp
 
+    if not jax.config.read("jax_enable_x64"):
+        pytest.skip("JAX_ENABLE_X64 opt-out: float32 is the intended default")
     assert jnp.array(1.0).dtype == jnp.float64
 
 

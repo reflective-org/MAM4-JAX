@@ -15,7 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-import mam4_jax  # noqa: F401  - enables jax_enable_x64
+import mam4_jax  # noqa: F401  - enables jax_enable_x64 by default; JAX_ENABLE_X64=0 to opt out
 from mam4_jax.kohler import makoh_cubic, makoh_quartic
 
 REFERENCE_NPZ = (

@@ -11,7 +11,7 @@ from pathlib import Path
 import jax.numpy as jnp
 import numpy as np
 
-import mam4_jax  # noqa: F401  - enables jax_enable_x64
+import mam4_jax  # noqa: F401  - enables jax_enable_x64 by default; JAX_ENABLE_X64=0 to opt out
 from mam4_jax.newnuc import (
     binary_nuc_vehk2002, pbl_nuc_wang2008, mer07_veh02_nuc_mosaic_1box,
 )
