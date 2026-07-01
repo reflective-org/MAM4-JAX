@@ -322,6 +322,29 @@ def test_condensation_backend_default_is_diffrax() -> None:
     assert _amic._COND["backend"] == "diffrax"
 
 
+def test_configure_gas_netprod_default_and_override() -> None:
+    """``configure_gas_netprod`` sets the other-process gas production rates.
+
+    The default preserves the driver.F90:1248 stub (1e-16 mol/mol/s H2SO4,
+    0 SOA); a host that prognoses its own sulfur/SOA chemistry — or runs a
+    sulfur-free case — can zero either rate. ``None`` leaves a rate unchanged.
+    Restores the process-global afterwards so it doesn't leak into other tests.
+    """
+    from mam4_jax.processes import amicphys as _amic
+    saved = dict(_amic._GAS_NETPROD)
+    try:
+        assert _amic._GAS_NETPROD == {"h2so4": 1.0e-16, "soa": 0.0}
+        _amic.configure_gas_netprod(h2so4=0.0)
+        assert _amic._GAS_NETPROD["h2so4"] == 0.0
+        assert _amic._GAS_NETPROD["soa"] == 0.0        # unchanged (None)
+        _amic.configure_gas_netprod(soa=3.0e-17)
+        assert _amic._GAS_NETPROD["h2so4"] == 0.0      # unchanged (None)
+        assert _amic._GAS_NETPROD["soa"] == 3.0e-17
+    finally:
+        _amic.configure_gas_netprod(**saved)
+    assert _amic._GAS_NETPROD == saved
+
+
 def test_condensation_substep_matches_fortran(gasaerexch_captured) -> None:
     """The operator-split ``substep`` backend reproduces the Fortran
     gasaerexch+soaexch fixture at the SAME bar as the diffrax backend.

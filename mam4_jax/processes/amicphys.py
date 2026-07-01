@@ -111,6 +111,30 @@ _PSTD              = 101325.0        # Pa
 # Default "diffrax" so nothing changes unless a host explicitly opts in.
 _COND: dict = {"backend": "diffrax", "n_substeps": 4}
 
+# ``qgas_netprod`` — the "other-process" gas production rate [mol/mol/s] added to
+# each gas inside gasaerexch (H2SO4 from gas-phase SO2 oxidation, SOA from VOC
+# oxidation). The standalone driver hard-codes H2SO4 to 1e-16 (driver.F90:1248)
+# as a gas-chem stub. A host that prognoses its own sulfur/SOA chemistry — or
+# runs a sulfur-free case (e.g. sea-salt-only) — must be able to set this to 0,
+# otherwise the stub is a spurious, non-conservative H2SO4 source that drives
+# runaway nucleation and condensation. Selected via ``configure_gas_netprod``.
+_GAS_NETPROD: dict = {"h2so4": 1.0e-16, "soa": 0.0}
+
+
+def configure_gas_netprod(h2so4=None, soa=None) -> None:
+    """Set the other-process gas production rates [mol/mol/s] (process-global).
+
+    Mirrors :func:`configure_condensation`'s config pattern (read at JIT trace
+    time; set once at startup). ``h2so4`` defaults to the driver stub value
+    ``1e-16``; pass ``0.0`` when the host supplies its own gas-phase chemistry
+    or runs a sulfur-free case, so the core does not inject a spurious H2SO4
+    source. ``None`` leaves a rate unchanged.
+    """
+    if h2so4 is not None:
+        _GAS_NETPROD["h2so4"] = float(h2so4)
+    if soa is not None:
+        _GAS_NETPROD["soa"] = float(soa)
+
 
 def configure_condensation(backend=None, n_substeps=None) -> None:
     """Select the gasaerexch condensation backend (process-global).
@@ -1045,7 +1069,7 @@ def _mam_gasaerexch_1subarea(qgas, qaer, qnum, qwtr,
     # use the analytic closed form directly (~machine precision, one shot).
     qgas_h2so4_prv = qgas[..., igas_h2so4]                  # (...,)
     qaer_h2so4_prv = qaer[..., iaer_h2so4, :]               # (..., NTOT_AMODE)
-    qgas_netprod_h2so4 = 1.0e-16                            # mol/mol/s (driver.F90:1248)
+    qgas_netprod_h2so4 = _GAS_NETPROD["h2so4"]              # mol/mol/s (driver.F90:1248; see configure_gas_netprod)
 
     g_h2so4_init = jnp.maximum(qgas_h2so4_prv, 0.0)
     a_h2so4_init = jnp.maximum(qaer_h2so4_prv, 0.0)
