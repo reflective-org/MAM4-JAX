@@ -6,6 +6,17 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-07-08 — Configurable other-process gas production (`configure_gas_netprod`) (`main`)
+
+- PR: [#61](https://github.com/reflective-org/MAM4-JAX/pull/61) (`fix/configurable-h2so4-netprod` → `main`). External contribution by @duncanwp.
+- **What landed**: the H₂SO₄ "other-process" production rate inside `_mam_gasaerexch_1subarea` — previously hard-coded to `1e-16 mol/mol/s`, the port of `driver.F90:1248`'s gas-chem stub — is now the *default* of a process-global `amicphys.configure_gas_netprod(h2so4=None, soa=None)` hook, mirroring `configure_condensation` (PR #59). A host that prognoses its own sulfur chemistry, or runs a sulfur-free case, passes `h2so4=0.0` so the stub doesn't act as a spurious non-conservative H₂SO₄ source driving runaway nucleation. Default unchanged (`1e-16`) — existing behavior, reference captures, and 24 h sweeps are unaffected.
+- **Both backends covered**: the single `qgas_netprod_h2so4` variable feeds the analytic closed form (`substep`/`astem`) and the diffrax ODE args; `h2so4=0.0` is safe in both (`src` never appears in a denominator; the `K → 0` branch was already guarded).
+- **`soa` is forward-compatibility only**: stored in `_GAS_NETPROD` but not yet consumed — the SOA exchange ODE has no source term, matching the Fortran. See `docs/DEFERRED.md` "SOA netprod source".
+- **JIT cache contract**: same as `configure_condensation` — read at trace time, set once at process startup.
+- **Tests**: `tests/test_amicphys.py::test_configure_gas_netprod_default_and_override` (defaults, per-rate override, `None` leaves unchanged, save/restore hygiene).
+
+---
+
 ## 2026-06-24 — Float32-safe coag + `JAX_ENABLE_X64=0` opt-out (`main`)
 
 - PR: [#60](https://github.com/reflective-org/MAM4-JAX/pull/60) (`feat/coag-f32-safe` → `main`). External contribution by @duncanwp motivated by float32 jax-gcm integration (halves memory, doubles throughput on A100).
