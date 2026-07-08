@@ -326,8 +326,11 @@ def test_configure_gas_netprod_default_and_override() -> None:
     """``configure_gas_netprod`` sets the other-process gas production rates.
 
     The default preserves the driver.F90:1248 stub (1e-16 mol/mol/s H2SO4,
-    0 SOA); a host that prognoses its own sulfur/SOA chemistry — or runs a
-    sulfur-free case — can zero either rate. ``None`` leaves a rate unchanged.
+    0 SOA); a host that prognoses its own sulfur chemistry — or runs a
+    sulfur-free case — can zero the H2SO4 rate. ``None`` leaves a rate
+    unchanged. The ``soa`` rate is stored for forward compatibility only —
+    it is not yet consumed by the physics (docs/DEFERRED.md "SOA netprod
+    source"), so this test covers config storage, not an SOA source effect.
     Restores the process-global afterwards so it doesn't leak into other tests.
     """
     from mam4_jax.processes import amicphys as _amic

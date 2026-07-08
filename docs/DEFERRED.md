@@ -90,6 +90,12 @@ The point of this file is to keep the *decided to skip for now* knowledge out of
   - **No stiffness motivation.** Coag's closed-form is mathematically exact for the underlying kinetics over one substep; no stiff regime has surfaced where the closed form fails. ADR-015's deferral condition ("a motivating stiffness or autodiff issue") has not been met.
 - **Resurface if:** (a) a downstream autodiff use case requires smoother gradients across the `tmpa = 1e-5` boundary, or (b) the box-model configuration changes to a fixture where the closed-form formulas lose accuracy (e.g., very stiff coagulation regimes the current closed-form doesn't capture).
 
+## SOA netprod source (`configure_gas_netprod(soa=...)`)
+
+- **Status:** deferred. The `soa` parameter of `amicphys.configure_gas_netprod` (PR [#61](https://github.com/reflective-org/MAM4-JAX/pull/61)) is accepted and stored in `_GAS_NETPROD` for forward compatibility, but **no physics consumes it yet**.
+- **Why:** The SOA exchange ODE (`_soaexch_rhs` and the substep/ASTEM backends) is deliberately mass-conserving — `dg/dt = -sum(flux)`, no source term — matching the Fortran, where the `driver.F90:1248` gas-chem stub applies to H₂SO₄ only. Wiring an SOA production term into all three condensation backends (diffrax RHS, closed-form substep, ASTEM step1/step2) is a substantive numerical change that needs its own plan and validation, not a config-knob PR. Keeping the parameter now avoids a signature break later.
+- **Resurface when:** a host needs a VOC-oxidation SOA source inside gasaerexch (e.g., coupled gas-chem without its own SOAG prognosis), or the M14 cloud-chem work touches the gas source pathway anyway.
+
 ---
 
 *When adding a new deferred item: state what, why, and the condition that would bring it back.*

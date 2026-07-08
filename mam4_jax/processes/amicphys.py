@@ -118,6 +118,9 @@ _COND: dict = {"backend": "diffrax", "n_substeps": 4}
 # runs a sulfur-free case (e.g. sea-salt-only) — must be able to set this to 0,
 # otherwise the stub is a spurious, non-conservative H2SO4 source that drives
 # runaway nucleation and condensation. Selected via ``configure_gas_netprod``.
+# NOTE: only the "h2so4" rate is currently consumed by the physics; "soa" is
+# accepted and stored for forward compatibility but the SOA exchange ODE has
+# no source term yet (see docs/DEFERRED.md "SOA netprod source").
 _GAS_NETPROD: dict = {"h2so4": 1.0e-16, "soa": 0.0}
 
 
@@ -129,6 +132,12 @@ def configure_gas_netprod(h2so4=None, soa=None) -> None:
     ``1e-16``; pass ``0.0`` when the host supplies its own gas-phase chemistry
     or runs a sulfur-free case, so the core does not inject a spurious H2SO4
     source. ``None`` leaves a rate unchanged.
+
+    ``soa`` is accepted and stored for forward compatibility but is NOT yet
+    consumed by the physics — the SOA exchange ODE is mass-conserving with no
+    source term (matching the Fortran, where the driver.F90:1248 stub is
+    H2SO4-only). Wiring it in is deferred (docs/DEFERRED.md "SOA netprod
+    source"); until then, leave it at the default ``None``.
     """
     if h2so4 is not None:
         _GAS_NETPROD["h2so4"] = float(h2so4)
@@ -995,8 +1004,9 @@ def _mam_gasaerexch_1subarea(qgas, qaer, qnum, qwtr,
     * ``cond_subcycles = 1`` (Fortran default for the box-model build) →
       ``dtsubstep = deltat`` and ``jtsubstep = 1`` (so uptake rates are
       computed every call).
-    * ``qgas_netprod_otrproc`` is hard-coded to match driver.F90:1248's
-      gas-chem stub: ``1e-16 mol/mol/s`` on H₂SO₄, ``0`` on SOA.
+    * ``qgas_netprod_otrproc`` defaults to driver.F90:1248's gas-chem
+      stub — ``1e-16 mol/mol/s`` on H₂SO₄, ``0`` on SOA — and the H₂SO₄
+      rate is configurable via :func:`configure_gas_netprod`.
     * No NH3 (``ntot_amode=4`` → ``igas_nh3 = -999...`` → NH4 limit block
       skipped).
     """
