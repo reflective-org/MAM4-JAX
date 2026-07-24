@@ -27,5 +27,12 @@ dev = [
 where = ["."]
 include = ["mam4_jax*"]
 
+# Ship the binary data files that live inside the package and are loaded at
+# import time (e.g. mam4_jax/_coag_tables.npz, read by mam4_jax/coag.py). Without
+# this they are dropped from the built wheel, so `pip install` yields an install
+# that raises FileNotFoundError on `import mam4_jax`.
+[tool.setuptools.package-data]
+mam4_jax = ["*.npz"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
