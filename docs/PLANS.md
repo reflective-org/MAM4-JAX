@@ -268,6 +268,55 @@ Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` 
 
 ---
 
+## Milestone 15 — CESM/CAM variant (proposed)
+
+**Full plan:** `docs/plans/024-cesm-variant.md`. **Branch:** `feat/cesm-variant`.
+
+**Why.** This repo ports **E3SMv1** MAM4 (via the PNNL `MAM_box_model`). CESM3/CAM ships a
+different MAM code line. A full source-level investigation of both trees — in the sibling
+repo `mam-cesm-box` (`docs/CESM_VS_E3SM.md` plus seven per-process reports, ~6,200 lines with
+`file:line` citations) — found that **the leaf kernels are the same code, the parameter values
+differ far more than the code does, and the orchestration layer shares nothing.**
+
+`getcoags` is byte-for-byte identical between CAM and E3SM over 1519 lines, and all 4030
+tabulated Whitby values are bit-exact against this repo's `_coag_tables.npz`. Both nucleation
+parameterisations are 0-diff with exact literal matches. So this is a **variant axis plus a
+second driver**, not a re-port.
+
+**Scope sketch.** A `variant: "e3sm" | "cesm"` axis through `data.py`/`config.py`; CAM
+parameter values (the largest being p-organic hygroscopicity **1.0e-10 vs 0.010** — a 10⁸
+factor — plus `opoa_frac` 0.0 vs 0.1, the SOA volatility triple, and four `specmw_amode` sets
+differing 0.047–0.099 %, which is ~1000× the repo's 1e-6 tolerance); dust added to the aitken
+mode (`nspec_amode` 3→4); and a `processes/cam_driver.py` implementing CAM's sequential
+grid-cell-mean coupling. Seven PRs, A–G.
+
+**Not in scope.** `processes/amicphys.py` has no CAM analogue and must not be adapted —
+`grep -rI amicphys` over all of CAM `src/` returns zero hits.
+
+**Prerequisite (PR A).** Two defects in the *current* E3SM path, found by diffing this repo
+against its own Fortran reference:
+- `processes/calcsize.py` omits the `do_aitacc_transfer` `1e6` bound turn-off
+  (`box_model_utils/modal_aero_calcsize.F90:756-762`). `do_aitacc_transfer` defaults to
+  `True`, so the port clamps number where the Fortran deliberately disables the bound.
+  Untested today — the port's own docstring notes the transfer never fires in the reference run.
+- `modal_aero_amicphys.F90:4030` has a single-precision `sqrt(0.5)` literal (~1.71e-8) feeding
+  both `erfc` arguments, putting a ~1e-8 floor under `test_rename.py`'s 1e-6 tolerance.
+
+**Open questions.**
+- `delh_vap_soa` is 131 kJ (CAM) vs 156 kJ (E3SM) — a scientific choice, not a porting
+  artifact. Which is intended?
+- Land on `main` behind the `variant` flag, or keep a long-lived branch? Plan 024 recommends
+  `main`, to avoid drift against the diffrax/solver work.
+- Is `nspec_amode` 3→4 acceptable as a breaking change to the public data tables?
+
+**Deferred within this milestone.** CAM's `sulfeq` stratospheric-sulfate path,
+`modal_aero_rename_acc_crs_sub`, generalised VBS, MAM5. Also CAM's stratospheric water
+uptake, which is **not a pure function** — it carries a lagged
+`dgncur_awet(t-1)` → Kelvin → `wtpct` → `dgncur_awet(t)` feedback that conflicts with the
+current functional design. M15 is tropospheric-only.
+
+---
+
 ## Smaller deferred items (tracked as GitHub Issues)
 
 These don't warrant their own milestones but are tracked as GitHub Issues so a future PR can use the Development linkage to close them. See `docs/DEFERRED.md` for the detailed deferral context.
