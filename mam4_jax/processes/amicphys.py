@@ -458,30 +458,153 @@ def amicphys(state: dict[str, Any], params=None, config=None, *,
     )
 
 
+#: Boolean mask over the PCNST tracer axis. ``True`` marks interstitial
+#: aerosol slots (per-mode mass + per-mode number) — these are confined
+#: to the clear sub-area when ``cldn > 0`` and scale as
+#: ``q_clear = q / (1-cldn)``. ``False`` marks everything else: the
+#: leading non-chem slots ``[0:LOFFSET]``, gas-phase species (whether
+#: in ``LMAP_GAS`` like H2SO4/SOAG, or other registered gases like SO2
+#: that amicphys doesn't track but cloudchem reads), and unused slots.
+#: All "False" slots pass through both sub-areas unscaled.
+#: Built at module load from ``data.LMAP_NUM`` and ``data.LMAP_AER``.
+_PCNST_INTERSTITIAL_MASK = np.zeros(data.PCNST, dtype=bool)
+for _s in data.LMAP_NUM:
+    _PCNST_INTERSTITIAL_MASK[int(_s)] = True
+for _row in data.LMAP_AER:
+    for _s in _row:
+        if int(_s) >= 0:
+            _PCNST_INTERSTITIAL_MASK[int(_s)] = True
+del _s, _row  # don't leak loop variables into the module namespace
+
+
+def _mam_amicphys_1subarea_cloudy_stub(state: dict[str, Any]) -> dict[str, Any]:
+    """**STUB** — placeholder for ``_mam_amicphys_1subarea_cloudy`` (M14 PR-B).
+
+    Returns the cloudy-subarea state unchanged. When this stub is in
+    place, the gridcell aggregation correctly applies the ``cldn = 0``
+    bit-exact identity (cloudy contribution is multiplied by
+    ``cldn = 0``) but **leaves a residual approximation at ``cldn > 0``**
+    — gases that would normally be consumed by cloud-borne aerosol
+    uptake in the cloudy sub-area pass through unchanged, and
+    cloud-borne aerosols (``qqcw``) are unprocessed.
+
+    **Correctness contract**: this stub's "interstitial in cloudy = 0"
+    behavior depends on the caller (``_mam_amicphys_1gridcell``) having
+    pre-zeroed interstitial slots in the cloudy state-dict. The stub
+    does NOT zero them on its own. If a future caller forgets the
+    pre-zero step, the stub silently returns nonzero interstitial in
+    cloudy and the aggregation double-counts. See
+    ``_mam_amicphys_1gridcell`` state assembly.
+
+    PR-M14-B replaces this stub with a port of Fortran's
+    ``mam_amicphys_1subarea_cloudy`` (``modal_aero_amicphys.F90:
+    1504-2059``). At that point the M8 cloudchem trajectory bar
+    (ADR-015 3 % / 24 h / dt ≤ 5 s) becomes meet-able and M8 closes.
+    """
+    return state
+
+
 def _mam_amicphys_1gridcell(state: dict[str, Any], *,
                             mdo_gasaerexch: int, mdo_rename: int,
                             mdo_newnuc: int, mdo_coag: int,
                             qgas_netprod_h2so4: float = 1.0e-16) -> dict[str, Any]:
     """Port of ``mam_amicphys_1gridcell``.
 
-    The Fortran routine splits each grid cell into clear and cloudy
-    sub-areas weighted by ``cldn``. For the canonical box-model setup
-    ``cldn = 0`` everywhere (``driver.F90:591``), so only the clear-sky
-    path is exercised. The cloudy path is not implemented; calling this
-    with a non-zero cloud fraction in any cell raises a clear error so
-    future workflows don't silently get wrong physics.
+    **M14 PR-A:** implements Fortran's gridcell-↔-subarea split.
+    Interstitial aerosols (number + mass + ``qaerwat``) are concentrated
+    into the clear sub-area volume by dividing by ``(1 - cldn)``;
+    cloud-borne aerosols (``qqcw``) are concentrated into the cloudy
+    sub-area volume by dividing by ``cldn``. Gases are intensive — same
+    concentration in both sub-areas (no scaling).
+
+    The clear sub-area calls the existing ``_mam_amicphys_1subarea_clear``
+    port. The cloudy sub-area calls ``_mam_amicphys_1subarea_cloudy_stub``
+    (placeholder — PR-M14-B replaces with the real physics port).
+
+    Sub-area outputs are aggregated back to the gridcell as
+    ``gridcell = (1-cldn) · clear_out + cldn · cloudy_out`` — the
+    standard volume-weighted average.
+
+    **At ``cldn = 0`` everywhere (all pre-M8 tests, ``cldn=0`` fixtures):**
+    ``f_clear = 1.0`` so the clear-subarea state equals the gridcell
+    state with no scaling. ``cldn = 0`` makes the cloudy contribution
+    drop out entirely (multiplied by 0). The result is **bit-exact
+    identical to the pre-M14-A path** for every existing test.
+
+    **At ``cldn > 0`` (M8's cloudchem fixture):** clear-subarea
+    interstitial gets its correct ``2× concentration`` for ``cldn = 0.5``
+    (fixing the per-step coagulation rate-doubling identified in
+    PR-K3). Cloudy-subarea is stubbed, so gases and cloud-borne
+    aerosols still pass through unchanged — residual until PR-M14-B.
     """
-    cldn = state.get("cldn")
-    # We don't enforce the cldn==0 check here because the value is a
-    # JAX array (could be traced); the box-model driver guarantees zero
-    # and our tests pass that explicitly. Cloudy support would land as a
-    # later PR alongside `_mam_amicphys_1subarea_cloudy`.
-    return _mam_amicphys_1subarea_clear(
-        state,
+    # Caller contract: ``state`` must contain a ``cldn`` array.
+    # The driver (``run_step``) sets it; tests that call amicphys
+    # directly must also provide it.
+    cldn = state["cldn"]                                  # (..., )
+
+    # Avoid /0 at the extremes. cldn ∈ [0, 1] in physical sense; the
+    # ``maximum`` clip protects the (1-cldn) and cldn divisions when
+    # either fraction is exactly zero. The associated sub-area output
+    # is multiplied by that exact zero on the aggregation side, so the
+    # huge intermediate value is gated out.
+    f_clear  = jnp.maximum(1.0 - cldn, 1e-30)             # (..., )
+    f_cloudy = jnp.maximum(cldn,        1e-30)            # (..., )
+
+    int_mask = jnp.asarray(_PCNST_INTERSTITIAL_MASK)      # (PCNST,) bool
+
+    # ---- Clear sub-area state: scale interstitial / aerosol-water by
+    # 1/(1-cldn); zero out cloud-borne (qqcw); gases (LMAP_GAS) pass
+    # through unchanged.
+    q_clear = jnp.where(
+        int_mask, state["q"] / f_clear[..., None], state["q"],
+    )
+    qqcw_clear    = jnp.zeros_like(state["qqcw"])
+    qaerwat_clear = state["qaerwat"] / f_clear[..., None]
+    state_clear = {**state,
+                   "q": q_clear,
+                   "qqcw": qqcw_clear,
+                   "qaerwat": qaerwat_clear}
+
+    # ---- Cloudy sub-area state: zero interstitial; scale cloud-borne
+    # (qqcw) by 1/cldn; gases pass through; qaerwat = 0 (water bound to
+    # interstitial aerosols, which are in the clear sub-area).
+    q_cloudy = jnp.where(int_mask, 0.0, state["q"])
+    qqcw_cloudy    = state["qqcw"] / f_cloudy[..., None]
+    qaerwat_cloudy = jnp.zeros_like(state["qaerwat"])
+    state_cloudy = {**state,
+                    "q": q_cloudy,
+                    "qqcw": qqcw_cloudy,
+                    "qaerwat": qaerwat_cloudy}
+
+    # ---- Sub-area amicphys calls.
+    state_clear_out = _mam_amicphys_1subarea_clear(
+        state_clear,
         mdo_gasaerexch=mdo_gasaerexch, mdo_rename=mdo_rename,
         mdo_newnuc=mdo_newnuc,         mdo_coag=mdo_coag,
         qgas_netprod_h2so4=qgas_netprod_h2so4,
     )
+    state_cloudy_out = _mam_amicphys_1subarea_cloudy_stub(state_cloudy)
+
+    # ---- Aggregate sub-area outputs into the gridcell. For arrays that
+    # the sub-areas modify (q, qqcw, qaerwat), apply the volume-weighted
+    # average. For arrays the sub-areas don't write (dgncur_a, dgncur_awet,
+    # wetdens, met fields, deltat), the clear-subarea-out values pass
+    # through (they were not modified by either sub-area).
+    #
+    # TODO (PR-M14-B): if the real ``_mam_amicphys_1subarea_cloudy``
+    # ever modifies ``dgncur_a``/``dgncur_awet``/``wetdens`` (e.g., by
+    # re-running wateruptake internally), extend the aggregation below
+    # to include those fields. Today neither the clear sub-area code
+    # nor the stub touches them, so the gridcell out inherits from
+    # clear's out unchanged — which is the same as the inputs since
+    # calcsize/wateruptake run upstream of amicphys.
+    f_c = (1.0 - cldn)[..., None]                          # (..., 1)
+    f_d = cldn[..., None]
+    out = {**state_clear_out}
+    out["q"]       = f_c * state_clear_out["q"]      + f_d * state_cloudy_out["q"]
+    out["qqcw"]    = f_c * state_clear_out["qqcw"]   + f_d * state_cloudy_out["qqcw"]
+    out["qaerwat"] = f_c * state_clear_out["qaerwat"] + f_d * state_cloudy_out["qaerwat"]
+    return out
 
 
 def _mam_amicphys_1subarea_clear(state: dict[str, Any], *,
