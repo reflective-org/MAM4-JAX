@@ -469,6 +469,26 @@ def calcsize(state: dict[str, Any], params=None, config=None,
     # Per-mode bound constants (broadcast as (m,)).
     v2nxx = jnp.asarray(VOLTONUMBHI_AMODE)
     v2nyy = jnp.asarray(VOLTONUMBLO_AMODE)
+    if do_aitacc_transfer:
+        # The Fortran deliberately disables the size bounds on the two modes
+        # taking part in the aitken<->accum transfer, so the transfer block --
+        # not the bound clamp -- decides their number. Identical in both
+        # reference trees: CAM modal_aero_calcsize.F90:556-561 and E3SM
+        # box_model_utils/modal_aero_calcsize.F90:756-761. E3SM's own comment
+        # at :738-741 states the intent:
+        #   for n=nacc, multiply v2nyy by 1.0e6 to effectively turn off the
+        #       adjustment when number is too big (size is too small)
+        #   for n=nait, divide   v2nxx by 1.0e6 to effectively turn off the
+        #       adjustment when number is too small (size is too big)
+        # Omitting it clamped number where the reference does not.
+        # do_aitacc_transfer is a Python bool, so this branch is static under
+        # jit and costs nothing at trace time.
+        v2nxx = v2nxx.at[AITKEN_MODE_IDX].divide(1.0e6)
+        v2nyy = v2nyy.at[ACCUM_MODE_IDX].multiply(1.0e6)
+    # Both trees recompute the relaxed bounds AFTER that adjustment (the "NEW"
+    # comments at CAM :559-560 / E3SM :759-760), so the relaxed pair inherits
+    # the turned-off bounds. With do_aitacc_transfer False these derive from
+    # the untouched values, matching the Fortran's pre-branch assignment.
     v2nxxrl = v2nxx / _FRELAXADJ
     v2nyyrl = v2nyy * _FRELAXADJ
     dgnxx = jnp.asarray(DGNUMHI_AMODE)
