@@ -629,3 +629,56 @@ def get_mass_by_species_name(q, mode: int, species_name: str,
         f"species {species_name!r} is not present in mode "
         f"{MODE_NAMES[mode]!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Topology registration (plan 024 revision 2, PR B).
+#
+# The E3SM MAM4-MOM configuration above is packaged as a `Topology` instance so
+# that CESM/CAM and MAM5 can be added as siblings rather than as edits here.
+#
+# It is built FROM the module constants defined above, not re-typed from the
+# Fortran a second time. That is the point: it makes "the E3SM path is
+# bit-unchanged by this refactor" a property of the code rather than a claim
+# about transcription accuracy. tests/test_topology.py asserts the round trip.
+#
+# The module-level names above remain the E3SM defaults and are what the
+# kernels still read. Threading `get_topology()` through the ~66 call sites is
+# PR C onward; doing it in the same change as introducing the type would make
+# the diff unreviewable and put the bit-identity guarantee at risk.
+# ---------------------------------------------------------------------------
+
+from .topology import Topology as _Topology, _register as _register_topology  # noqa: E402
+
+E3SM_MAM4_MOM: _Topology = _register_topology(
+    _Topology(
+        name="e3sm_mam4_mom",
+        variant="e3sm",
+        nmodes=NTOT_AMODE,
+        pcnst=PCNST,
+        mode_names=MODE_NAMES,
+        specname_amode=SPECNAME_AMODE,
+        nspec_amode=NSPEC_AMODE,
+        numptr_amode=NUMPTR_AMODE,
+        numptrcw_amode=NUMPTRCW_AMODE,
+        lspectype_amode=LSPECTYPE_AMODE,
+        lmassptr_amode=LMASSPTR_AMODE,
+        lmassptrcw_amode=LMASSPTRCW_AMODE,
+        specdens_amode=SPECDENS_AMODE,
+        spechygro_amode=SPECHYGRO_AMODE,
+        sigmag_amode=SIGMAG_AMODE,
+        dgnum_amode=DGNUM_AMODE,
+        dgnumlo_amode=DGNUMLO_AMODE,
+        dgnumhi_amode=DGNUMHI_AMODE,
+        rhcrystal_amode=RHCRYSTAL_AMODE,
+        rhdeliques_amode=RHDELIQUES_AMODE,
+        provenance=(
+            "E3SMv1 via PNNL MAM_box_model, built -DMODAL_AERO_4MODE_MOM "
+            "-DRAIN_EVAP_TO_COARSE_AERO -DNBC=1 -DNPOA=1 -DNSOA=1. "
+            "modal_aero_data.F90:13-58,104-126; rad_constituents.F90:96-103,"
+            "167-170,180-181. Index tables captured from an instrumented build "
+            "(ADR-012)."
+        ),
+    ),
+    make_active=True,
+)
