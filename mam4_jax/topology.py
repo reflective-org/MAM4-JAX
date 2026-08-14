@@ -27,18 +27,26 @@ validation and the E3SM instance built from ``data.py``'s existing literals --
 so the E3SM path is provably bit-unchanged. The CAM instances need index tables
 extracted from CAM's chemistry preprocessor, which lands in PRs C-E; inventing
 them here would be worse than their absence.
+
+⚠ HOW TO CONSUME THIS FROM A JITTED KERNEL (PR C, and the reason `Topology` is
+frozen and hashable). Do NOT read ``get_topology()`` from inside a jitted
+function body. jit caches are not keyed on module globals, so a kernel traced
+under one topology keeps returning that topology's answer after
+``set_topology`` -- silently wrong physics, no warning. Confirmed empirically
+during the PR-B review. Pass the topology in as a hashable static argument
+instead, and give the change a test asserting that switching topologies
+actually changes a jitted result.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 import numpy as np
 
 __all__ = [
     "Topology",
-    "E3SM_MAM4_MOM",
     "get_topology",
+    "register_topology",
     "set_topology",
     "available_topologies",
 ]
@@ -64,7 +72,8 @@ class Topology:
     specname_amode: tuple[str, ...]
     nspec_amode: tuple[int, ...]
 
-    # 0-based pcnst indices; -1 marks an unused slot.
+    # 0-based pcnst indices. -1 marks an unused SLOT in the per-(mode, slot)
+    # tables below; numptr_amode has one entry per mode and is never -1.
     numptr_amode: tuple[int, ...]
     numptrcw_amode: tuple[int, ...]
     lspectype_amode: tuple[tuple[int, ...], ...]
@@ -139,12 +148,22 @@ class Topology:
         # rather than an error, so it is checked rather than assumed.
         for m in range(self.nmodes):
             n = self.nspec_amode[m]
-            if n > len(self.lspectype_amode[m]):
+            if not 0 <= n <= len(self.specname_amode):
+                # A negative count makes range(n) empty, which would skip this
+                # mode's entire slot loop and leave every pointer in it
+                # unvalidated -- silent, and exactly the wrong direction.
                 raise ValueError(
-                    f"{self.name}: mode {m} declares {n} species but "
-                    f"lspectype_amode[{m}] has only "
-                    f"{len(self.lspectype_amode[m])} slots"
+                    f"{self.name}: nspec_amode[{m}] = {n} outside "
+                    f"[0, {len(self.specname_amode)}]"
                 )
+            for table_name in ("lspectype_amode", "lmassptr_amode",
+                               "lmassptrcw_amode"):
+                row = getattr(self, table_name)[m]
+                if n > len(row):
+                    raise ValueError(
+                        f"{self.name}: mode {m} declares {n} species but "
+                        f"{table_name}[{m}] has only {len(row)} slots"
+                    )
             for s in range(n):
                 if self.lspectype_amode[m][s] < 0:
                     raise ValueError(
@@ -171,6 +190,26 @@ class Topology:
                     f"{self.name}: numptr_amode[{m}] = {self.numptr_amode[m]} "
                     f"outside [0, pcnst = {self.pcnst})"
                 )
+
+        # Every interstitial tracer index must be claimed exactly once. Two
+        # modes sharing a mass tracer, or a number pointer colliding with a
+        # mass pointer, is accepted arithmetic and silently double-counts mass.
+        # That is the same class of quiet-wrong-physics as the -1 rule above,
+        # and it is the specific failure mode of hand-extracting CAM's tables.
+        seen: dict[int, str] = {}
+        for m in range(self.nmodes):
+            claims = [(self.numptr_amode[m], f"numptr_amode[{m}]")]
+            claims += [
+                (self.lmassptr_amode[m][s], f"lmassptr_amode[{m}][{s}]")
+                for s in range(self.nspec_amode[m])
+            ]
+            for idx, label in claims:
+                if idx in seen:
+                    raise ValueError(
+                        f"{self.name}: pcnst index {idx} claimed by both "
+                        f"{seen[idx]} and {label}"
+                    )
+                seen[idx] = label
 
         for m in range(self.nmodes):
             if not (self.dgnumlo_amode[m] < self.dgnum_amode[m]
@@ -250,11 +289,17 @@ _REGISTRY: dict[str, Topology] = {}
 _ACTIVE: list[Topology] = []       # single-element; list so it stays mutable
 
 
-def _register(topology: Topology, *, make_active: bool = False) -> Topology:
+def register_topology(topology: Topology, *, make_active: bool = False) -> Topology:
+    """Add `topology` to the registry.
+
+    Registration deliberately does NOT activate implicitly. An earlier version
+    activated whenever nothing was active yet, which meant the first import of
+    any module that registers could silently revert an explicit
+    ``set_topology`` choice. Callers say what they mean.
+    """
     _REGISTRY[topology.name] = topology
-    if make_active or not _ACTIVE:
-        _ACTIVE.clear()
-        _ACTIVE.append(topology)
+    if make_active:
+        _ACTIVE[:] = [topology]        # single store; no window with 0 entries
     return topology
 
 
@@ -283,8 +328,8 @@ def set_topology(topology: "Topology | str") -> Topology:
                 f"unknown topology {topology!r}; registered: "
                 f"{sorted(_REGISTRY)}"
             ) from None
-    _ACTIVE.clear()
-    _ACTIVE.append(topology)
+    _REGISTRY.setdefault(topology.name, topology)
+    _ACTIVE[:] = [topology]
     return topology
 
 
@@ -292,5 +337,9 @@ def available_topologies() -> tuple[str, ...]:
     return tuple(sorted(_REGISTRY))
 
 
-# Populated by data.py at import time.
-E3SM_MAM4_MOM: Topology | None = None
+# NOTE: the E3SM instance lives at ``mam4_jax.data.E3SM_MAM4_MOM``, built there
+# from that module's own literals (see data.py). It is deliberately NOT
+# re-exported here: an earlier version declared it as None for data.py to
+# populate, and data.py never assigned back, so
+# ``from mam4_jax.topology import E3SM_MAM4_MOM`` silently handed out None.
+# Use ``get_topology()`` or import from ``mam4_jax.data``.

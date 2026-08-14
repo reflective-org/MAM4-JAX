@@ -648,7 +648,7 @@ def get_mass_by_species_name(q, mode: int, species_name: str,
 # the diff unreviewable and put the bit-identity guarantee at risk.
 # ---------------------------------------------------------------------------
 
-from .topology import Topology as _Topology, _register as _register_topology  # noqa: E402
+from .topology import Topology as _Topology, register_topology as _register_topology  # noqa: E402
 
 E3SM_MAM4_MOM: _Topology = _register_topology(
     _Topology(
