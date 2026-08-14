@@ -1,9 +1,11 @@
-# Plan 024 — CESM/CAM variant of MAM4-JAX
+# Plan 024 — CESM/CAM variant of MAM4-JAX, MAM5-first
 
-**Status:** **PROPOSED** (2026-08-03). Not approved; nothing here is in progress.
-Per `CLAUDE.md` §"Nothing moves from proposed to in progress without owner approval".
-**Branch:** `docs/m15-cesm-variant-plan` → `main` (docs only; no code).
-**Evidence base:** sibling repo `mam-cesm-box`, in particular `docs/CESM_VS_E3SM.md` and the
+**Revision 2 (2026-08-14).** MAM5 and the stratospheric-sulfate cluster promoted from deferred into scope per owner direction; mode count becomes a parameter rather than a fork; PR A landed. Revision 1 was tropospheric, MAM4-only.
+
+**Status:** **APPROVED / IN PROGRESS** (owner approval 2026-08-14; proposed 2026-08-03).
+PR A landed on `fix/calcsize-aitacc-bound-turnoff`; PR B in progress.
+**Branch:** `docs/m15-cesm-variant-plan` → `main` for the plan itself; code lands per-PR.
+**Evidence base:** sibling repo `mam-box-fortran`, in particular `docs/CESM_VS_E3SM.md` and the
 seven per-process reports under `docs/discrepancies/` (~6,200 lines, every claim carrying
 `file:line` citations into both Fortran trees).
 
@@ -23,7 +25,7 @@ turn-off; `data.py:136` is still `0.010` for p-organic and `:521` still
 `MW_SO4A_HOST = 115.0`.
 
 CAM side is pinned to `cam6_4_187` (`d38ad70`), the exact SHA recorded for `components/cam`
-in the CESM checkout — see `mam-cesm-box/PROVENANCE.md`.
+in the CESM checkout — see `mam-box-fortran/PROVENANCE.md`.
 
 **Re-verify before implementing.** If M15 is approved well after this date, redo the
 `git diff <plan-base>..origin/main` check above before trusting §3 or §5.
@@ -61,7 +63,11 @@ So this is **not** a re-port. It is a variant axis plus a second driver.
 
 ### In scope
 
-1. A `variant: "e3sm" | "cesm"` configuration axis threaded through `data.py` / `config.py`.
+1. **Two independent configuration axes**, threaded through `data.py` / `config.py`:
+   `variant: "e3sm" | "cesm"` and `nmodes: 4 | 5`. They are orthogonal — E3SM has no 5-mode
+   configuration, so `("e3sm", 5)` is rejected at construction, but every other combination is
+   valid. A third axis, `strat_sulfate: bool`, gates the stratospheric cluster and is
+   independent of both.
 2. CAM-faithful parameter values (§3), including the mode/species topology change.
 3. A **CAM driver** implementing CAM's sequential grid-cell-mean coupling, as an alternative
    to `processes/amicphys.py`.
@@ -72,11 +78,30 @@ So this is **not** a re-port. It is a variant axis plus a second driver.
 
 | Item | Why |
 | --- | --- |
-| CAM's `sulfeq` reversible stratospheric-sulfate uptake | Off by default (`modal_strat_sulfate`); large standalone feature |
-| CAM's `modal_aero_rename_acc_crs_sub` (636 lines) | Off by default (`modal_accum_coarse_exch`); a third rename algorithm |
-| Generalised VBS (`ntot_soaspec = 2/5/15`) | CAM default for MAM4 is `nsoa = 1` |
-| MAM5 / `coarse_strat` | Second topology; doubles the config surface |
-| CAM's stratospheric water uptake | **Not a pure function** — see §6 |
+| CAM's `modal_aero_rename_acc_crs_sub` (636 lines) | Off by default (`modal_accum_coarse_exch`); a third rename algorithm. Now measured in the Fortran box model: **inert below `qso2` ~1e-5**, because the accum→coarse transfer needs accum to approach `dgnumhi(1) = 4.4e-7 m` and it peaks at 1.224e-7 m — 3.6× short in diameter. So this is genuinely low-value until a high-loading regime is in scope |
+| Generalised VBS (`ntot_soaspec = 2/5/15`) | CAM default for MAM4/MAM5 is `nsoa = 1` |
+
+### Promoted INTO scope (revision 2, 2026-08-14)
+
+Owner direction: *"We need MAM5 coarse mode and so4 stratospheric water uptake. It is
+important to have it."* and *"I need to make sure we have MAM5-JAX."* Both items below were
+deferred in revision 1; both are now the target.
+
+| Item | Status of the blocker that caused the deferral |
+| --- | --- |
+| **MAM5 / `coarse_strat`** | The deferral reason was "second topology; doubles the config surface". That is now the *design*, not a cost: mode count becomes a **parameter**, so MAM5 is the general case and MAM4 falls out as `ntot_amode = 4`. Verified in the Fortran that this is not a fork — the only `MODAL_AERO_5MODE` reference in the seven microphysics kernels is `modal_aero_coag.F90:27`, which puts MAM5 in the **same branch** as MAM4 (`pair_option_acoag = 3`) |
+| **CAM stratospheric water uptake + `sulfeq`** | §6 called this a blocker because the lagged feedback is not a pure function. It is now **implemented and running in the Fortran box model**, so the carried state is known exactly rather than feared: `dgncur_awet(t−1)` → Kelvin → `wtpct`/`sulden` → `dgncur_awet(t)`. It becomes an explicit carried-state argument, not a blocker. See §6, rewritten |
+
+**Why MAM4 is retained rather than dropped.** It is the only configuration with verification
+depth — the dt-convergence study, the RH sweep, the 960-step conservation check and the
+original 21 robustness cases all ran on MAM4 — and a 5-mode port validated only against
+itself has no independent reference. Mode count as a parameter keeps both at the cost of one
+axis value.
+
+**Stratospheric water uptake does NOT require MAM5.** Tabazadeh already runs in the 4-mode
+Fortran configuration (`./mam_box_cam.exe 0.9 strat`). The two are independent axes and
+should stay that way in the port. MAM5 adds a dedicated so4-only stratospheric coarse mode
+with its own size distribution (`sigmag` 1.2, `dgnum` 9e-7), not the water uptake itself.
 
 ### Explicitly not in scope
 
@@ -87,7 +112,7 @@ no equivalent — `grep -rI amicphys` over all of CAM `src/` returns zero hits.
 
 ## 3. The parameter axis — the substance of this plan
 
-All values verified in source on both sides. `mam-cesm-box/docs/CESM_VS_E3SM.md` has the
+All values verified in source on both sides. `mam-box-fortran/docs/CESM_VS_E3SM.md` has the
 citations.
 
 | Parameter | E3SM (current) | CESM/CAM | Factor | Where in this repo |
@@ -114,7 +139,7 @@ live in at least four places (`data.py` tables, `config.py` dataclasses, module-
 constants in `processes/gasaerexch.py`, and inline literals).
 
 A companion five-layer design already exists in the Fortran box model at
-`mam-cesm-box/docs/PARAMETER_ABSTRACTION.md`; the layering is deliberately chosen to map onto
+`mam-box-fortran/docs/PARAMETER_ABSTRACTION.md`; the layering is deliberately chosen to map onto
 this repo:
 
 | Layer | What | This repo |
@@ -135,7 +160,7 @@ Two consequences for this plan:
   side by side and a citation, so the variant axis is a table lookup rather than scattered
   `if variant == "cesm"` branches.
 
-`mam-cesm-box/docs/discrepancies/constants-inventory.md` (1,309 lines) is the full census of
+`mam-box-fortran/docs/discrepancies/constants-inventory.md` (1,309 lines) is the full census of
 where the hardcoded values currently are, in both codebases, with `file:line` for each — use
 it as the worklist for populating the parameter module.
 
@@ -174,13 +199,24 @@ Sized so each PR is independently reviewable and testable.
 
 | PR | Content | Depends on |
 | --- | --- | --- |
-| **A** | Fix the two E3SM-path defects in §5. No variant work. | — |
-| **B** | Introduce the `variant` axis plumbing with `"e3sm"` as the only value, **plus the parameter-module consolidation of §3.1**: pull the scattered Layer-3 values into `config.py` and add a `numerics.py` for Layer 4. Pure refactor; E3SM path must be **bit-unchanged**. | A |
-| **C** | CAM species properties: hygroscopicity, the four `specmw_amode` sets, `MW_SO4A_HOST`. | B |
-| **D** | CAM topology: dust in the aitken mode (`nspec_amode` 3→4, index tables, `noxf_acc2ait`). Highest-risk PR — touches every index table. | C |
-| **E** | CAM SOA parameters (`opoa_frac`, `p0_soa_298`, `delh_vap_soa`, `mw_soa`) + `n_so4_monolayers_pcage`. Tests at ≥2 temperatures. | C |
-| **F** | `processes/cam_driver.py` — CAM's sequential coupling: gasaerexch (calling rename internally) → newnuc → coag, on grid-cell means. No sub-areas, no sub-stepping. | D, E |
-| **G** | Reference-data capture from `mam-cesm-box` + a `tests/reference/cesm/` suite mirroring the existing E3SM structure. | F |
+| **A** | Fix the E3SM-path defects in §5. No variant work. **DONE** — branch `fix/calcsize-aitacc-bound-turnoff`, 90 tests green | — |
+| **B** | **Topology as a parameter.** Replace `data.py`'s module-level constants with a frozen `Topology` dataclass plus named instances (`E3SM_MAM4_MOM`, `CAM_MAM4`, `CAM_MAM5`), keeping the module names as aliases to the default. Pure refactor; E3SM path **bit-unchanged**. Also folds in revision 1's PR B: scattered Layer-3 values into `config.py`, `numerics.py` for Layer 4 | A |
+| **C** | CAM species properties: hygroscopicity, the four `specmw_amode` sets, `MW_SO4A_HOST`. Sourced from `mam-box-fortran/params/cam_mam4_params.py` (generated from the physprop NetCDF with SHA256 provenance) | B |
+| **D** | CAM 4-mode topology: dust in the aitken mode (`nspec_amode` 3→4, index tables, `noxf_acc2ait`) | C |
+| **E** | **MAM5 topology** — mode 5 `coarse_strat`, so4-only, `sigmag` 1.2, `dgnum` 9e-7. The payload of this revision. Note mode 5 is in **no coagulation pair** and receives no nucleation, so its number changes only via rename and calcsize bound-clamping; a test asserting `num_a5` constant under the default IC is a real check, not a tautology — see the Fortran evidence in `docs/SCENARIOS.md` §8 | D |
+| **F** | CAM SOA parameters. **Decided (2026-08-14): `delh_vap_soa = 131e3`** with `p0_soa_298 = 9.7831e-11` — they are a calibrated pair and must not be mixed. Transcribed in `mam-box-fortran/params/soa_volatility.py`. Tests at **≥2 temperatures**: the two choices differ by only 0.98×–1.63× at 298 K, so a single-temperature test is nearly blind | C |
+| **G** | `processes/cam_driver.py` — CAM's sequential coupling: gasaerexch (calling rename internally) → newnuc → coag, on grid-cell means. **Must expose an explicit sub-stepping control**; see the note below | D, E |
+| **H** | **Stratospheric cluster** — `sulfeq` + `calc_h2so4_equilib_mixrat`/`_wtpct` + Tabazadeh water uptake, ported as one unit with explicit carried state (§6) | G |
+| **I** | Reference-data capture from `mam-box-fortran` (tag `mam4-baseline-v1`) + a `tests/reference/cesm/` suite mirroring the E3SM structure. Both topologies | G, H |
+
+**Sub-stepping is not optional (new in revision 2).** The Fortran box model does **not**
+converge in dt while nucleation is active: over a fixed 1-hour window, accumulation sulfate
+spans **2.08×** from dt 120 s to 1.875 s and is still moving 4.5 % at the finest step. With
+nucleation off the same sweep spans 1.3 %, so it is attributable to nucleation under CAM's
+un-substepped sequential splitting — which is precisely why E3SM's amicphys carries
+`ntsubstep`. A JAX port that inherits the splitting verbatim will faithfully reproduce an
+O(50 %) error at a 30 s step. PR G must therefore expose sub-stepping, and reference
+comparisons must pin dt on both sides.
 
 **Non-negotiable invariant across B–G:** the E3SM path stays bit-for-bit unchanged. The
 existing test suite is the only guard against the variant axis silently altering it, so every
@@ -213,6 +249,15 @@ disables them — clamping number the reference does not clamp.
 Not caught today because the port's own docstring notes the transfer never triggers in the
 reference run, i.e. this path is untested. PR A should add a case that exercises it.
 
+> **DONE** (branch `fix/calcsize-aitacc-bound-turnoff`). Fixed, with
+> `tests/test_calcsize_bound_turnoff.py` — four differential tests against
+> `do_aitacc_transfer=False`, verified to discriminate (reverting the fix fails 2 of 4).
+> Two things learned while writing them, both relevant to later PRs:
+> calcsize relaxes each adjustment over `tadj = max(86400 s, deltat)`, so at a 30 s step only
+> ~3.5e-4 of a correction lands and bound behaviour is invisible; and for accum the turn-off
+> does not leave number higher — once the bound stops pinning it, `acc2ait` drains the mode.
+> Suite 90 passed, E3SM path unchanged.
+
 ### 5.2 Single-precision literal caps achievable tolerance
 
 `modal_aero_amicphys.F90:4030` has `sqrt( 0.5 )` — a single-precision literal, ~1.71e-8
@@ -224,24 +269,44 @@ amicphys and this port do not.
 
 ---
 
-## 6. Known blocker for any future CAM stratospheric work
+## 6. CAM stratospheric water uptake — no longer a blocker, now a design requirement
 
-CAM's water-uptake driver is **not a pure function**. Above the tropopause it abandons Köhler
-theory for an H2SO4–H2O binary solution (Tabazadeh 1997 composition, CARMA σ/ρ tables,
-Giauque 1959 enthalpy, Ayers 1980 + Kulmala 1990 vapour pressure) and carries a **lagged
-feedback**: `dgncur_awet(t-1)` → Kelvin term → `wtpct`/`sulden` → `dgncur_awet(t)`. E3SM has
-no tropopause concept at all.
+Revision 1 deferred this because CAM's water-uptake driver is **not a pure function**. Above
+the tropopause it abandons Köhler theory for an H2SO4–H2O binary solution (Tabazadeh 1997
+composition, CARMA σ/ρ tables, Giauque 1959 enthalpy, Ayers 1980 + Kulmala 1990 vapour
+pressure) and carries a lagged feedback:
 
-A JAX port would need this as explicit carried state, which conflicts with the current
-functional design. Hence §2 defers it and this plan is **tropospheric-only**. That deferral
-should be an ADR if the plan is approved.
+    dgncur_awet(t-1) -> Kelvin term -> wtpct / sulden -> dgncur_awet(t)
+
+That is still true. What has changed is that **it is implemented and running in the Fortran
+box model**, so the state is characterised rather than hypothetical:
+
+- The cluster is **coupled and must be ported as a unit**: water uptake produces `sulfeq`
+  into the `MAMH2SO4EQ` pbuf field and gasaerexch consumes it. Enabling one without the other
+  gives an incoherent state — tropospheric condensation against stratospheric water uptake.
+- Measured behaviour, RH 5 %, 120 × 30 s: wet/dry 1.000000 → **1.171745**, wet density
+  1770 → **1478.6** kg m⁻³ (so the particles genuinely become solution droplets, not merely
+  larger), gas-phase H2SO4 drawn down to **0.684×**.
+- Across a 22-point RH sweep the two paths **cross near RH 92 %**: Tabazadeh saturates at
+  1.811 while Köhler runs on to 2.672. So a port validated at a single high RH would look
+  fine and be wrong in the dry half. **Validate across RH, not at a point.**
+- ⚠ **Asymmetric gating in CAM itself**: gasaerexch tests `k <= troplev`
+  (`modal_aero_gasaerexch.F90:523`) while wateruptake tests `k < troplev`
+  (`modal_aero_wateruptake.F90:583`). Exactly at `k == troplev` condensation takes the
+  stratospheric path while water uptake takes the tropospheric one. Reproduce faithfully;
+  do not "fix".
+
+**Design consequence for the port.** The lagged term becomes an explicit carried-state
+argument rather than hidden mutable state — the harness already exposes it that way, so the
+JAX side inherits an honest interface. This is the one place where the CAM variant cannot be
+a pure re-parameterisation of the E3SM path.
 
 ---
 
 ## 7. Acceptance criteria
 
 1. E3SM path bit-for-bit unchanged; full existing suite green on every PR.
-2. `variant="cesm"` reproduces `mam-cesm-box` Fortran output to 1e-6 relative per process, at
+2. `variant="cesm"` reproduces `mam-box-fortran` Fortran output to 1e-6 relative per process, at
    ≥2 temperatures for anything SOA-related.
 3. Every parameter in §3 covered by a test asserting the variant-specific value is actually
    in force — not merely present in a table.
