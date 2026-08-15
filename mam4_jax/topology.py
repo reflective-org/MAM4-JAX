@@ -39,9 +39,29 @@ actually changes a jitted result.
 """
 from __future__ import annotations
 
+import functools
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
+
+# Detecting "are we inside a jit trace" has no public JAX API. This uses a
+# private one, defensively: if a JAX upgrade moves it, the guard degrades to a
+# no-op rather than breaking the package. The guard is a safety net, so failing
+# open is the right direction -- but see _TRACE_PROBE_AVAILABLE, which the test
+# suite asserts on so a silent degradation is noticed.
+try:                                                        # pragma: no cover
+    from jax._src.core import trace_ctx as _trace_ctx
+
+    def _inside_jit_trace() -> bool:
+        return type(_trace_ctx.trace).__name__ != "EvalTrace"
+
+    _TRACE_PROBE_AVAILABLE = True
+except Exception:                                           # pragma: no cover
+    def _inside_jit_trace() -> bool:
+        return False
+
+    _TRACE_PROBE_AVAILABLE = False
 
 __all__ = [
     "Topology",
@@ -49,6 +69,8 @@ __all__ = [
     "register_topology",
     "set_topology",
     "available_topologies",
+    "topology_jit",
+    "trace_policy",
 ]
 
 _VALID_VARIANTS = ("e3sm", "cesm")
@@ -303,13 +325,84 @@ def register_topology(topology: Topology, *, make_active: bool = False) -> Topol
     return topology
 
 
+# What to do when get_topology() is called during a jit trace. "error" by
+# default: reading the active topology from inside a traced function bakes it
+# into that trace, and the cache is not keyed on it, so a later set_topology
+# silently returns the old answer. See the module docstring.
+_TRACE_POLICY = ["error"]
+
+
+def trace_policy(policy: str | None = None) -> str:
+    """Get, or set, what happens when get_topology() runs inside a jit trace.
+
+    ``"error"`` (default), ``"warn"``, or ``"allow"``. The escape hatch exists
+    for the deliberate case where a caller knows the kernel is retraced per
+    topology; it should be rare, and reaching for it is a signal to pass the
+    topology as a static argument instead.
+    """
+    if policy is None:
+        return _TRACE_POLICY[0]
+    if policy not in ("error", "warn", "allow"):
+        raise ValueError(
+            f"trace policy must be 'error', 'warn' or 'allow', got {policy!r}"
+        )
+    _TRACE_POLICY[0] = policy
+    return policy
+
+
+_TRACE_MESSAGE = (
+    "get_topology() was called inside a jit trace. jit caches are not keyed on "
+    "module globals, so this bakes the CURRENT topology into the compiled "
+    "function: after set_topology(...) the kernel keeps returning the old "
+    "topology's answer, with no error and no warning. Pass the Topology in as a "
+    "static argument instead -- it is frozen and hashable for exactly this "
+    "purpose, e.g. @topology_jit or jax.jit(f, static_argnames=('topology',)). "
+    "If this really is intentional, wrap the call in "
+    "mam4_jax.topology.trace_policy('allow')."
+)
+
+
 def get_topology() -> Topology:
-    """The active topology."""
+    """The active topology.
+
+    Raises inside a jit trace by default; see :func:`trace_policy`.
+    """
     if not _ACTIVE:
         raise RuntimeError(
             "no topology registered; import mam4_jax.data before use"
         )
+    if _inside_jit_trace():
+        policy = _TRACE_POLICY[0]
+        if policy == "error":
+            raise RuntimeError(_TRACE_MESSAGE)
+        if policy == "warn":
+            warnings.warn(_TRACE_MESSAGE, RuntimeWarning, stacklevel=2)
     return _ACTIVE[0]
+
+
+def topology_jit(fn=None, **jit_kwargs):
+    """``jax.jit`` with ``topology`` treated as a static argument.
+
+    The safe counterpart to reading ``get_topology()`` inside a kernel: the
+    topology participates in the cache key, so switching topologies retraces
+    instead of silently reusing the previous compilation.
+
+    Usage::
+
+        @topology_jit
+        def kernel(q, *, topology):
+            return q * topology.voltonumb_amode[0]
+
+        kernel(q, topology=get_topology())
+    """
+    import jax
+
+    def wrap(f):
+        names = set(jit_kwargs.pop("static_argnames", ()))
+        names.add("topology")
+        return jax.jit(f, static_argnames=tuple(sorted(names)), **jit_kwargs)
+
+    return wrap if fn is None else wrap(fn)
 
 
 def set_topology(topology: "Topology | str") -> Topology:
