@@ -23,6 +23,7 @@ import pytest
 import mam4_jax  # noqa: F401
 from mam4_jax import data
 from mam4_jax.topology import (
+    _REGISTRY,
     _TRACE_PROBE_AVAILABLE,
     get_topology,
     set_topology,
@@ -63,6 +64,11 @@ def test_trace_probe_is_available() -> None:
     assert _TRACE_PROBE_AVAILABLE, (
         "jax._src.core.trace_ctx moved; the jit-staleness guard is now a no-op"
     )
+    # The flag alone is not enough: if a future JAX keeps trace_ctx but renames
+    # EvalTrace, the flag stays True while the probe reports "tracing" in eager
+    # mode -- and then EVERY get_topology() call raises. Name that directly.
+    from mam4_jax.topology import _inside_jit_trace
+    assert _inside_jit_trace() is False
 
 
 def test_get_topology_inside_jit_raises() -> None:
@@ -92,6 +98,9 @@ def test_trace_policy_allow_restores_the_old_behaviour(restore_policy) -> None:
         second = float(unsafe(jnp.float64(1.0)))
     finally:
         set_topology(data.E3SM_MAM4_MOM)
+        # set_topology registers by side effect, so drop the probe rather than
+        # leaving available_topologies() polluted for the rest of the session.
+        _REGISTRY.pop("alt_probe", None)
 
     # This IS the hazard: same cache entry, so the answer does not change.
     assert second == first
@@ -165,3 +174,81 @@ def test_topology_jit_kernel_can_use_get_topology_at_the_call_site() -> None:
 
     result = float(kernel(jnp.float64(1.0), topology=get_topology()))
     assert result == pytest.approx(float(get_topology().voltonumb_amode[0]))
+
+
+# ---------------------------------------------------------------------------
+# Gaps found reviewing this branch. Both are cases where the failure is SILENT.
+# ---------------------------------------------------------------------------
+
+def test_topology_jit_factory_is_reusable() -> None:
+    """A reused decorator factory must not lose the caller's static argnames.
+
+    The first implementation used ``jit_kwargs.pop(...)``, which mutated the
+    dict closed over by the decorator, so every function after the first got
+    only ``('topology',)``. When the dropped argument is used for a Python
+    branch that raises TracerBoolConversionError; when it is used only for
+    indexing -- as in the composition test above -- it degrades quietly into a
+    dynamic argument and nothing complains.
+    """
+    deco = topology_jit(static_argnames=("mode",))
+
+    @deco
+    def first(x, *, topology, mode):
+        return x * jnp.asarray(topology.voltonumb_amode)[mode]
+
+    @deco
+    def second(x, *, topology, mode):
+        return x * jnp.asarray(topology.voltonumb_amode)[mode]
+
+    for fn in (first, second):
+        assert "mode" in fn._jit_info.static_argnames
+        assert "topology" in fn._jit_info.static_argnames
+
+    # And behaviourally: `mode` must be usable in a Python branch.
+    @deco
+    def branching(x, *, topology, mode):
+        if mode == 0:                      # requires a genuinely static `mode`
+            return x * jnp.asarray(topology.voltonumb_amode)[0]
+        return x
+
+    assert float(branching(jnp.float64(1.0),
+                           topology=data.E3SM_MAM4_MOM, mode=0)) \
+        == pytest.approx(float(data.E3SM_MAM4_MOM.voltonumb_amode[0]))
+
+
+def test_topology_passed_positionally_is_still_static() -> None:
+    """`static_argnames` covers POSITIONAL_OR_KEYWORD params, so positional
+    passing is static too -- asserted rather than assumed, since a silent
+    downgrade to a dynamic argument would reintroduce the staleness class."""
+    traces = {"n": 0}
+
+    @topology_jit
+    def kernel(x, topology):               # positional, not keyword-only
+        traces["n"] += 1
+        return x * jnp.asarray(topology.voltonumb_amode)[0]
+
+    alt = _alt()
+    a = float(kernel(jnp.float64(1.0), data.E3SM_MAM4_MOM))
+    b = float(kernel(jnp.float64(1.0), data.E3SM_MAM4_MOM))
+    c = float(kernel(jnp.float64(1.0), alt))
+
+    assert a == b                                   # cache hit
+    assert traces["n"] == 2                         # one trace per topology
+    assert c == pytest.approx(float(alt.voltonumb_amode[0]))
+    assert c != a
+
+
+def test_structurally_identical_topologies_share_a_trace() -> None:
+    """Distinct-but-equal instances must hit the same cache entry."""
+    traces = {"n": 0}
+
+    @topology_jit
+    def kernel(x, *, topology):
+        traces["n"] += 1
+        return x * jnp.asarray(topology.voltonumb_amode)[0]
+
+    twin = dataclasses.replace(data.E3SM_MAM4_MOM)
+    assert twin == data.E3SM_MAM4_MOM and twin is not data.E3SM_MAM4_MOM
+    kernel(jnp.float64(1.0), topology=data.E3SM_MAM4_MOM)
+    kernel(jnp.float64(1.0), topology=twin)
+    assert traces["n"] == 1
