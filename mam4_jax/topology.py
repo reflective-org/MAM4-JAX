@@ -339,6 +339,19 @@ def trace_policy(policy: str | None = None) -> str:
     for the deliberate case where a caller knows the kernel is retraced per
     topology; it should be rare, and reaching for it is a signal to pass the
     topology as a static argument instead.
+
+    The policy is process-global, not thread-local, so ``"allow"`` disables the
+    guard for every thread.
+
+    KNOWN FALSE POSITIVES. The probe reports "tracing" for any trace, but only
+    some traces actually go stale. Measured: bare ``vmap`` and bare
+    ``grad``/``jvp``/``vjp`` -- with no jit and no ``lax`` control-flow
+    primitive -- retrace on every call, so a global read there is correct and
+    the guard is over-strict. Everything else tested does go stale, including
+    ``scan``, ``fori_loop``, ``cond`` and ``while_loop`` *outside* jit (their
+    bodies are cached on the callable by ``_initial_style_jaxpr``). The
+    over-strictness is loud rather than silent, and passing the topology as a
+    static argument is the right answer in the false-positive cases too.
     """
     if policy is None:
         return _TRACE_POLICY[0]
@@ -387,6 +400,10 @@ def topology_jit(fn=None, **jit_kwargs):
     topology participates in the cache key, so switching topologies retraces
     instead of silently reusing the previous compilation.
 
+    ``topology`` may be passed positionally or by keyword -- JAX resolves
+    ``static_argnames`` onto argnums for POSITIONAL_OR_KEYWORD parameters, so
+    both are genuinely static.
+
     Usage::
 
         @topology_jit
@@ -398,9 +415,20 @@ def topology_jit(fn=None, **jit_kwargs):
     import jax
 
     def wrap(f):
-        names = set(jit_kwargs.pop("static_argnames", ()))
+        # .get + a copy, NOT .pop: popping mutates the dict closed over by
+        # `wrap`, so reusing a factory result silently dropped the caller's
+        # static argnames on every function after the first --
+        #     deco = topology_jit(static_argnames=("mode",))
+        #     @deco
+        #     def k1(...)   # ('mode', 'topology')
+        #     @deco
+        #     def k2(...)   # ('topology',)  <- 'mode' silently dynamic
+        # and when the static arg is only used for indexing that degrades
+        # quietly into a dynamic argument rather than raising.
+        names = set(jit_kwargs.get("static_argnames", ()))
         names.add("topology")
-        return jax.jit(f, static_argnames=tuple(sorted(names)), **jit_kwargs)
+        rest = {k: v for k, v in jit_kwargs.items() if k != "static_argnames"}
+        return jax.jit(f, static_argnames=tuple(sorted(names)), **rest)
 
     return wrap if fn is None else wrap(fn)
 
