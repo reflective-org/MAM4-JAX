@@ -268,6 +268,71 @@ Initial implementation is a Python `for` loop (rule #8 phase A); `jax.lax.scan` 
 
 ---
 
+## Milestone 15 — CESM/CAM variant, MAM5-first (approved, in progress)
+
+**Full plan:** `docs/plans/024-cesm-variant.md` (revision 2, 2026-08-14).
+**Status:** approved 2026-08-14. PR A landed on `fix/calcsize-aitacc-bound-turnoff`.
+
+**Why.** This repo ports **E3SMv1** MAM4 (via the PNNL `MAM_box_model`). CESM3/CAM ships a
+different MAM code line. A full source-level investigation of both trees — in the sibling
+repo `mam-box-fortran` (`docs/CESM_VS_E3SM.md` plus seven per-process reports, ~6,200 lines with
+`file:line` citations) — found that **the leaf kernels are the same code, the parameter values
+differ far more than the code does, and the orchestration layer shares nothing.**
+
+`getcoags` is byte-for-byte identical between CAM and E3SM over 1519 lines, and all 4030
+tabulated Whitby values are bit-exact against this repo's `_coag_tables.npz`. Both nucleation
+parameterisations are 0-diff with exact literal matches. So this is a **variant axis plus a
+second driver**, not a re-port.
+
+**Scope sketch (revision 2).** TWO orthogonal axes through `data.py`/`config.py` —
+`variant: "e3sm" | "cesm"` and `nmodes: 4 | 5` — plus an independent `strat_sulfate` gate. CAM
+parameter values (the largest being p-organic hygroscopicity **1.0e-10 vs 0.010** — a 10⁸
+factor — plus `opoa_frac` 0.0 vs 0.1, the SOA volatility triple, and four `specmw_amode` sets
+differing 0.047–0.099 %, which is ~1000× the repo's 1e-6 tolerance); dust added to the aitken
+mode (`nspec_amode` 3→4); MAM5's `coarse_strat` mode; the stratospheric cluster; and a
+`processes/cam_driver.py` implementing CAM's sequential grid-cell-mean coupling with an
+explicit sub-stepping control. Nine PRs, A–I.
+
+**Not in scope.** `processes/amicphys.py` has no CAM analogue and must not be adapted —
+`grep -rI amicphys` over all of CAM `src/` returns zero hits.
+
+**Prerequisite (PR A).** Two defects in the *current* E3SM path, found by diffing this repo
+against its own Fortran reference:
+- ✅ **FIXED** — `processes/calcsize.py` omitted the `do_aitacc_transfer` `1e6` bound turn-off
+  (CAM `modal_aero_calcsize.F90:556-561`, E3SM `:756-761` — identical, so a shared-path defect).
+  `do_aitacc_transfer` defaults to `True`, so the port clamped number where the Fortran
+  deliberately disables the bound. Landed with `tests/test_calcsize_bound_turnoff.py`, verified
+  to discriminate by reverting the fix (2 of 4 fail).
+- `modal_aero_amicphys.F90:4030` has a single-precision `sqrt(0.5)` literal (~1.71e-8) feeding
+  both `erfc` arguments, putting a ~1e-8 floor under `test_rename.py`'s 1e-6 tolerance.
+
+**Open questions.**
+- ~~`delh_vap_soa` 131 kJ (CAM) vs 156 kJ (E3SM)~~ — **RESOLVED 2026-08-14: use CAM's 131e3**,
+  paired with `p0_soa_298 = 9.7831e-11` (they are calibrated together and must not be mixed).
+  Also corrected: this is not a CAM-vs-E3SM divergence — CAM holds *both*, branching on
+  `ntot_soaspec`. Provenance in `mam-box-fortran/params/soa_volatility.py`.
+- Land on `main` behind the `variant` flag, or keep a long-lived branch? Plan 024 recommends
+  `main`, to avoid drift against the diffrax/solver work.
+- Is `nspec_amode` 3→4 acceptable as a breaking change to the public data tables?
+
+**Promoted into scope (revision 2).** **MAM5** and **CAM's stratospheric water uptake +
+`sulfeq`**, per owner direction. Both are now implemented and measured in the Fortran box
+model, so the lagged `dgncur_awet(t-1)` → Kelvin → `wtpct` → `dgncur_awet(t)` feedback is a
+known quantity to be modelled as explicit carried state, not a blocker. MAM4 is **retained**
+as the regression baseline — mode count is a parameter, not a fork; verified in the Fortran
+that the only `MODAL_AERO_5MODE` reference in the seven kernels puts MAM5 in the same branch
+as MAM4.
+
+**Still deferred.** `modal_aero_rename_acc_crs_sub` (measured inert below `qso2` ~1e-5) and
+generalised VBS (`nsoa = 1` is the CAM default for both topologies).
+
+**New constraint from the Fortran (revision 2).** The box model does not converge in dt while
+nucleation is active: 2.08× spread over a fixed 1-hour window from dt 120 s to 1.875 s, versus
+1.3 % with nucleation off. A port inheriting CAM's un-substepped splitting verbatim reproduces
+an O(50 %) error at 30 s, so the CAM driver must expose sub-stepping.
+
+---
+
 ## Smaller deferred items (tracked as GitHub Issues)
 
 These don't warrant their own milestones but are tracked as GitHub Issues so a future PR can use the Development linkage to close them. See `docs/DEFERRED.md` for the detailed deferral context.
