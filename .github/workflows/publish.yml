@@ -1,0 +1,69 @@
+name: Publish to PyPI
+
+# Manual, and only on a tag. Publishing is irreversible -- PyPI will not let a
+# version number be reused even after a delete -- so this never runs on a push
+# to a branch.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build and test deps
+        # No fallback: if the dev extra stops resolving, fail here rather than
+        # proceeding to a "test" step that has no pytest.
+        run: |
+          python -m pip install --upgrade pip build
+          python -m pip install -e ".[dev]"
+
+      # Gate the release on the suite. A broken wheel cannot be unpublished.
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      # The wheel has shipped without its data file before (#62), and the file
+      # moved again in v0.3.0. Verify against the built artifact rather than the
+      # source tree, and in a clean environment so a stale editable install
+      # cannot mask a packaging error.
+      - name: Verify the built wheel in a clean environment
+        run: |
+          python -m venv /tmp/verify
+          /tmp/verify/bin/pip install --quiet dist/*.whl
+          /tmp/verify/bin/python - <<'PY'
+          import importlib.metadata as md
+          import mam4_jax
+          from mam4_jax.physics import coag
+          assert coag._TABLES_PATH.exists(), f"coag tables missing: {coag._TABLES_PATH}"
+          assert md.version("mam4-jax") == mam4_jax.__version__, "version drift"
+          missing = [n for n in mam4_jax.__all__ if not hasattr(mam4_jax, n)]
+          assert not missing, f"public API incomplete: {missing}"
+          print("wheel OK:", mam4_jax.__version__)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi          # add a required reviewer here to gate releases
+    permissions:
+      id-token: write          # PyPI Trusted Publishing -- no API token stored
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

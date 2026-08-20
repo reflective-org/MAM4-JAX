@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+import re
 from pathlib import Path
 
 import jax
@@ -39,7 +40,13 @@ INDICES_NPZ = (
 def test_package_imports_cleanly() -> None:
     import mam4_jax
 
-    assert mam4_jax.__version__ == "0.0.1"
+    # Deliberately not pinned to a literal: a test that has to be edited on
+    # every release is a test that gets edited without being read. The
+    # version's agreement with the installed metadata is checked in
+    # test_release_metadata.py; here we only require it to be a sane PEP 440
+    # release string.
+    assert re.fullmatch(r"\d+\.\d+\.\d+([ab]|rc)?\d*", mam4_jax.__version__), \
+        f"unexpected version string: {mam4_jax.__version__!r}"
 
 
 def test_x64_enabled() -> None:
