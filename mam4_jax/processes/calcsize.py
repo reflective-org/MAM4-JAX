@@ -277,6 +277,12 @@ def _apply_aitacc_transfer(
     drv_a, drv_c)`` per-mode arrays and the post-transfer ``(q, qqcw)``
     tracer arrays with mass-species deltas applied. The caller writes
     the final number arrays back to q/qqcw at the ``numptr`` positions.
+
+    Also returns the two per-gridpoint trigger flags ``ixfer_ait2acc`` and
+    ``ixfer_acc2ait``. The Fortran gates a SECOND dgncur/v2ncur recompute on
+    ``ixfer_ait2acc + ixfer_acc2ait > 0`` (``modal_aero_calcsize.F90:926``), so
+    the caller needs them; they were previously discarded, which is why that
+    block had no counterpart here.
     """
     nait = AITKEN_MODE_IDX
     nacc = ACCUM_MODE_IDX
@@ -293,7 +299,7 @@ def _apply_aitacc_transfer(
     drv_t_ait = drv_a_ait + drv_c_ait
     num_t_ait = num_a_ait + num_c_ait
 
-    xferfrac_num_a2a, xferfrac_vol_a2a, _ = _xferfrac_pair(
+    xferfrac_num_a2a, xferfrac_vol_a2a, ixfer_ait2acc = _xferfrac_pair(
         num_t_ait, drv_t_ait, v2n_acc, v2nzz, "ait2acc",
     )
     xfercoef_num_a2a = xferfrac_num_a2a * tadj_inv
@@ -333,7 +339,7 @@ def _apply_aitacc_transfer(
                               jnp.maximum(num_t_acc - num_t_noxf, 0.0),
                               num_t_acc)
 
-    xferfrac_num_c2a, xferfrac_vol_c2a, _ = _xferfrac_pair(
+    xferfrac_num_c2a, xferfrac_vol_c2a, ixfer_acc2ait = _xferfrac_pair(
         num_t_acc_eff, drv_t_acc_eff, v2n_ait, v2nzz, "acc2ait",
     )
     # Fortran scaling (lines 1108-1110): multiply num-fraction by
@@ -403,7 +409,8 @@ def _apply_aitacc_transfer(
         new_qqcw = new_qqcw.at[..., lsfrm_c].add(-delta_c)
         new_qqcw = new_qqcw.at[..., lstoo_c].add( delta_c)
 
-    return new_num_a, new_num_c, new_drv_a, new_drv_c, new_q, new_qqcw
+    return (new_num_a, new_num_c, new_drv_a, new_drv_c, new_q, new_qqcw,
+            ixfer_ait2acc, ixfer_acc2ait)
 
 
 def _compute_dgn_v2n(num: jnp.ndarray, drv: jnp.ndarray,
@@ -436,7 +443,8 @@ def _compute_dgn_v2n(num: jnp.ndarray, drv: jnp.ndarray,
 
 
 def calcsize(state: dict[str, Any], params=None, config=None,
-             *, do_aitacc_transfer: bool = True) -> dict[str, Any]:
+             *, do_aitacc_transfer: bool = True,
+             bug_compat_stale_dumfac: bool = False) -> dict[str, Any]:
     """Apply size redistribution. ADR-009 entry point.
 
     Args:
@@ -554,13 +562,16 @@ def calcsize(state: dict[str, Any], params=None, config=None,
     # using the post-transfer num arrays.
     if do_aitacc_transfer:
         (num_a_final, num_c_final, drv_a, drv_c,
-         q_post_transfer, qqcw_post_transfer) = _apply_aitacc_transfer(
+         q_post_transfer, qqcw_post_transfer,
+         ixfer_ait2acc, ixfer_acc2ait) = _apply_aitacc_transfer(
             num_a_final, num_c_final, drv_a, drv_c, q, qqcw,
             deltat, tadj_inv,
         )
+        xfer_fired = ixfer_ait2acc | ixfer_acc2ait
     else:
         q_post_transfer    = q
         qqcw_post_transfer = qqcw
+        xfer_fired = None
 
     # Recompute dgncur_a / v2ncur_a (and _c) from final (num, drv).
     # When drv <= 0 the Fortran loop keeps the per-mode defaults
@@ -583,6 +594,70 @@ def calcsize(state: dict[str, Any], params=None, config=None,
                              jnp.broadcast_to(dgnum_amode, drv_c.shape))
     v2ncur_c_new = jnp.where(drv_c > 0.0, v2ncur_c_new,
                              jnp.broadcast_to(voltonumb_amode, drv_c.shape))
+
+    # ------------------------------------------------------------------
+    # Fortran's SECOND dgncur/v2ncur recompute, for the aitken and accum
+    # lanes only, gated on a transfer having fired
+    # (modal_aero_calcsize.F90:926-987). Two things distinguish it from the
+    # in-loop computation above:
+    #
+    #  1. It uses the UNMODIFIED voltonumbhi/lo_amode and dgnumhi/lo_amode
+    #     (:958, :961, :974, :977), not the 1e6-adjusted bounds that
+    #     do_aitacc_transfer installs. That is deliberate upstream behaviour.
+    #
+    #  2. It uses `dumfac`, a SCALAR last assigned at :549 for n = ntot_amode
+    #     inside a loop that closed at :738 -- so upstream CAM applies the
+    #     WRONG mode's width here. See issue #68. dgncur scales as
+    #     (dumfac_correct/dumfac_stale)**(1/3), i.e. +20.55 % for MAM4 accum
+    #     and +32.51 % for both MAM5 modes.
+    #
+    # We use the correct per-mode value by default. bug_compat_stale_dumfac
+    # reproduces CAM, which is required to validate against the reference
+    # build in ../mam-box-fortran (whose default is faithful *including* the
+    # bug -- being a reference is that repo's purpose).
+    #
+    # The Fortran comment "! currently inactive" at :933 describes a regime in
+    # which no transfer fires, not a disabled code path.
+    if do_aitacc_transfer:
+        v2nhi_raw = jnp.asarray(VOLTONUMBHI_AMODE)
+        v2nlo_raw = jnp.asarray(VOLTONUMBLO_AMODE)
+        dgnhi_raw = jnp.asarray(DGNUMHI_AMODE)
+        dgnlo_raw = jnp.asarray(DGNUMLO_AMODE)
+        if bug_compat_stale_dumfac:
+            # The value CAM is left holding: the last mode's.
+            dumfac_post = jnp.full_like(jnp.asarray(DUMFAC_AMODE),
+                                        float(DUMFAC_AMODE[-1]))
+        else:
+            dumfac_post = jnp.asarray(DUMFAC_AMODE)
+
+        # Only the two transfer lanes are rewritten.
+        lane = np.zeros(len(NSPEC_AMODE), dtype=bool)
+        lane[AITKEN_MODE_IDX] = True
+        lane[ACCUM_MODE_IDX] = True
+        lane = jnp.asarray(lane)
+        sel = jnp.asarray(xfer_fired)[..., None] & lane
+
+        dgn_a_re, v2n_a_re = _compute_dgn_v2n(
+            num_a_final, drv_a, v2nhi_raw, v2nlo_raw,
+            dgnhi_raw, dgnlo_raw, dumfac_post,
+        )
+        dgn_a_re = jnp.where(drv_a > 0.0, dgn_a_re,
+                             jnp.broadcast_to(dgnum_amode, drv_a.shape))
+        v2n_a_re = jnp.where(drv_a > 0.0, v2n_a_re,
+                             jnp.broadcast_to(voltonumb_amode, drv_a.shape))
+        dgncur_a_new = jnp.where(sel, dgn_a_re, dgncur_a_new)
+        v2ncur_a_new = jnp.where(sel, v2n_a_re, v2ncur_a_new)
+
+        dgn_c_re, v2n_c_re = _compute_dgn_v2n(
+            num_c_final, drv_c, v2nhi_raw, v2nlo_raw,
+            dgnhi_raw, dgnlo_raw, dumfac_post,
+        )
+        dgn_c_re = jnp.where(drv_c > 0.0, dgn_c_re,
+                             jnp.broadcast_to(dgnum_amode, drv_c.shape))
+        v2n_c_re = jnp.where(drv_c > 0.0, v2n_c_re,
+                             jnp.broadcast_to(voltonumb_amode, drv_c.shape))
+        dgncur_c_new = jnp.where(sel, dgn_c_re, dgncur_c_new)
+        v2ncur_c_new = jnp.where(sel, v2n_c_re, v2ncur_c_new)
 
     # Scatter the updated number tracers back into q / qqcw. The
     # mass-species deltas have already been applied inside the transfer
