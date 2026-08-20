@@ -1,6 +1,25 @@
 # Changelog
 
-## v0.3.0 — unreleased
+## v0.3.2 — unreleased
+
+Same content as v0.3.0, which was never published. Two tags were burned getting
+here, both for process reasons rather than anything wrong with the package:
+
+- **`v0.3.0`** was cut before CI had ever run. The build failed in the test gate
+  because Git LFS objects are not fetched by `actions/checkout` by default.
+- **`v0.3.1`** was cut from a merge that contained only the first of the two
+  fix commits, so it points at a tree whose `__version__` still says `0.3.0`.
+
+The `tags` ruleset blocks deletion and non-fast-forward updates on all tags --
+correctly; a tag someone may have fetched should not change underneath them --
+so each attempt consumes a number rather than reusing one. Nothing was ever
+published, so only dangling tags are left behind.
+
+- CI now fetches Git LFS objects.
+- CI now verifies the tag matches `mam4_jax.__version__` before building.
+  Nothing previously tied them together.
+
+## v0.3.0 — never published
 
 First release intended for use as a library by another model, so the headline
 change is that there is now a **public API**.
