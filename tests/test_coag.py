@@ -1,4 +1,4 @@
-"""Validate the JAX port of :func:`mam4_jax.coag.getcoags`.
+"""Validate the JAX port of :func:`mam4_jax.physics.coag.getcoags`.
 
 Reference: ``tests/reference/coag_coefficients/reference.npz`` — output
 of ``scripts/reference_drivers/coag_coefficients_driver.F90`` swept
@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 import mam4_jax  # noqa: F401  - enables jax_enable_x64 by default; JAX_ENABLE_X64=0 to opt out
-from mam4_jax.coag import getcoags, getcoags_wrapper_f
+from mam4_jax.physics.coag import getcoags, getcoags_wrapper_f
 
 REF = Path(__file__).resolve().parent / "reference" / "coag_coefficients" / "reference.npz"
 RTOL = 1e-6

@@ -26,8 +26,8 @@ import numpy as np
 import pytest
 
 import mam4_jax  # noqa: F401
-from mam4_jax import data
-from mam4_jax.topology import (
+from mam4_jax.core import data
+from mam4_jax.core.topology import (
     Topology,
     available_topologies,
     get_topology,
@@ -254,7 +254,7 @@ def test_registration_does_not_implicitly_activate() -> None:
     first import of any registering module could revert an explicit
     set_topology choice.
     """
-    from mam4_jax.topology import register_topology
+    from mam4_jax.core.topology import register_topology
     original = get_topology()
     try:
         other = dataclasses.replace(data.E3SM_MAM4_MOM, name="e3sm_probe")
@@ -269,7 +269,7 @@ def test_topology_module_does_not_export_a_none_instance() -> None:
     """Regression: topology.E3SM_MAM4_MOM was declared None for data.py to
     populate, and data.py never assigned back -- so importing it from here
     silently yielded None."""
-    import mam4_jax.topology as topo
+    import mam4_jax.core.topology as topo
     assert not hasattr(topo, "E3SM_MAM4_MOM")
     assert "E3SM_MAM4_MOM" not in topo.__all__
 

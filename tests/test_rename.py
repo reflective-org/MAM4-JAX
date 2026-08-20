@@ -18,8 +18,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from mam4_jax import data
-from mam4_jax.processes.amicphys import _mam_rename_1subarea
+from mam4_jax.core import data
+from mam4_jax.coupling.amicphys import _mam_rename_1subarea
 
 REF_DIR = Path(__file__).resolve().parent / "reference" / "per_process"
 

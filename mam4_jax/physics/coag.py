@@ -2,7 +2,7 @@
 
 JAX port of the leaf coagulation routines from
 ``mam4-original-src-code/e3sm_src/modal_aero_coag.F90``, which the
-process-level entry point :mod:`mam4_jax.processes.coag` (today a
+process-level entry point :mod:`mam4_jax.physics.coag` (today a
 ``NotImplementedError`` stub) will compose in PR-G3.
 
 **Current contents (M3.6 PR-G1 + PR-G2):**
@@ -30,7 +30,7 @@ from pathlib import Path
 import jax.numpy as jnp
 import numpy as np
 
-from .constants import BOLTZ, PSTD, TMELT
+from ..core.constants import BOLTZ, PSTD, TMELT
 
 # ---------------------------------------------------------------------------
 # Lookup tables

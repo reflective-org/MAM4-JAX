@@ -26,8 +26,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import mam4_jax  # noqa: F401  - enables jax_enable_x64 by default; JAX_ENABLE_X64=0 to opt out
-from mam4_jax import data
-from mam4_jax.processes.amicphys import amicphys
+from mam4_jax.core import data
+from mam4_jax.coupling.amicphys import amicphys
 
 REF_DIR  = REPO_ROOT / "tests" / "reference" / "per_process_gasaerexch_only"
 FIG_PATH = REPO_ROOT / "docs" / "figures" / "gasaerexch_residuals.png"

@@ -371,7 +371,7 @@ _TRACE_MESSAGE = (
     "static argument instead -- it is frozen and hashable for exactly this "
     "purpose, e.g. @topology_jit or jax.jit(f, static_argnames=('topology',)). "
     "If this really is intentional, wrap the call in "
-    "mam4_jax.topology.trace_policy('allow')."
+    "mam4_jax.core.topology.trace_policy('allow')."
 )
 
 
@@ -382,7 +382,7 @@ def get_topology() -> Topology:
     """
     if not _ACTIVE:
         raise RuntimeError(
-            "no topology registered; import mam4_jax.data before use"
+            "no topology registered; import mam4_jax.core.data before use"
         )
     if _inside_jit_trace():
         policy = _TRACE_POLICY[0]
@@ -458,9 +458,9 @@ def available_topologies() -> tuple[str, ...]:
     return tuple(sorted(_REGISTRY))
 
 
-# NOTE: the E3SM instance lives at ``mam4_jax.data.E3SM_MAM4_MOM``, built there
+# NOTE: the E3SM instance lives at ``mam4_jax.core.data.E3SM_MAM4_MOM``, built there
 # from that module's own literals (see data.py). It is deliberately NOT
 # re-exported here: an earlier version declared it as None for data.py to
 # populate, and data.py never assigned back, so
-# ``from mam4_jax.topology import E3SM_MAM4_MOM`` silently handed out None.
-# Use ``get_topology()`` or import from ``mam4_jax.data``.
+# ``from mam4_jax.core.topology import E3SM_MAM4_MOM`` silently handed out None.
+# Use ``get_topology()`` or import from ``mam4_jax.core.data``.

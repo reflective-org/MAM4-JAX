@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 
 import mam4_jax  # noqa: F401  - enables jax_enable_x64 by default; JAX_ENABLE_X64=0 to opt out
-from mam4_jax.processes.amicphys import amicphys
+from mam4_jax.coupling.amicphys import amicphys
 
 REF_DIR    = Path(__file__).resolve().parent / "reference" / "per_process_amicphys_off"
 BEFORE_NPZ = REF_DIR / "amicphys_before.npz"
@@ -237,7 +237,7 @@ def test_orchestration_coag_only_matches_fortran(coag_captured) -> None:
     coag test to coag's actual validation surface — the aerosol-tracer
     slots.
     """
-    import mam4_jax.data as _data  # noqa
+    import mam4_jax.core.data as _data  # noqa
     gas_slots = set(int(i) for i in _data.LMAP_GAS)
 
     before, aw = coag_captured
@@ -318,7 +318,7 @@ def test_amicphys_returns_all_state_keys(captured) -> None:
 def test_condensation_backend_default_is_diffrax() -> None:
     """The substep backend is strictly opt-in: nothing changes unless a
     host calls ``configure_condensation``."""
-    from mam4_jax.processes import amicphys as _amic
+    from mam4_jax.coupling import amicphys as _amic
     assert _amic._COND["backend"] == "diffrax"
 
 
@@ -333,7 +333,7 @@ def test_configure_gas_netprod_default_and_override() -> None:
     source"), so this test covers config storage, not an SOA source effect.
     Restores the process-global afterwards so it doesn't leak into other tests.
     """
-    from mam4_jax.processes import amicphys as _amic
+    from mam4_jax.coupling import amicphys as _amic
     saved = dict(_amic._GAS_NETPROD)
     try:
         assert _amic._GAS_NETPROD == {"h2so4": 1.0e-16, "soa": 0.0}
@@ -362,7 +362,7 @@ def test_condensation_substep_matches_fortran(gasaerexch_captured) -> None:
     Restores the process-global backend afterwards so the opt-in default
     doesn't leak into other tests sharing this process.
     """
-    from mam4_jax.processes import amicphys as _amic
+    from mam4_jax.coupling import amicphys as _amic
     before, aw = gasaerexch_captured
     state = _build_state(before)
     saved = dict(_amic._COND)
@@ -392,7 +392,7 @@ def test_condensation_astem_matches_fortran(gasaerexch_captured) -> None:
     (``rtol=1e-2`` on ``q``/``qqcw``) holds and the result is finite,
     then restore the process-global default.
     """
-    from mam4_jax.processes import amicphys as _amic
+    from mam4_jax.coupling import amicphys as _amic
     before, aw = gasaerexch_captured
     state = _build_state(before)
     saved = dict(_amic._COND)
@@ -426,7 +426,7 @@ def test_substep_and_astem_agree_per_call(gasaerexch_captured) -> None:
     Catches a future regression in either backend that wouldn't surface
     via the Fortran-match tests alone.
     """
-    from mam4_jax.processes import amicphys as _amic
+    from mam4_jax.coupling import amicphys as _amic
     before, _aw = gasaerexch_captured
     state = _build_state(before)
     saved = dict(_amic._COND)
@@ -461,7 +461,7 @@ def test_astem_backend_not_grad_compatible(gasaerexch_captured) -> None:
     the docstring contract should be reviewed.
     """
     import jax
-    from mam4_jax.processes import amicphys as _amic
+    from mam4_jax.coupling import amicphys as _amic
     before, _ = gasaerexch_captured
     state = _build_state(before)
     saved = dict(_amic._COND)

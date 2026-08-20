@@ -1,15 +1,15 @@
 """Modal aerosol water uptake — JAX port of ``modal_aero_wateruptake_dr``/``_sub``.
 
 This is the user-facing process function per ADR-009. It composes the
-Köhler equilibrium solver from :mod:`mam4_jax.kohler` and the saturation
-vapor pressure / humidity primitives from :mod:`mam4_jax.saturation`.
+Köhler equilibrium solver from :mod:`mam4_jax.physics.kohler` and the saturation
+vapor pressure / humidity primitives from :mod:`mam4_jax.physics.saturation`.
 
 Port targets (`mam4-original-src-code/e3sm_src_modified/modal_aero_wateruptake.F90`):
 
 * ``modal_aero_wateruptake_dr`` (lines 130–392) — driver. Extracts per-
   mode dry quantities from the tracer array via the ``IndexTables``
   bookkeeping (ADR-008) and the per-species property tables
-  (``mam4_jax.data.SPECDENS_AMODE`` / ``SPECHYGRO_AMODE``); computes RH
+  (``mam4_jax.core.data.SPECDENS_AMODE`` / ``SPECHYGRO_AMODE``); computes RH
   from ``q[h2ommr]`` and ``qsat_water(t, pmid)`` with the clear-sky
   cloud adjustment; orchestrates the per-mode Köhler call.
 
@@ -40,8 +40,8 @@ from typing import Any
 import jax.numpy as jnp
 import numpy as np
 
-from mam4_jax.constants import RHOH2O
-from mam4_jax.data import (
+from mam4_jax.core.constants import RHOH2O
+from mam4_jax.core.data import (
     INDEX_TABLES,
     LSPECTYPE_AMODE,
     NTOT_AMODE,
@@ -52,8 +52,8 @@ from mam4_jax.data import (
     SIGMAG_AMODE,
     SLOT_VALID,
 )
-from mam4_jax.kohler import modal_aero_kohler
-from mam4_jax.saturation import qsat_water
+from mam4_jax.physics.kohler import modal_aero_kohler
+from mam4_jax.physics.saturation import qsat_water
 
 # Geometric constants matching the Fortran's local parameters
 # (modal_aero_wateruptake.F90:31-32).
@@ -82,7 +82,7 @@ def wateruptake(state: dict[str, Any], params=None, config=None) -> dict[str, An
 
     See module docstring for the ``state`` dict contract.
     """
-    del params, config  # All constants live in mam4_jax.data / .constants.
+    del params, config  # All constants live in mam4_jax.core.data / .constants.
 
     q        = jnp.asarray(state["q"],         dtype=jnp.float64)
     dgncur_a = jnp.asarray(state["dgncur_a"],  dtype=jnp.float64)

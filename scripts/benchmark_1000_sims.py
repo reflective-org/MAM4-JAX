@@ -36,7 +36,7 @@ import netCDF4 as nc
 import numpy as np
 
 import mam4_jax  # noqa: F401
-from mam4_jax import data
+from mam4_jax.core import data
 from mam4_jax.driver import run_timesteps
 
 

@@ -31,8 +31,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import mam4_jax  # noqa: F401  - enables jax_enable_x64 by default; JAX_ENABLE_X64=0 to opt out
-from mam4_jax.data import MODE_NAMES
-from mam4_jax.processes.calcsize import calcsize
+from mam4_jax.core.data import MODE_NAMES
+from mam4_jax.physics.calcsize import calcsize
 
 REF_DIR  = REPO_ROOT / "tests" / "reference" / "per_process"
 FIG_PATH = REPO_ROOT / "docs" / "figures" / "calcsize_residuals.png"
