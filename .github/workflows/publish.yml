@@ -18,9 +18,11 @@ jobs:
           python-version: "3.12"
 
       - name: Install build and test deps
+        # No fallback: if the dev extra stops resolving, fail here rather than
+        # proceeding to a "test" step that has no pytest.
         run: |
           python -m pip install --upgrade pip build
-          python -m pip install -e ".[dev]" || python -m pip install -e .
+          python -m pip install -e ".[dev]"
 
       # Gate the release on the suite. A broken wheel cannot be unpublished.
       - name: Run tests
