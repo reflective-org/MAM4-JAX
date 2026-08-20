@@ -13,6 +13,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # tests/reference/sweep_24h*/*.nc are Git LFS objects (see
+          # .gitattributes). Without this, checkout leaves the pointer TEXT in
+          # place and netCDF4 fails with "Unknown file format" -- which reads
+          # like data corruption rather than a missing fetch.
+          lfs: true
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
