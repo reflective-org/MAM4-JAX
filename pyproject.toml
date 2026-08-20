@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mam4-jax"
-version = "0.0.1"
+dynamic = ["version"]
 description = "JAX port of the MAM4 aerosol-microphysics box model"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -22,6 +22,11 @@ dependencies = [
 dev = [
     "pytest>=7",
 ]
+
+[tool.setuptools.dynamic]
+# Single source of truth: mam4_jax.__version__. pyproject said 0.0.1 while the
+# newest tag was v0.2.0-beta.1, so they had already drifted.
+version = { attr = "mam4_jax.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["."]

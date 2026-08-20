@@ -57,4 +57,51 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__version__ = "0.0.1"
+# ---------------------------------------------------------------------------
+# Public API.
+#
+# Everything a downstream model should need, re-exported here so that callers
+# never import from a submodule path. Those paths are internal and DO move --
+# the package was restructured in v0.3.0, which renamed
+# ``mam4_jax.processes.*`` out of existence. Anything imported from this
+# top-level namespace is covered by semantic versioning; anything reached by a
+# dotted submodule path is not.
+#
+# Imported at the bottom of the module, after the x64 setup above has run,
+# because the science modules read the x64 flag at import time.
+# ---------------------------------------------------------------------------
+from .driver import run_step, run_timesteps, cloud_chem_simple_sub  # noqa: E402
+from .coupling.amicphys import configure_gas_netprod  # noqa: E402
+from .core.topology import (  # noqa: E402
+    Topology,
+    available_topologies,
+    get_topology,
+    register_topology,
+    set_topology,
+    topology_jit,
+    trace_policy,
+)
+
+__all__ = [
+    # time integration
+    "run_step",
+    "run_timesteps",
+    "cloud_chem_simple_sub",
+    # gas-phase source terms. configure_gas_netprod(h2so4=..., soa=...) sets the
+    # "other-process" production rate [mol/mol/s] that the aerosol system sees;
+    # this is the hook a host model drives its own gas chemistry through.
+    "configure_gas_netprod",
+    # mode configuration
+    "Topology",
+    "get_topology",
+    "set_topology",
+    "register_topology",
+    "available_topologies",
+    "topology_jit",
+    "trace_policy",
+    # introspection
+    "__version__",
+    "x64_enabled",
+]
+
+__version__ = "0.3.0"
