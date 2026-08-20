@@ -104,4 +104,4 @@ __all__ = [
     "x64_enabled",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"

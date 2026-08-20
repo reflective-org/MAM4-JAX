@@ -23,6 +23,23 @@ jobs:
         with:
           python-version: "3.12"
 
+      # A tag and the package version could disagree -- nothing tied them
+      # together, so tagging v0.3.1 would happily have published 0.3.0 under
+      # that tag's name. Checked before the build so the failure names the
+      # cause.
+      - name: Tag must match mam4_jax.__version__
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(python -c "import re,pathlib; \
+            print(re.search(r'__version__ = \"([^\"]+)\"', \
+            pathlib.Path('mam4_jax/__init__.py').read_text()).group(1))")
+          echo "tag=$TAG  package=$PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag v$TAG does not match mam4_jax.__version__ = $PKG"
+            exit 1
+          fi
+
       - name: Install build and test deps
         # No fallback: if the dev extra stops resolving, fail here rather than
         # proceeding to a "test" step that has no pytest.
