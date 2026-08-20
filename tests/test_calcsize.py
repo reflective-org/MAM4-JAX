@@ -28,7 +28,7 @@ import numpy as np
 import pytest
 
 import mam4_jax  # noqa: F401  - enables jax_enable_x64 by default; JAX_ENABLE_X64=0 to opt out
-from mam4_jax.processes.calcsize import calcsize
+from mam4_jax.physics.calcsize import calcsize
 
 REF_DIR = Path(__file__).resolve().parent / "reference" / "per_process_no_aitacc"
 BEFORE_NPZ = REF_DIR / "calcsize_before.npz"
@@ -78,7 +78,7 @@ def test_calcsize_q_passthrough_in_box_model(captured) -> None:
     new_state = calcsize(_build_state(before), do_aitacc_transfer=False)
     # Number tracers: q[..., numptr_amode] should match the Fortran's
     # post-tendency-application q (which itself doesn't change here).
-    from mam4_jax.data import INDEX_TABLES
+    from mam4_jax.core.data import INDEX_TABLES
     for m, idx in enumerate(INDEX_TABLES.numptr_amode.tolist()):
         rel = _max_rel_err(new_state["q"][..., idx], after["q"][..., idx])
         assert rel < 1e-6, f"mode {m} number tracer rel-err = {rel:.3e}"

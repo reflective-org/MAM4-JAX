@@ -2,7 +2,7 @@
 
 JAX port of the Köhler-equilibrium solver chain from
 ``mam4-original-src-code/e3sm_src_modified/modal_aero_wateruptake.F90``,
-which `mam4_jax.processes.wateruptake` (the process-level API stub from M1,
+which `mam4_jax.physics.wateruptake` (the process-level API stub from M1,
 filled in later in M3.4 PR-C) will compose.
 
 **Current contents (M3.4 PR-A + PR-B):**
@@ -20,7 +20,7 @@ All ports are line-by-line transcriptions of the Fortran. ``complex128``
 roots are returned in the same order the Fortran does. NaN propagation
 matches Fortran in degenerate cases.
 
-PR-C will fill in :func:`mam4_jax.processes.wateruptake` (the
+PR-C will fill in :func:`mam4_jax.physics.wateruptake` (the
 process-level entry point that today is a NotImplementedError stub),
 porting the ``modal_aero_wateruptake_sub`` / ``_dr`` orchestration that
 calls :func:`modal_aero_kohler` per (column, level, mode).

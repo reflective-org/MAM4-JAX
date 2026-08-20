@@ -21,8 +21,8 @@ import jax.numpy as jnp
 import pytest
 
 import mam4_jax  # noqa: F401
-from mam4_jax import data
-from mam4_jax.topology import (
+from mam4_jax.core import data
+from mam4_jax.core.topology import (
     _REGISTRY,
     _TRACE_PROBE_AVAILABLE,
     get_topology,
@@ -67,7 +67,7 @@ def test_trace_probe_is_available() -> None:
     # The flag alone is not enough: if a future JAX keeps trace_ctx but renames
     # EvalTrace, the flag stays True while the probe reports "tracing" in eager
     # mode -- and then EVERY get_topology() call raises. Name that directly.
-    from mam4_jax.topology import _inside_jit_trace
+    from mam4_jax.core.topology import _inside_jit_trace
     assert _inside_jit_trace() is False
 
 

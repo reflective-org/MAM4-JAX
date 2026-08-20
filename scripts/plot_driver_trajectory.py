@@ -38,7 +38,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import mam4_jax  # noqa: F401  - enables jax_enable_x64 by default; JAX_ENABLE_X64=0 to opt out
-from mam4_jax import data
+from mam4_jax.core import data
 from mam4_jax.driver import run_timesteps
 
 REF_DIR  = REPO_ROOT / "tests" / "reference" / "per_process_full_minus_pcarbon_aging"

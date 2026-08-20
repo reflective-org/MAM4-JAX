@@ -54,7 +54,7 @@ from typing import Any
 import jax.numpy as jnp
 import numpy as np
 
-from mam4_jax.data import (
+from mam4_jax.core.data import (
     ACCUM_MODE_IDX,
     AITKEN_MODE_IDX,
     ALNSG_AMODE,
@@ -94,7 +94,7 @@ def _gather_per_slot(q: jnp.ndarray, lmass_idx: jnp.ndarray,
     """Gather q[..., lmassptr_amode[m, s]] with unused slots zeroed.
 
     Returns array of shape ``(..., NTOT_AMODE, MAXD_ASPECTYPE)``. The
-    same trick used in :mod:`mam4_jax.processes.wateruptake` —
+    same trick used in :mod:`mam4_jax.physics.wateruptake` —
     ``safe_idx`` replaces -1 sentinels with 0 so ``jnp.take`` succeeds;
     the result is then masked back to zero where slots are unused.
     """
@@ -450,7 +450,7 @@ def calcsize(state: dict[str, Any], params=None, config=None,
     Args:
         state: dict with the keys documented at module level.
         params, config: ADR-009 placeholder slots (unused; constants live
-            in :mod:`mam4_jax.data`).
+            in :mod:`mam4_jax.core.data`).
         do_aitacc_transfer: when True (default, matching the Fortran
             box-model call), the Aitken ↔ accumulation transfer block
             runs after the per-mode adjustment. When False, the function

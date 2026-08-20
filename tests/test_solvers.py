@@ -1,4 +1,4 @@
-"""Tests for ``mam4_jax.solvers`` — process-global :func:`configure` hook.
+"""Tests for ``mam4_jax.solver.solvers`` — process-global :func:`configure` hook.
 
 Locks in the override layering so a future refactor of
 :func:`solve_ivp` can't silently break the speed/accuracy knob
@@ -16,9 +16,7 @@ import numpy as np
 import pytest
 
 import mam4_jax  # noqa: F401  - enables jax_enable_x64 by default; JAX_ENABLE_X64=0 to opt out
-from mam4_jax import solvers
-
-
+from mam4_jax.solver import solvers
 @pytest.fixture(autouse=True)
 def _reset_overrides_around_each_test():
     """Reset process-global overrides before AND after every test —

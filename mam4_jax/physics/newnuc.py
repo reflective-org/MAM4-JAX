@@ -22,8 +22,8 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
-from . import data
-from .constants import RGAS as _RGAS_J_PER_K_PER_KMOL
+from ..core import data
+from ..core.constants import RGAS as _RGAS_J_PER_K_PER_KMOL
 
 
 def binary_nuc_vehk2002(temp, rh, so4vol):

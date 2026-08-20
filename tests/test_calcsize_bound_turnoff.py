@@ -32,7 +32,7 @@ import numpy as np
 import pytest
 
 import mam4_jax  # noqa: F401  - enables jax_enable_x64
-from mam4_jax.data import (
+from mam4_jax.core.data import (
     ACCUM_MODE_IDX,
     AITKEN_MODE_IDX,
     LMASSPTR_AMODE,
@@ -45,7 +45,7 @@ from mam4_jax.data import (
     VOLTONUMBHI_AMODE,
     VOLTONUMBLO_AMODE,
 )
-from mam4_jax.processes.calcsize import calcsize
+from mam4_jax.physics.calcsize import calcsize
 
 # calcsize relaxes each adjustment over tadj = max(86400 s, deltat), so with a
 # 30 s step only ~3.5e-4 of the correction is applied and nothing visibly

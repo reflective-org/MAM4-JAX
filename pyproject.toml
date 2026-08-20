@@ -32,7 +32,11 @@ include = ["mam4_jax*"]
 # this they are dropped from the built wheel, so `pip install` yields an install
 # that raises FileNotFoundError on `import mam4_jax`.
 [tool.setuptools.package-data]
-mam4_jax = ["*.npz"]
+# _coag_tables.npz sits beside the module that loads it
+# (mam4_jax/physics/coag.py resolves it relative to __file__), so the glob has
+# to name the subpackage. A bare mam4_jax = ["*.npz"] silently ships nothing
+# once the module moved out of the top level.
+"mam4_jax.physics" = ["*.npz"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

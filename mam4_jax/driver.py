@@ -62,9 +62,9 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
-from .processes.amicphys import amicphys
-from .processes.calcsize import calcsize
-from .processes.wateruptake import wateruptake
+from .coupling.amicphys import amicphys
+from .physics.calcsize import calcsize
+from .physics.wateruptake import wateruptake
 
 
 def cloud_chem_simple_sub(state: dict[str, Any]) -> dict[str, Any]:

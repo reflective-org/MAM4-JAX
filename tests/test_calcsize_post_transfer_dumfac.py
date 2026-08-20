@@ -31,7 +31,7 @@ import pytest
 
 import mam4_jax  # noqa: F401
 import jax.numpy as jnp
-from mam4_jax.data import (
+from mam4_jax.core.data import (
     ACCUM_MODE_IDX,
     AITKEN_MODE_IDX,
     DUMFAC_AMODE,
@@ -44,7 +44,7 @@ from mam4_jax.data import (
     V2NZZ_AIT_ACC,
     VOLTONUMB_AMODE,
 )
-from mam4_jax.processes.calcsize import calcsize
+from mam4_jax.physics.calcsize import calcsize
 
 NMODES = len(NSPEC_AMODE)
 NAIT = AITKEN_MODE_IDX
@@ -195,7 +195,7 @@ def test_recompute_uses_the_unmodified_bounds_not_the_1e6_adjusted_ones() -> Non
     agreement independently derived during review of the bound turn-off.
     """
     st = _oversized_aitken_state()
-    from mam4_jax.data import DGNUMHI_AMODE
+    from mam4_jax.core.data import DGNUMHI_AMODE
 
     for bug_compat in (False, True):
         dgn = _dgn(st, bug_compat=bug_compat)

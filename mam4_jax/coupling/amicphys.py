@@ -34,7 +34,7 @@ the function is provably a passthrough; the captured reference at
 behaves identically.
 
 State dict contract (the same keys passed to / returned from
-:mod:`mam4_jax.processes.wateruptake` plus the cloud-borne / wet
+:mod:`mam4_jax.physics.wateruptake` plus the cloud-borne / wet
 arrays that calcsize and wateruptake produce):
 
     state['q']           shape (..., pcnst)         — interstitial tracer mixing ratios
@@ -61,11 +61,11 @@ from jax.scipy.special import erfc
 
 import diffrax
 
-from .. import data
-from .. import newnuc as nn_mod
-from .. import solvers
-from ..coag import getcoags_wrapper_f
-from ..constants import RGAS
+from ..core import data
+from ..physics import newnuc as nn_mod
+from ..solver import solvers
+from ..physics.coag import getcoags_wrapper_f
+from ..core.constants import RGAS
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +84,7 @@ _FLAG_PCARBON_OPOA_ZERO = True       # set opoa_frac=0 for primary-carbon mode
 _PSTD              = 101325.0        # Pa
 # Note: the Fortran sub-routine declares `rgas = 8.3144 J/K/mol`. The
 # updated 08-28-2019 line uses `r_universal/1.e3` instead so we match
-# that (RGAS in mam4_jax.constants is J/K/kmole — divide by 1000).
+# that (RGAS in mam4_jax.core.constants is J/K/kmole — divide by 1000).
 
 
 # ---------------------------------------------------------------------------

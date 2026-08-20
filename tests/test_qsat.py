@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 import mam4_jax  # noqa: F401  - enables jax_enable_x64 by default; JAX_ENABLE_X64=0 to opt out
-from mam4_jax.saturation import qsat_ice, qsat_water
+from mam4_jax.physics.saturation import qsat_ice, qsat_water
 
 REFERENCE_NPZ = (
     Path(__file__).resolve().parent / "reference" / "qsat" / "reference.npz"
@@ -48,9 +48,8 @@ def test_qsat_ice_matches_fortran(reference) -> None:
 
 def test_constants_match_fortran() -> None:
     """Sanity-check that the canonical Fortran constants we transcribed
-    into mam4_jax.constants match the values shr_const_mod.F90 declares."""
-    from mam4_jax import constants as c
-
+    into mam4_jax.core.constants match the values shr_const_mod.F90 declares."""
+    from mam4_jax.core import constants as c
     # From shr_const_mod.F90:60-61
     assert c.LATICE == 3.337e5
     assert c.LATVAP == 2.501e6

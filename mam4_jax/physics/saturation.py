@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
-from mam4_jax.constants import EPSQS, HLATF, HLATV, RGASV
+from mam4_jax.core.constants import EPSQS, HLATF, HLATV, RGASV
 
 
 def polysvp_water(T):
