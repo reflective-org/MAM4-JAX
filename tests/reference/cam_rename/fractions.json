@@ -1,0 +1,31 @@
+{
+  "frac_v2nzz": 0.3,
+  "dryvol": 1e-12,
+  "cases": [
+    {
+      "growth": 0.0,
+      "xferfrac_num": 0.0,
+      "xferfrac_vol": 0.0
+    },
+    {
+      "growth": 0.5,
+      "xferfrac_num": 0.38725058,
+      "xferfrac_vol": 0.38725058
+    },
+    {
+      "growth": 2.0,
+      "xferfrac_num": 0.49287552,
+      "xferfrac_vol": 0.693974453
+    },
+    {
+      "growth": 20.0,
+      "xferfrac_num": 0.508324853,
+      "xferfrac_vol": 0.956307856
+    },
+    {
+      "growth": 200.0,
+      "xferfrac_num": 0.508530002,
+      "xferfrac_vol": 0.995435189
+    }
+  ]
+}

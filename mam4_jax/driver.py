@@ -62,7 +62,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
-from .coupling.amicphys import amicphys
+from .coupling.amicphys import _check_clear_sky, amicphys
 from .physics.calcsize import calcsize
 from .physics.wateruptake import wateruptake
 
@@ -80,7 +80,7 @@ def cloud_chem_simple_sub(state: dict[str, Any]) -> dict[str, Any]:
 
 
 @jax.jit
-def run_step(state: dict[str, Any]) -> dict[str, Any]:
+def _run_step_jit(state: dict[str, Any]) -> dict[str, Any]:
     """One operator-splitting timestep.
 
     Sequence mirrors ``driver.F90:1080-1367`` (``main_time_loop``):
@@ -112,7 +112,7 @@ _TRAJ_KEYS = ("q", "qqcw", "dgncur_a", "dgncur_awet",
 
 
 @functools.partial(jax.jit, static_argnums=(1,))
-def run_timesteps(state: dict[str, Any], n_steps: int) -> dict[str, Any]:
+def _run_timesteps_jit(state: dict[str, Any], n_steps: int) -> dict[str, Any]:
     """Run ``n_steps`` operator-splitting timesteps and return a
     stacked trajectory.
 
@@ -192,3 +192,32 @@ def run_timesteps(state: dict[str, Any], n_steps: int) -> dict[str, Any]:
         _scan_body, augmented, xs=None, length=n_steps,
     )
     return trajectory
+
+
+# ---------------------------------------------------------------------------
+# Public entries. Thin, UNJITTED wrappers whose only job is to validate before
+# tracing begins.
+#
+# The jitted implementations above cannot do this themselves: inside a trace
+# `cldn` is a tracer with no readable magnitude, so a check there can never fire
+# on the normal path. Only the clear-sky sub-area of amicphys is ported, and a
+# non-zero cloud fraction would otherwise get clear-sky physics applied to the
+# whole cell -- a plausible-looking wrong answer.
+#
+# The wrappers add one Python-level call per step and no tracing overhead; the
+# jit cache still lives on the inner functions.
+# ---------------------------------------------------------------------------
+
+def run_step(state: dict[str, Any]) -> dict[str, Any]:
+    """One operator-splitting timestep. See :func:`_run_step_jit`."""
+    _check_clear_sky(state.get("cldn"))
+    return _run_step_jit(state)
+
+
+def run_timesteps(state: dict[str, Any], n_steps: int) -> dict[str, Any]:
+    """Run ``n_steps`` timesteps, returning a stacked trajectory.
+
+    See :func:`_run_timesteps_jit`.
+    """
+    _check_clear_sky(state.get("cldn"))
+    return _run_timesteps_jit(state, n_steps)
