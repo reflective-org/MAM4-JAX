@@ -149,31 +149,58 @@ appears anywhere.
 **Worst relative difference across five growth values: 9.6e-10** — the floor the
 reference's 9 significant figures can resolve.
 
-⚠ **But scope this correctly.** At `frac_v2nzz = 0.3` the two branches agree
-*exactly*, so those five points validate the machinery they **share** — the erfc
-tail integrals, `dp_cut`, `factoraa`/`factoryy`, the transfer-fraction clamps —
-**not** CAM's three specific decisions. They cannot diverge there: `num_t_oldbnd`
-is clamped into `[dryvol·v2nhirlx, dryvol·v2nlorlx]`, so `dgn_t_old` saturates
-however far the aitken number is pushed, and both paths cap at the same
-fraction. Sweeping `frac_v2nzz` 1.0 → 0.001 gives 4.92875520e-01 for both.
+Those five points sit in a regime where **both branches agree exactly**, so
+they validate the machinery the two algorithms *share* — erfc tail integrals,
+`dp_cut`, `factoraa`/`factoryy`, the transfer-fraction clamps. Necessary, not
+sufficient.
 
-The branches *do* differ — shown on the captured reference state, where zero
-growth gives **CAM 0 transfer against E3SM 7.69e7 particles**. What is missing
-is a Fortran capture **in a divergent regime**.
+### ✅ And now validated where they DIVERGE — machine precision
+
+The divergent window had to be **derived**, not searched for:
+
+```
+E3SM clamps when   dgn_t_old  >  dp_belowcut  (= 0.99 · dp_cut)
+CAM   clamps when  dgn_t_new  >= dp_cut
+      with         dgn_t_new  =  dgn_t_old · (1+growth)^(1/3)
+```
+
+so divergence needs an **oversized mode with small growth** — `dgn_t_old` just
+above `dp_belowcut` while `dgn_t_new` stays below `dp_cut`, which bounds growth
+under about 3 %. Confirmed behaviourally: at `dgn_old = 8.12e-8` the branches
+diverge at growth 0.005 and 0.01 and then **converge again at 0.03**, exactly
+where the derivation says they should.
+
+Result over six points (two diameters × three growth values):
+
+| | vs CAM's Fortran |
+| --- | --- |
+| **JAX `method="cam"`** | **worst 8.1e-15** — machine precision |
+| JAX `method="e3sm"` | off by **68 % to 308 %** |
+
+So the comparison genuinely discriminates: a `method="cam"` that silently fell
+through to the E3SM path would fail by orders of magnitude, and there is a test
+asserting that.
+
+⚠ Getting there needed a **units fix in the capture tool**. Rename's
+`dryvol_t_old` is in m³-AP/kmol-air — `q·(specmw/specdens)`, not raw `q`.
+Parameterising by raw volume put the intended `v2n` an order of magnitude below
+the `v2nhirlx` floor, so `num_t_oldbnd` clamped every input to the same value:
+two visibly different states (v2n 4.090e20 and 9.695e20) produced
+**byte-identical output with no error anywhere.**
 
 ### Remaining, in order
 
-1. **Fortran capture in a regime where the branches diverge**, to validate CAM's
-   three decisions rather than the shared code. Needs a state where `dgn_t_old`
-   clears `dp_belowcut` without the number bounds saturating first.
-2. **`sulfate_equilib` condensation** — the `sulfeq` branch.
-3. **The driver itself**, and reference comparison against `mam-box-fortran` at
-   a pinned tag, for both `cam_mam4` and `cam_mam5`.
+1. **`sulfate_equilib` condensation** — the `sulfeq` branch. CAM-only, so no
+   existing port to lean on.
+2. **The driver itself** — CAM's sequence on grid-cell means, sub-stepping
+   exposed.
+3. **Reference comparison** against `mam-box-fortran` at a pinned tag, for both
+   `cam_mam4` and `cam_mam5`.
 
 ### Assumptions added since §5 was written
 
 | # | Assumption | Status |
 | --- | --- | --- |
-| **A9** | Comparing dimensionless fractions is sufficient to validate the algorithm | Sound for the shared machinery; **does not cover the CAM-specific branch**, as above |
-| **A10** | The five capture points are representative | **Probably not.** They all sit in the saturated regime. A divergent-regime capture is item 1 |
+| **A9** | Comparing dimensionless fractions is sufficient to validate the algorithm | ✅ **Confirmed.** Avoids the unit mapping entirely, and the divergent-regime points show it discriminates |
+| **A10** | The five original capture points are representative | ❌ **Was wrong, now fixed.** They all sat in the saturated regime where both branches agree. Six divergent-regime points added |
 | **A11** | `qaer_cur` is post-growth and the delta is informational | Verified against the Fortran reference: it conserves against `qaer_cur` to 0.0 and against `qaer_cur + delta` to 2.4e-3 |
