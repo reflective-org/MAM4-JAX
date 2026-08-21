@@ -114,10 +114,66 @@ Numbered so they can be accepted or rejected individually.
 | **A7** | `cam_mam4`/`cam_mam5` from PR #73 are the right topologies | Read out of an initialised CAM model; losslessness verified | Low |
 | **A8** | Grid-cell means, no sub-areas, is right for CAM | CAM has no sub-area concept — `grep -rI amicphys` over CAM `src/` returns zero hits | Low |
 
-## 6. Remaining work, in order
+## 6. Progress and remaining work
 
-1. **Test A4** — nucleation at `cld = 0` under both formulations.
-2. **CAM rename (A1)** with reference capture from the Fortran box model.
-3. **`sulfate_equilib` condensation** — the `sulfeq` branch.
-4. **Reference comparison** against `mam-box-fortran` at a pinned tag, for both
-   `cam_mam4` and `cam_mam5`.
+### Done
+
+1. ✅ **A4 tested, and it turned up a defect instead.** The JAX port implements
+   only the clear-sky sub-area, so at `cld = 0` it trivially matches CAM's
+   `(1-0) × clear` — A4 holds. But `_mam_amicphys_1gridcell`'s docstring
+   *claimed* a non-zero cloud fraction "raises a clear error"; the code declined
+   to check and never read `cldn` at all, so a cloudy cell silently got
+   clear-sky physics applied to the whole cell. Fixed, and the guard had to move
+   **outside** the jit: `driver.run_step` is `@jax.jit`, so a check inside it
+   could never fire.
+
+2. ✅ **CAM rename implemented as a selector**, not a second implementation —
+   E3SM's code contains CAM's algorithm as its `optaa /= 40` branch, and every
+   quantity it needs was already computed. Default stays `"e3sm"`, asserted.
+
+3. ✅ **Reference capture built** (`mam-box-fortran/tools/capture_rename`), five
+   growth values. Two mistakes worth recording: rename is **growth-driven**, so
+   the first capture with `dqdt = 0` produced an all-zero transfer that looked
+   like a valid reference; and zsh's lack of word-splitting silently pinned the
+   growth parameter, which made the mass transfer look constant across a sweep.
+
+### Validated, and precisely how far
+
+Compared on **dimensionless** transfer fractions rather than by mapping CAM's
+`q`/`dqdt` into the amicphys-local view. That mapping is where a factor-of-1000
+error produces a *fake* validation — either failing for the wrong reason, or
+passing because two errors cancel. Both inputs (`v2n/voltonumb`, `deldryvol/dryvol`)
+and outputs (`xferfrac_num`, `xferfrac_vol`) are unit-free, so no conversion
+appears anywhere.
+
+**Worst relative difference across five growth values: 9.6e-10** — the floor the
+reference's 9 significant figures can resolve.
+
+⚠ **But scope this correctly.** At `frac_v2nzz = 0.3` the two branches agree
+*exactly*, so those five points validate the machinery they **share** — the erfc
+tail integrals, `dp_cut`, `factoraa`/`factoryy`, the transfer-fraction clamps —
+**not** CAM's three specific decisions. They cannot diverge there: `num_t_oldbnd`
+is clamped into `[dryvol·v2nhirlx, dryvol·v2nlorlx]`, so `dgn_t_old` saturates
+however far the aitken number is pushed, and both paths cap at the same
+fraction. Sweeping `frac_v2nzz` 1.0 → 0.001 gives 4.92875520e-01 for both.
+
+The branches *do* differ — shown on the captured reference state, where zero
+growth gives **CAM 0 transfer against E3SM 7.69e7 particles**. What is missing
+is a Fortran capture **in a divergent regime**.
+
+### Remaining, in order
+
+1. **Fortran capture in a regime where the branches diverge**, to validate CAM's
+   three decisions rather than the shared code. Needs a state where `dgn_t_old`
+   clears `dp_belowcut` without the number bounds saturating first.
+2. **`sulfate_equilib` condensation** — the `sulfeq` branch.
+3. **The driver itself**, and reference comparison against `mam-box-fortran` at
+   a pinned tag, for both `cam_mam4` and `cam_mam5`.
+
+### Assumptions added since §5 was written
+
+| # | Assumption | Status |
+| --- | --- | --- |
+| **A9** | Comparing dimensionless fractions is sufficient to validate the algorithm | Sound for the shared machinery; **does not cover the CAM-specific branch**, as above |
+| **A10** | The five capture points are representative | **Probably not.** They all sit in the saturated regime. A divergent-regime capture is item 1 |
+| **A11** | `qaer_cur` is post-growth and the delta is informational | Verified against the Fortran reference: it conserves against `qaer_cur` to 0.0 and against `qaer_cur + delta` to 2.4e-3 |

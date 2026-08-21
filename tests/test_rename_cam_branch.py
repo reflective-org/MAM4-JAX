@@ -159,3 +159,131 @@ def test_cam_transfer_grows_then_saturates_with_growth(local_view) -> None:
     assert moved[-1] <= qn_ait, "cannot transfer more particles than exist"
     # Saturation: the last doubling of growth must move far less than the first.
     assert (moved[-1] - moved[-2]) < (moved[2] - moved[1]), f"no saturation: {moved}"
+
+
+# ---------------------------------------------------------------------------
+# Numeric validation against CAM's Fortran, done WITHOUT a unit mapping.
+#
+# The obvious route -- translate CAM's `q`/`dqdt` (mol/mol, #/mol-air) into this
+# module's amicphys-local view -- is exactly where a mistake produces a *fake*
+# validation: get a factor of 1000 wrong and the comparison either fails for the
+# wrong reason or, worse, passes because two errors cancel.
+#
+# So the comparison is on DIMENSIONLESS quantities instead. Both the inputs and
+# the outputs can be made unit-free:
+#
+#   inputs   v2n_aitken / voltonumb(accum) = frac        (a ratio)
+#            deldryvol / dryvol            = growth      (a ratio)
+#   outputs  xferfrac_num = transferred number / initial number
+#            xferfrac_vol = transferred volume / post-growth volume
+#
+# The transfer fractions depend only on dgn_t_old, dgn_t_new, dp_cut and the
+# mode widths, all of which are fixed by those ratios. So if the algorithm
+# matches, the fractions match — with no unit conversion anywhere.
+#
+# Reference: mam-box-fortran tools/capture_rename, five growth values at
+# frac_v2nzz = 0.3, quoted in tests/reference/cam_rename/fractions.json.
+# ---------------------------------------------------------------------------
+
+import json  # noqa: E402
+
+from mam4_jax.core.data import FAC_M2V_AER, VOLTONUMB_AMODE  # noqa: E402
+
+CAM_REF = json.loads(
+    (Path(__file__).resolve().parent / "reference" / "cam_rename"
+     / "fractions.json").read_text()
+)
+
+
+def _transfer_fractions(growth: float, frac_v2nzz: float, dryvol: float):
+    """Run the CAM branch on a state built from the two dimensionless ratios."""
+    fac = np.asarray(FAC_M2V_AER, dtype=np.float64)
+    n_aer, n_mode = fac.shape[0], 5
+    v2n = np.asarray(VOLTONUMB_AMODE, dtype=np.float64)
+
+    qaer = np.zeros((n_aer, n_mode))
+    qdel = np.zeros((n_aer, n_mode))
+    qnum = np.zeros(n_mode)
+    for m in range(4):
+        qaer[0, m] = dryvol / fac[0]
+        qnum[m] = dryvol * v2n[m]
+
+    # Aitken: oversized, and carrying its post-growth mass with the increment
+    # recorded separately (qaer_cur is post-growth; the delta is informational).
+    base = dryvol / fac[0]
+    qaer[0, AITKEN] = base * (1.0 + growth)
+    qdel[0, AITKEN] = base * growth
+    qnum[AITKEN] = dryvol * v2n[0] * frac_v2nzz
+
+    out_num, out_aer, _ = _mam_rename_1subarea(
+        jnp.asarray(qnum), jnp.asarray(qaer), jnp.asarray(qdel),
+        jnp.zeros(n_mode), jnp.asarray(fac), method="cam",
+    )
+    n1 = float(np.asarray(out_num)[AITKEN])
+    a1 = float(np.asarray(out_aer)[0, AITKEN])
+    xf_num = (qnum[AITKEN] - n1) / qnum[AITKEN]
+    xf_vol = (qaer[0, AITKEN] - a1) / qaer[0, AITKEN]
+    return xf_num, xf_vol
+
+
+@pytest.mark.parametrize("case", CAM_REF["cases"],
+                         ids=lambda c: f"growth{c['growth']:g}")
+def test_cam_branch_matches_the_fortran_transfer_fractions(case) -> None:
+    """The validation this branch actually rests on.
+
+    Tolerance 1e-8: the Fortran values are quoted to 9 significant figures, so
+    ~1e-9 is the floor this comparison can resolve. Measured worst case across
+    the five points is 9.6e-10 — i.e. agreement to the precision of the
+    reference itself.
+    """
+    xf_num, xf_vol = _transfer_fractions(
+        case["growth"], CAM_REF["frac_v2nzz"], CAM_REF["dryvol"])
+    assert xf_num == pytest.approx(case["xferfrac_num"], rel=1e-8, abs=1e-15)
+    assert xf_vol == pytest.approx(case["xferfrac_vol"], rel=1e-8, abs=1e-15)
+
+
+def test_both_branches_reproduce_the_fortran_at_these_points() -> None:
+    """Scope of the comparison above, stated so a passing test is not overread.
+
+    At `frac_v2nzz = 0.3` the two branches agree EXACTLY, so the five-point
+    match validates the machinery they share -- the erfc tail integrals,
+    `dp_cut`, `factoraa`/`factoryy`, the transfer-fraction clamps -- and not
+    CAM's three specific decisions.
+
+    Why they cannot diverge here: `num_t_oldbnd` is clamped into
+    `[dryvol*v2nhirlx, dryvol*v2nlorlx]`, so `dgn_t_old` saturates regardless of
+    how far the aitken number is pushed, and both paths end up capped at the
+    same transfer fraction. Sweeping `frac_v2nzz` from 1.0 down to 0.001 gives
+    4.92875520e-01 for both, identically.
+
+    The branches DO differ -- `test_the_branches_diverge_once_the_mode_is_oversized`
+    and `test_cam_gates_on_growth_and_e3sm_does_not` show that on the captured
+    reference state. What is missing is a Fortran capture *in a divergent
+    regime*, which would validate the CAM-specific decisions rather than the
+    shared code. That is the next step and is recorded in
+    docs/plans/025-cam-driver.md.
+    """
+    ref = next(c for c in CAM_REF["cases"] if c["growth"] == 2.0)
+    fac = np.asarray(FAC_M2V_AER, dtype=np.float64)
+    n_aer, n_mode = fac.shape[0], 5
+    v2n = np.asarray(VOLTONUMB_AMODE, dtype=np.float64)
+    growth, frac, dryvol = 2.0, CAM_REF["frac_v2nzz"], CAM_REF["dryvol"]
+
+    qaer = np.zeros((n_aer, n_mode)); qdel = np.zeros((n_aer, n_mode))
+    qnum = np.zeros(n_mode)
+    for m in range(4):
+        qaer[0, m] = dryvol / fac[0]
+        qnum[m] = dryvol * v2n[m]
+    base = dryvol / fac[0]
+    qaer[0, AITKEN] = base * (1.0 + growth)
+    qdel[0, AITKEN] = base * growth
+    qnum[AITKEN] = dryvol * v2n[0] * frac
+
+    for method in ("cam", "e3sm"):
+        out = _mam_rename_1subarea(
+            jnp.asarray(qnum), jnp.asarray(qaer), jnp.asarray(qdel),
+            jnp.zeros(n_mode), jnp.asarray(fac), method=method)
+        xf = (qnum[AITKEN] - float(np.asarray(out[0])[AITKEN])) / qnum[AITKEN]
+        assert xf == pytest.approx(ref["xferfrac_num"], rel=1e-8), (
+            f"{method} branch should reproduce the Fortran here; both do"
+        )
