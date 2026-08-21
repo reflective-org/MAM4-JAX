@@ -884,11 +884,51 @@ def amicphys(state: dict[str, Any], params=None, config=None, *,
     matching the captured ``per_process_amicphys_off`` Fortran reference.
     """
     del params, config
+    _check_clear_sky(state.get("cldn"))
     return _mam_amicphys_1gridcell(
         state,
         mdo_gasaerexch=mdo_gasaerexch, mdo_rename=mdo_rename,
         mdo_newnuc=mdo_newnuc,         mdo_coag=mdo_coag,
     )
+
+
+def _check_clear_sky(cldn) -> None:
+    """Refuse a non-zero cloud fraction, since the cloudy sub-area is not ported.
+
+    Only the clear-sky sub-area is implemented. With ``cldn > 0`` the Fortran
+    splits the cell and area-weights two different sub-area calculations; this
+    port would instead apply clear-sky physics to the whole cell and return an
+    answer that looks fine. That is silent wrong physics, so it is refused.
+
+    Checked here, at the public entry, rather than inside
+    ``_mam_amicphys_1gridcell``: under ``jax.jit`` the value is a tracer with no
+    readable magnitude, and a check that cannot fire is worse than no check
+    because it reads as protection. If ``cldn`` IS a tracer we say so instead of
+    pretending. An earlier version of this docstring claimed the error was
+    raised and no check existed at all.
+    """
+    if cldn is None:
+        return
+    try:
+        worst = float(np.max(np.abs(np.asarray(cldn))))
+    except (TypeError, ValueError, jax.errors.TracerArrayConversionError,
+            jax.errors.ConcretizationTypeError):
+        # Traced: no readable magnitude, so nothing can be checked here. Return
+        # SILENTLY rather than warning. driver.run_step is jitted, so the traced
+        # case is the normal one and a warning would fire on every single call --
+        # and a warning that always fires gets filtered, at which point it
+        # protects nothing while still reading as protection. The real guard for
+        # that path runs before the jit, in driver.run_step / run_timesteps.
+        return
+    if worst > 0.0:
+        raise NotImplementedError(
+            f"amicphys: cloud fraction cldn has magnitude up to {worst:.3e}, but "
+            "only the clear-sky sub-area is ported. The Fortran splits the cell "
+            "and area-weights clear and cloudy calculations; applying clear-sky "
+            "physics to a partly cloudy cell would return a plausible but wrong "
+            "answer. Pass cldn = 0, or implement "
+            "_mam_amicphys_1subarea_cloudy."
+        )
 
 
 def _mam_amicphys_1gridcell(state: dict[str, Any], *,
@@ -899,15 +939,12 @@ def _mam_amicphys_1gridcell(state: dict[str, Any], *,
     The Fortran routine splits each grid cell into clear and cloudy
     sub-areas weighted by ``cldn``. For the canonical box-model setup
     ``cldn = 0`` everywhere (``driver.F90:591``), so only the clear-sky
-    path is exercised. The cloudy path is not implemented; calling this
-    with a non-zero cloud fraction in any cell raises a clear error so
-    future workflows don't silently get wrong physics.
+    path is exercised. The cloudy path is not implemented.
+
+    The ``cldn`` guard lives in the public :func:`amicphys` entry, not here,
+    because by this point the value may be a tracer with no readable magnitude.
+    See :func:`_check_clear_sky`.
     """
-    cldn = state.get("cldn")
-    # We don't enforce the cldn==0 check here because the value is a
-    # JAX array (could be traced); the box-model driver guarantees zero
-    # and our tests pass that explicitly. Cloudy support would land as a
-    # later PR alongside `_mam_amicphys_1subarea_cloudy`.
     return _mam_amicphys_1subarea_clear(
         state,
         mdo_gasaerexch=mdo_gasaerexch, mdo_rename=mdo_rename,
