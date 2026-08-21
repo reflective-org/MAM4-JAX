@@ -287,3 +287,91 @@ def test_both_branches_reproduce_the_fortran_at_these_points() -> None:
         assert xf == pytest.approx(ref["xferfrac_num"], rel=1e-8), (
             f"{method} branch should reproduce the Fortran here; both do"
         )
+
+
+# ---------------------------------------------------------------------------
+# The validation that actually pins the CAM branch.
+#
+# The `fractions.json` comparison above lands in a regime where both branches
+# agree, so it validates shared machinery. These points are chosen to sit where
+# they DIVERGE, which required working out analytically where that is:
+#
+#   E3SM clamps when dgn_t_old  >  dp_belowcut (= 0.99*dp_cut)
+#   CAM   clamps when dgn_t_new >= dp_cut
+#
+# and dgn_t_new = dgn_t_old*(1+growth)^(1/3), so divergence needs an OVERSIZED
+# mode with SMALL growth: dgn_t_old just above dp_belowcut while dgn_t_new stays
+# below dp_cut, which bounds growth under about 3 %.
+#
+# Reference: mam-box-fortran tools/capture_rename, parameterised by target
+# dgn_t_old. Note that getting there required fixing the capture: rename's
+# dryvol_t_old is in m3-AP/kmol-air, i.e. q*(specmw/specdens), NOT raw q.
+# Parameterising by raw volume put the intended v2n an order of magnitude below
+# the v2nhirlx floor, so num_t_oldbnd clamped every input to the same value and
+# the capture returned identical answers for visibly different states.
+# ---------------------------------------------------------------------------
+
+DIVERGENT = json.loads(
+    (Path(__file__).resolve().parent / "reference" / "cam_rename"
+     / "divergent.json").read_text()
+)
+
+
+def _fractions_at(dgn_old: float, growth: float, method: str):
+    """Build a state with a given dgn_t_old and growth, return the fractions."""
+    from mam4_jax.core.data import ALNSG_AMODE
+    fac = np.asarray(FAC_M2V_AER, dtype=np.float64)
+    n_aer, n_mode = fac.shape[0], 5
+    v2n = np.asarray(VOLTONUMB_AMODE, dtype=np.float64)
+    alnsg = np.asarray(ALNSG_AMODE, dtype=np.float64)
+    factoraa = (np.pi / 6.0) * np.exp(4.5 * alnsg[AITKEN] ** 2)
+    dryvol = 1.0e-12
+
+    qaer = np.zeros((n_aer, n_mode)); qdel = np.zeros((n_aer, n_mode))
+    qnum = np.zeros(n_mode)
+    for m in range(4):
+        qaer[0, m] = dryvol / fac[0]
+        qnum[m] = dryvol * v2n[m]
+    base = dryvol / fac[0]
+    qaer[0, AITKEN] = base * (1.0 + growth)
+    qdel[0, AITKEN] = base * growth
+    qnum[AITKEN] = dryvol / (factoraa * dgn_old ** 3)
+
+    out = _mam_rename_1subarea(
+        jnp.asarray(qnum), jnp.asarray(qaer), jnp.asarray(qdel),
+        jnp.zeros(n_mode), jnp.asarray(fac), method=method)
+    n1 = float(np.asarray(out[0])[AITKEN])
+    a1 = float(np.asarray(out[1])[0, AITKEN])
+    return ((qnum[AITKEN] - n1) / qnum[AITKEN],
+            (qaer[0, AITKEN] - a1) / qaer[0, AITKEN])
+
+
+@pytest.mark.parametrize("case", DIVERGENT,
+                         ids=lambda c: f"dgn{c['dgn_old']:.1e}_g{c['growth']:g}")
+def test_cam_branch_matches_fortran_where_the_branches_diverge(case) -> None:
+    """CAM's algorithm, against CAM's Fortran, where it differs from E3SM's.
+
+    Measured worst error across these six points: 8.1e-15 — machine precision,
+    not a loose tolerance. This is what establishes that CAM's three decisions
+    are right, as opposed to the machinery they share with E3SM.
+    """
+    xf_num, xf_vol = _fractions_at(case["dgn_old"], case["growth"], "cam")
+    assert xf_num == pytest.approx(case["xferfrac_num"], rel=1e-12)
+    assert xf_vol == pytest.approx(case["xferfrac_vol"], rel=1e-12)
+
+
+@pytest.mark.parametrize("case", DIVERGENT,
+                         ids=lambda c: f"dgn{c['dgn_old']:.1e}_g{c['growth']:g}")
+def test_the_e3sm_branch_is_wrong_here_so_the_test_discriminates(case) -> None:
+    """Without this, the test above could pass on a `method="cam"` that silently
+    fell through to the E3SM path.
+
+    E3SM is off by 68 % to 308 % at these points — the branches are not a
+    rounding difference.
+    """
+    xf_num, _ = _fractions_at(case["dgn_old"], case["growth"], "e3sm")
+    rel = abs(xf_num - case["xferfrac_num"]) / abs(case["xferfrac_num"])
+    assert rel > 0.5, (
+        f"E3SM branch is within {rel:.1%} of CAM here, so this point does not "
+        "discriminate between the algorithms"
+    )
