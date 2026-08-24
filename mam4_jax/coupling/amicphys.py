@@ -1582,7 +1582,13 @@ def _mam_coag_1subarea(qnum_cur, qaer_cur, qwtr_cur,
 
     have_coag_ait = tmpc_ait > _EPSILONX2
     safe_tmpa     = jnp.where(have_coag_ait, tmpa_ait_mass, 1.0)
-    tmp_xf_ait    = jnp.where(have_coag_ait, 1.0 - jnp.exp(-tmpc_ait), 0.0)
+    # -expm1(-x), not 1-exp(-x): identical analytically, but the
+    # subtraction form loses ~eps/x relative digits for small x — ~10%
+    # in float32 at tmpc ~ 1e-6. Harmless while the transferred mass
+    # was invisible, but pcarbon aging turns the ait→pca so4 delivery
+    # into the coating criterion, so the float32 core would otherwise
+    # carry O(10%) noise on the aging rate.
+    tmp_xf_ait    = jnp.where(have_coag_ait, -jnp.expm1(-tmpc_ait), 0.0)
     frac_to_pca   = tmp2_ait / safe_tmpa
     frac_to_acc   = 1.0 - frac_to_pca
 
@@ -1597,7 +1603,7 @@ def _mam_coag_1subarea(qnum_cur, qaer_cur, qwtr_cur,
     tmpc_pca = jnp.maximum(0.0, bij3[1] * qnum_c_nacc)
     tmpc_pca = deltat * tmpc_pca
     have_coag_pca = tmpc_pca > _EPSILONX2
-    tmp_xf_pca    = jnp.where(have_coag_pca, 1.0 - jnp.exp(-tmpc_pca), 0.0)
+    tmp_xf_pca    = jnp.where(have_coag_pca, -jnp.expm1(-tmpc_pca), 0.0)   # see ait note
     tmp_dq_pca    = tmp_xf_pca[..., None] * qaer_a[..., :, npca]
     qaer_b = qaer_b.at[..., :, npca].add(-tmp_dq_pca)
     qaer_b = qaer_b.at[..., :, nacc].add(tmp_dq_pca)

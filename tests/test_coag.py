@@ -226,3 +226,43 @@ def test_jax_enable_x64_zero_opts_out() -> None:
         f"subprocess failed:\nstdout={result.stdout!r}\nstderr={result.stderr!r}"
     )
     assert "OK" in result.stdout
+
+
+def test_wrapper_betaij3_nonzero_in_float32() -> None:
+    """Regression: the intermodal 3rd-moment (mass-transfer) coefficient
+    must survive float32 at box-typical mode diameters.
+
+    Before the reciprocal-form harmonic mean, ``nc3 * fm3`` (~1e-39)
+    flushed below float32's min normal, so ``betaij3`` came out exactly 0
+    for EVERY pair — a float32 core silently did zero intermodal coag
+    mass transfer (number transfer was unaffected). Invisible while the
+    delivered pcarbon mass was dropped at the amicphys repack; fatal once
+    pcarbon aging turns that delivery into the coating criterion.
+    """
+    if not jax.config.read("jax_enable_x64"):
+        pytest.skip("Test requires the default x64=on configuration to toggle.")
+
+    # Box-fixture-typical values (per_process/ wet diameters at step 0).
+    args = dict(dgatk=4.38e-8, dgacc=1.98e-7, sgatk=1.6, sgacc=1.8,
+                xxlsgat=np.log(1.6), xxlsgac=np.log(1.8),
+                pdensat=1770.0, pdensac=1770.0)
+
+    def run(dtype):
+        c = lambda v: jnp.asarray(v, dtype)
+        out = getcoags_wrapper_f(
+            c(273.0), c(1.0e5), c(args["dgatk"]), c(args["dgacc"]),
+            c(args["sgatk"]), c(args["sgacc"]),
+            c(args["xxlsgat"]), c(args["xxlsgac"]),
+            c(args["pdensat"]), c(args["pdensac"]))
+        return float(out[3])   # betaij3
+
+    b64 = run(jnp.float64)
+    try:
+        jax.config.update("jax_enable_x64", False)
+        b32 = run(jnp.float32)
+    finally:
+        jax.config.update("jax_enable_x64", True)
+
+    assert b64 > 0.0
+    assert b32 > 0.0, "float32 betaij3 flushed to zero (mass-coag dead)"
+    np.testing.assert_allclose(b32, b64, rtol=1e-3)

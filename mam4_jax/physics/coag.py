@@ -263,7 +263,22 @@ def getcoags(lamda, kfmatac, kfmat, kfmac, knc,
         + ri3 * esat100 * esac09
         + 2.0 * ri1 * esat64 * esac01
     )
-    qv12 = dgat3 * (nc3 * fm3) / (nc3 + fm3)
+    # Harmonic mean in RECIPROCAL form: nc3*fm3 spans ~1e-15 x ~1e-24 =
+    # 1e-39, below float32's min normal (1.18e-38), so the product form
+    # flushes to 0 and betaij3 — ALL intermodal 3rd-moment (mass) coag
+    # transfer — silently vanishes in a float32 core (aging then loses
+    # its coagulated-shell pathway). 1/nc3 + 1/fm3 stays in normal range
+    # for both precisions; double-where keeps the dead branch benign for
+    # reverse-mode (a masked 1/0 still poisons cotangents). The final
+    # dgat3 * hm (~1e-37 at dgn~4e-8 m) can still flush for the very
+    # smallest Aitken diameters (dgn ≲ 2e-8 m), where betaij3 < ~4e-17
+    # — a physically-nil transfer; the wrapper's divide by
+    # dumatk3 ∝ dgat3 restores normal range immediately above that.
+    hm_ok = (nc3 > 0.0) & (fm3 > 0.0)
+    safe_nc3 = jnp.where(hm_ok, nc3, 1.0)
+    safe_fm3 = jnp.where(hm_ok, fm3, 1.0)
+    qv12 = dgat3 * jnp.where(
+        hm_ok, 1.0 / (1.0 / safe_nc3 + 1.0 / safe_fm3), 0.0)
 
     # --- intramodal: zeroeth moment (lines 2757–2787) ---------------------
     coagnc_at = knc * (1.0 + esat08 + _A * kngat * (esat20 + esat04))
