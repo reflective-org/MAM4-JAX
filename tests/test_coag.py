@@ -248,7 +248,8 @@ def test_wrapper_betaij3_nonzero_in_float32() -> None:
                 pdensat=1770.0, pdensac=1770.0)
 
     def run(dtype):
-        c = lambda v: jnp.asarray(v, dtype)
+        def c(v):
+            return jnp.asarray(v, dtype)
         out = getcoags_wrapper_f(
             c(273.0), c(1.0e5), c(args["dgatk"]), c(args["dgacc"]),
             c(args["sgatk"]), c(args["sgacc"]),

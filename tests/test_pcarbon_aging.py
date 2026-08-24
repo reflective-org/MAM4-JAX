@@ -171,8 +171,12 @@ def test_aging_batched_matches_single_cell() -> None:
     qnum, qaer, dgn_a = _synthetic_view()
     s_num, s_aer = _mam_pcarbon_aging_1subarea(qnum, qaer, dgn_a)
     shape = (3, 2)
-    b = lambda a: jnp.broadcast_to(a, shape + a.shape)
-    b_num, b_aer = _mam_pcarbon_aging_1subarea(b(qnum), b(qaer), b(dgn_a))
+
+    def tile(a):
+        return jnp.broadcast_to(a, shape + a.shape)
+
+    b_num, b_aer = _mam_pcarbon_aging_1subarea(tile(qnum), tile(qaer),
+                                               tile(dgn_a))
     for c in range(shape[0]):
         for p in range(shape[1]):
             np.testing.assert_array_equal(np.asarray(b_num[c, p]),
