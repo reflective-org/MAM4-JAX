@@ -145,6 +145,35 @@ def configure_gas_netprod(h2so4=None, soa=None) -> None:
         _GAS_NETPROD["soa"] = float(soa)
 
 
+# ``n_so4_monolayers`` — the number of so4(+nh4) monolayers of hygroscopic
+# shell required to "age" the entire pcarbon mode in one call. E3SM production
+# hard-codes 8.0 (modal_aero_gasaerexch.F90:37, a Fortran ``parameter``); the
+# box-model harness this port was validated against uses 3.0
+# (box_model_utils/phys_control.F90:26); ECHAM-HAM's counterpart criterion
+# (m7_coat's ``so4_coating_threshold``) uses 1.0. We default to the E3SM
+# production value and expose the knob because the choice spans an order of
+# magnitude across reference models and directly sets the BC/POM lifetime.
+_PCAGING: dict = {"n_so4_monolayers": 8.0}
+
+
+def configure_pcarbon_aging(n_so4_monolayers=None) -> None:
+    """Set the pcarbon-aging monolayer threshold (process-global).
+
+    Mirrors :func:`configure_condensation`'s config pattern (read at JIT
+    trace time; set once at startup, before the first jitted call).
+    ``n_so4_monolayers`` is the hygroscopic-shell thickness — in units of
+    one so4 monolayer, ``data.DR_SO4_MONOLAYER`` = 4.76e-10 m — at which
+    the whole primary-carbon mode transfers to accumulation in a single
+    call (smaller = faster aging). ``None`` leaves it unchanged.
+
+    Aging on/off is NOT configured here: it is the ``mdo_pcarbonaging``
+    argument of :func:`amicphys` (and ``run_step``), symmetric with the
+    other four sub-process toggles.
+    """
+    if n_so4_monolayers is not None:
+        _PCAGING["n_so4_monolayers"] = float(n_so4_monolayers)
+
+
 def configure_condensation(backend=None, n_substeps=None) -> None:
     """Select the gasaerexch condensation backend (process-global).
 
@@ -875,25 +904,36 @@ def _repack_amicphys_view_to_state(state: dict[str, Any],
 
 def amicphys(state: dict[str, Any], params=None, config=None, *,
              mdo_gasaerexch: int = 1, mdo_rename: int = 1,
-             mdo_newnuc: int = 1, mdo_coag: int = 1) -> dict[str, Any]:
+             mdo_newnuc: int = 1, mdo_coag: int = 1,
+             mdo_pcarbonaging: int = 1) -> dict[str, Any]:
     """ADR-009 entry point — see module docstring.
 
-    The four ``mdo_*`` keywords mirror the Fortran namelist toggles and
+    The ``mdo_*`` keywords mirror the Fortran namelist toggles and
     let callers (and tests) bypass any subset of the sub-processes.
-    When all four are 0 the function is a true state passthrough,
+    When all are 0 the function is a true state passthrough,
     matching the captured ``per_process_amicphys_off`` Fortran reference.
+
+    ``mdo_pcarbonaging`` gates the pcarbon → accum aging transfer. The
+    Fortran runs it unconditionally whenever an age-pair exists
+    (``n_agepair > 0``, modal_aero_amicphys.F90:2552), so 1 (on) is the
+    faithful default; there is no Fortran namelist toggle for it — the
+    ``*_no_pcarbon_aging`` reference fixtures were captured with the
+    ``skip_pcarbon_aging.patch`` build overlay instead, and tests
+    validating against those must pass 0 explicitly.
     """
     del params, config
     return _mam_amicphys_1gridcell(
         state,
         mdo_gasaerexch=mdo_gasaerexch, mdo_rename=mdo_rename,
         mdo_newnuc=mdo_newnuc,         mdo_coag=mdo_coag,
+        mdo_pcarbonaging=mdo_pcarbonaging,
     )
 
 
 def _mam_amicphys_1gridcell(state: dict[str, Any], *,
                             mdo_gasaerexch: int, mdo_rename: int,
-                            mdo_newnuc: int, mdo_coag: int) -> dict[str, Any]:
+                            mdo_newnuc: int, mdo_coag: int,
+                            mdo_pcarbonaging: int) -> dict[str, Any]:
     """Port of ``mam_amicphys_1gridcell``.
 
     The Fortran routine splits each grid cell into clear and cloudy
@@ -912,29 +952,34 @@ def _mam_amicphys_1gridcell(state: dict[str, Any], *,
         state,
         mdo_gasaerexch=mdo_gasaerexch, mdo_rename=mdo_rename,
         mdo_newnuc=mdo_newnuc,         mdo_coag=mdo_coag,
+        mdo_pcarbonaging=mdo_pcarbonaging,
     )
 
 
 def _mam_amicphys_1subarea_clear(state: dict[str, Any], *,
                                  mdo_gasaerexch: int, mdo_rename: int,
-                                 mdo_newnuc: int, mdo_coag: int) -> dict[str, Any]:
+                                 mdo_newnuc: int, mdo_coag: int,
+                                 mdo_pcarbonaging: int) -> dict[str, Any]:
     """Port of ``mam_amicphys_1subarea_clear``.
 
     Unpacks the outer ``q[pcnst]`` state into amicphys's local view,
-    runs the four sub-process functions in the Fortran order
-    (gasaerexch → rename → newnuc → coag — Fortran lines 2387, 2467,
-    2496, 2529), repacks the local view back to ``q``.
+    runs the sub-process functions in the Fortran order
+    (gasaerexch → rename → newnuc → coag → pcarbon aging — Fortran lines
+    2387, 2467, 2496, 2529, 2555), repacks the local view back to ``q``.
 
     Each sub-process call is gated by the corresponding ``mdo_*``
-    toggle; 0 means "skip this sub-process". Only rename is real after
-    M3.6 PR-C; the other three are no-op stubs (PR-D/E/F/G).
+    toggle; 0 means "skip this sub-process".
 
-    When all four toggles are 0, returns ``state`` unchanged without
+    When all toggles are 0, returns ``state`` unchanged without
     unpacking/repacking — preserves the bit-exact passthrough invariant
     (round-tripping ``qaerwat * FCVT_WTR / FCVT_WTR`` introduces a 1-ULP
-    error otherwise).
+    error otherwise). Note pcarbon aging alone (``mdo_pcarbonaging=1``,
+    others 0) is NOT a passthrough: with all growth processes off the
+    shell is whatever the host handed in on the pcarbon mode, and aging
+    faithfully transfers it.
     """
-    if not (mdo_gasaerexch or mdo_rename or mdo_newnuc or mdo_coag):
+    if not (mdo_gasaerexch or mdo_rename or mdo_newnuc or mdo_coag
+            or mdo_pcarbonaging):
         return state
 
     qgas, qaer, qnum, qwtr = _unpack_state_to_amicphys_view(state)
@@ -976,6 +1021,16 @@ def _mam_amicphys_1subarea_clear(state: dict[str, Any], *,
             state["dgncur_a"], state["dgncur_awet"], state["wetdens"],
             state["t"], state["pmid"], state["deltat"],
         )
+
+    if mdo_pcarbonaging:
+        # pcarbon → accum aging, after coag like the Fortran (F90:2555) so
+        # the shell includes both this step's condensed AND coagulated
+        # so4/soa. Must run before the repack: it is what moves the
+        # condensed-on-pcarbon shell species to a mode that HAS pcnst
+        # slots for them (the pcarbon LMAP_AER row maps only pom/bc/mom),
+        # closing what would otherwise be a per-step mass leak.
+        qnum, qaer = _mam_pcarbon_aging_1subarea(
+            qnum, qaer, state["dgncur_a"])
 
     return _repack_amicphys_view_to_state(state, qgas, qaer, qnum, qwtr)
 
@@ -1577,3 +1632,125 @@ def _coag_number_loss_two_branch(tmpa, tmpb, tmpn):
         1.0 + (tmpb * tmpn / safe_tmpa) * (1.0 - c)
     )
     return jnp.where(small, qnum_a_branch, qnum_b_branch)
+
+
+# ---------------------------------------------------------------------------
+# Primary-carbon aging (pcarbon → accum monolayer transfer)
+# ---------------------------------------------------------------------------
+
+# Species of the pcarbon mode that constitute the low-hygroscopicity CORE
+# (pom, bc, mom): exactly the species with a valid pcnst slot in that mode
+# (``lmap_aer(iaer,nfrm) > 0`` in the Fortran, F90:5216). Everything else
+# (soa, so4, ncl, dst) can only be present transiently — condensed or
+# coagulated onto the mode within the step — and is transferred WHOLESALE
+# to accum by the aging call.
+_PCARBON_CORE_MASK = _LMAP_AER_VALID_MASK[data.AMICPHYS_NPCA]   # (naer,) bool
+
+#: exp(2.5·ln²σg) of the pcarbon mode — the surface-area/volume shape
+#: factor of the log-normal (``fac_volsfc``, F90:5230).
+_FAC_VOLSFC_PCARBON = float(
+    np.exp(2.5 * data.ALNSG_AMODE[data.AMICPHYS_NPCA] ** 2))
+
+
+def _mam_pcarbon_aging_1subarea(qnum_cur, qaer_cur, dgn_a):
+    """Port of ``mam_pcarbon_aging_1subarea`` (modal_aero_amicphys.F90:5111-5285).
+
+    Converts "aged" primary-carbon particles to the accumulation mode.
+    A pcarbon particle counts as aged once it has acquired a hygroscopic
+    shell — sulfate condensed from H2SO4 plus SOA (as so4-*equivalent*
+    volume, scaled down by ``FAC_EQVSO4HYG_AER`` for its lower
+    hygroscopicity) — thick enough to cover the mode's surface with
+    ``n_so4_monolayers`` monolayers of so4. The aged FRACTION this call is
+
+        xferfrac = min( vol_shell · dgn · fac_volsfc
+                        / (6 · n_monolayers · 4.76e-10 m · vol_core),
+                        1 − 10ε )
+
+    where ``6/(dgn·fac_volsfc)`` is the log-normal mode's
+    surface-area-to-volume ratio (F90:5219-5239). That fraction of the
+    core species (pom, bc, mom — the mode's mapped species) and of the
+    mode NUMBER moves to accum; the shell species themselves (soa, so4,
+    and any coagulated ncl/dst) move to accum ENTIRELY (F90:5241-5280) —
+    the accumulation mode has pcnst slots for them, the pcarbon mode does
+    not, so this is also what keeps condensed-on-pcarbon mass from being
+    dropped at the LMAP_AER repack.
+
+    Faithfulness notes (deviations that cannot change the state):
+
+    * The Fortran also splits each transfer between ``qaer_del_cond`` /
+      ``qaer_del_coag`` budget-attribution arrays using the
+      shell-provenance ratio ``tmp3/tmp4`` (F90:5169-5210), with the
+      coagulation share accumulated by ``mam_coag_1subarea`` into
+      ``qaer_del_coag_in`` (F90:4983-4999). Those arrays are per-process
+      DIAGNOSTICS the JAX port does not carry; ``vol_shell`` itself is
+      built purely from the CURRENT mode composition (F90:5168, 5198),
+      so omitting the attribution machinery leaves qnum/qaer evolution
+      bit-identical. The ``do_cond`` argument gates only that
+      attribution split (F90:5204-5209) and is likewise not needed.
+    * ``deltat`` is unused in the Fortran body: the transfer is
+      per-call instantaneous (the shell resets to zero afterwards, so
+      successive calls age at the shell-acquisition rate).
+    * Single age-pair (pcarbon → accum): the marine-organic pairs exist
+      only in the 9-mode build (F90:5931+, ``MODAL_AERO_9MODE``).
+
+    Parameters
+    ----------
+    qnum_cur : (..., nmode), qaer_cur : (..., naer, nmode)
+        amicphys-local number / species mixing ratios.
+    dgn_a : (..., nmode)
+        DRY number-median mode diameters [m] (``dgncur_a``).
+
+    Returns updated ``(qnum_cur, qaer_cur)``.
+    """
+    npca = data.AMICPHYS_NPCA
+    nacc = data.ACCUM_MODE_IDX
+    iso4 = data.AMICPHYS_IAER_SO4
+    isoa = data.AMICPHYS_IAER_SOA
+
+    qaer_pcm = qaer_cur[..., :, npca]                        # (..., naer)
+
+    # Shell volume: so4 at face value + soa as so4-equivalent (F90:5168,
+    # 5177-5201). nh4/no3/cl do not exist in this 7-species build, and
+    # ncl is excluded because ``aging_include_seasalt = .false.``
+    # (F90:200) — coagulated sea salt still MOVES with the aging (below),
+    # it just does not count toward the coating.
+    vol_shell = (
+        qaer_pcm[..., iso4] * data.FAC_M2V_AER[iso4]
+        + qaer_pcm[..., isoa] * data.FAC_M2V_EQVHYG_AER[isoa]
+    )
+    # Core volume: the mapped (primary, low-hygroscopicity) species only.
+    vol_core = jnp.sum(
+        qaer_pcm * jnp.asarray(data.FAC_M2V_AER)
+        * jnp.asarray(_PCARBON_CORE_MASK), axis=-1)
+
+    dr_monolayers = _PCAGING["n_so4_monolayers"] * data.DR_SO4_MONOLAYER
+    tmp1 = vol_shell * dgn_a[..., npca] * _FAC_VOLSFC_PCARBON
+    tmp2 = jnp.maximum(6.0 * dr_monolayers * vol_core, 0.0)
+
+    # ``xferfrac_max = 1 - 10ε`` (F90:5231) keeps a sliver of the mode so
+    # its number never becomes exactly zero. ε of the working dtype, so
+    # the float32-safe path gets the analogous bound.
+    xferfrac_max = 1.0 - 10.0 * float(jnp.finfo(qaer_cur.dtype).eps)
+    saturated = tmp1 >= tmp2
+    # Double-where guard: tmp2 can be 0 exactly where ``saturated`` is
+    # True (no core mass ⇒ 0 >= 0), and a masked-out x/0 still poisons
+    # reverse-mode cotangents (the #558 class), so the dead branch must
+    # divide by a benign value.
+    safe_tmp2 = jnp.where(saturated, 1.0, tmp2)
+    xferfrac_pcage = jnp.where(
+        saturated, xferfrac_max,
+        jnp.minimum(tmp1 / safe_tmp2, xferfrac_max))
+
+    # Mapped (core) species move by xferfrac; unmapped shell species move
+    # entirely (fraction exactly 1, so the pcarbon row lands on exact 0.0
+    # like the Fortran's explicit zeroing at F90:5267).
+    frac = jnp.where(jnp.asarray(_PCARBON_CORE_MASK),
+                     xferfrac_pcage[..., None], 1.0)      # (..., naer)
+    dq = qaer_pcm * frac
+    qaer_cur = qaer_cur.at[..., :, npca].add(-dq)
+    qaer_cur = qaer_cur.at[..., :, nacc].add(dq)
+
+    dn = qnum_cur[..., npca] * xferfrac_pcage
+    qnum_cur = qnum_cur.at[..., npca].add(-dn)
+    qnum_cur = qnum_cur.at[..., nacc].add(dn)
+    return qnum_cur, qaer_cur

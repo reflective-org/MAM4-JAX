@@ -481,6 +481,40 @@ FAC_M2V_AER: np.ndarray = np.asarray(
 
 
 # ---------------------------------------------------------------------------
+# Primary-carbon aging constants (pcarbon → accum monolayer transfer).
+# ---------------------------------------------------------------------------
+
+#: Volume-mean hygroscopicity per amicphys species, in the internal iaer
+#: order (soa, so4, pom, bc, ncl, dst, mom). These are the
+#: ``SPECHYGRO_AMODE`` per-TYPE values selected by each species' type;
+#: kept as a separate per-iaer table because amicphys's aging code indexes
+#: by iaer (``hygro_aer`` in the Fortran init, modal_aero_amicphys.F90:5840).
+SPECHYGRO_AER: np.ndarray = np.asarray(
+    [0.140, 0.507, 0.010, 1.0e-10, 1.160, 0.068, 0.100], dtype=np.float64,
+)
+
+#: ``fac_eqvso4hyg_aer = hygro_aer / hygro_aer(iaer_so4)``
+#: (modal_aero_amicphys.F90:5877) — scales a species' volume to the
+#: so4-equivalent hygroscopic volume, so a shell of (say) SOA counts for
+#: less coating than the same volume of sulfate.
+FAC_EQVSO4HYG_AER: np.ndarray = SPECHYGRO_AER / SPECHYGRO_AER[1]
+
+#: ``fac_m2v_eqvhyg_aer = fac_m2v_aer * fac_eqvso4hyg_aer``
+#: (modal_aero_amicphys.F90:5878). Converts amicphys mixing ratio to
+#: hygroscopicity-equivalent shell volume for the aging criterion.
+FAC_M2V_EQVHYG_AER: np.ndarray = FAC_M2V_AER * FAC_EQVSO4HYG_AER
+
+#: 0-based amicphys-internal iaer index for sulfate (Fortran iaer_so4=2).
+AMICPHYS_IAER_SO4: int = 1
+
+#: Thickness of one so4(+nh4) monolayer (m). "for so4(+nh4), use
+#: bi-sulfate mw and 1.77 g/cm3 → 1 molecule = (4.76e-10 m)^3"
+#: (modal_aero_gasaerexch.F90:40-44). The aging criterion multiplies this
+#: by the configurable monolayer count (``configure_pcarbon_aging``).
+DR_SO4_MONOLAYER: float = 4.76e-10
+
+
+# ---------------------------------------------------------------------------
 # SOA-specific amicphys init constants (M3.6 PR-E).
 # ---------------------------------------------------------------------------
 
