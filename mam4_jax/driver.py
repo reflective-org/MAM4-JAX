@@ -79,9 +79,11 @@ def cloud_chem_simple_sub(state: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
-@functools.partial(jax.jit, static_argnames=("mdo_pcarbonaging",))
+@functools.partial(jax.jit,
+                   static_argnames=("mdo_pcarbonaging", "n_so4_monolayers"))
 def run_step(state: dict[str, Any], *,
-             mdo_pcarbonaging: int = 1) -> dict[str, Any]:
+             mdo_pcarbonaging: int = 1,
+             n_so4_monolayers=None) -> dict[str, Any]:
     """One operator-splitting timestep.
 
     Sequence mirrors ``driver.F90:1080-1367`` (``main_time_loop``):
@@ -106,7 +108,8 @@ def run_step(state: dict[str, Any], *,
     state = calcsize(state)
     state = wateruptake(state)
     state = cloud_chem_simple_sub(state)   # currently a no-op
-    state = amicphys(state, mdo_pcarbonaging=mdo_pcarbonaging)
+    state = amicphys(state, mdo_pcarbonaging=mdo_pcarbonaging,
+                     n_so4_monolayers=n_so4_monolayers)
     return state
 
 
@@ -118,9 +121,11 @@ _TRAJ_KEYS = ("q", "qqcw", "dgncur_a", "dgncur_awet",
 
 
 @functools.partial(jax.jit,
-                   static_argnames=("n_steps", "mdo_pcarbonaging"))
+                   static_argnames=("n_steps", "mdo_pcarbonaging",
+                                    "n_so4_monolayers"))
 def run_timesteps(state: dict[str, Any], n_steps: int, *,
-                  mdo_pcarbonaging: int = 1) -> dict[str, Any]:
+                  mdo_pcarbonaging: int = 1,
+                  n_so4_monolayers=None) -> dict[str, Any]:
     """Run ``n_steps`` operator-splitting timesteps and return a
     stacked trajectory.
 
@@ -193,7 +198,8 @@ def run_timesteps(state: dict[str, Any], n_steps: int, *,
         dict[str, Any], dict[str, Any]
     ]:
         new_state = run_step(carry_state,
-                             mdo_pcarbonaging=mdo_pcarbonaging)
+                             mdo_pcarbonaging=mdo_pcarbonaging,
+                             n_so4_monolayers=n_so4_monolayers)
         output = {k: new_state[k] for k in _TRAJ_KEYS}
         return new_state, output
 

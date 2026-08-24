@@ -905,7 +905,8 @@ def _repack_amicphys_view_to_state(state: dict[str, Any],
 def amicphys(state: dict[str, Any], params=None, config=None, *,
              mdo_gasaerexch: int = 1, mdo_rename: int = 1,
              mdo_newnuc: int = 1, mdo_coag: int = 1,
-             mdo_pcarbonaging: int = 1) -> dict[str, Any]:
+             mdo_pcarbonaging: int = 1,
+             n_so4_monolayers=None) -> dict[str, Any]:
     """ADR-009 entry point — see module docstring.
 
     The ``mdo_*`` keywords mirror the Fortran namelist toggles and
@@ -920,6 +921,13 @@ def amicphys(state: dict[str, Any], params=None, config=None, *,
     ``*_no_pcarbon_aging`` reference fixtures were captured with the
     ``skip_pcarbon_aging.patch`` build overlay instead, and tests
     validating against those must pass 0 explicitly.
+
+    ``n_so4_monolayers`` overrides the aging threshold FOR THIS CALL
+    (trace); ``None`` uses the :func:`configure_pcarbon_aging` global.
+    Hosts that construct several differently-configured instances in one
+    process must pass it per call — the global is read at trace time, so
+    relying on constructor-time configuration makes trace caching
+    order-dependent.
     """
     del params, config
     return _mam_amicphys_1gridcell(
@@ -927,13 +935,15 @@ def amicphys(state: dict[str, Any], params=None, config=None, *,
         mdo_gasaerexch=mdo_gasaerexch, mdo_rename=mdo_rename,
         mdo_newnuc=mdo_newnuc,         mdo_coag=mdo_coag,
         mdo_pcarbonaging=mdo_pcarbonaging,
+        n_so4_monolayers=n_so4_monolayers,
     )
 
 
 def _mam_amicphys_1gridcell(state: dict[str, Any], *,
                             mdo_gasaerexch: int, mdo_rename: int,
                             mdo_newnuc: int, mdo_coag: int,
-                            mdo_pcarbonaging: int) -> dict[str, Any]:
+                            mdo_pcarbonaging: int,
+                            n_so4_monolayers=None) -> dict[str, Any]:
     """Port of ``mam_amicphys_1gridcell``.
 
     The Fortran routine splits each grid cell into clear and cloudy
@@ -953,13 +963,15 @@ def _mam_amicphys_1gridcell(state: dict[str, Any], *,
         mdo_gasaerexch=mdo_gasaerexch, mdo_rename=mdo_rename,
         mdo_newnuc=mdo_newnuc,         mdo_coag=mdo_coag,
         mdo_pcarbonaging=mdo_pcarbonaging,
+        n_so4_monolayers=n_so4_monolayers,
     )
 
 
 def _mam_amicphys_1subarea_clear(state: dict[str, Any], *,
                                  mdo_gasaerexch: int, mdo_rename: int,
                                  mdo_newnuc: int, mdo_coag: int,
-                                 mdo_pcarbonaging: int) -> dict[str, Any]:
+                                 mdo_pcarbonaging: int,
+                                 n_so4_monolayers=None) -> dict[str, Any]:
     """Port of ``mam_amicphys_1subarea_clear``.
 
     Unpacks the outer ``q[pcnst]`` state into amicphys's local view,
@@ -1030,7 +1042,8 @@ def _mam_amicphys_1subarea_clear(state: dict[str, Any], *,
         # slots for them (the pcarbon LMAP_AER row maps only pom/bc/mom),
         # closing what would otherwise be a per-step mass leak.
         qnum, qaer = _mam_pcarbon_aging_1subarea(
-            qnum, qaer, state["dgncur_a"])
+            qnum, qaer, state["dgncur_a"],
+            n_so4_monolayers=n_so4_monolayers)
 
     return _repack_amicphys_view_to_state(state, qgas, qaer, qnum, qwtr)
 
@@ -1658,7 +1671,8 @@ _FAC_VOLSFC_PCARBON = float(
     np.exp(2.5 * data.ALNSG_AMODE[data.AMICPHYS_NPCA] ** 2))
 
 
-def _mam_pcarbon_aging_1subarea(qnum_cur, qaer_cur, dgn_a):
+def _mam_pcarbon_aging_1subarea(qnum_cur, qaer_cur, dgn_a,
+                                n_so4_monolayers=None):
     """Port of ``mam_pcarbon_aging_1subarea`` (modal_aero_amicphys.F90:5111-5285).
 
     Converts "aged" primary-carbon particles to the accumulation mode.
@@ -1729,7 +1743,9 @@ def _mam_pcarbon_aging_1subarea(qnum_cur, qaer_cur, dgn_a):
         qaer_pcm * jnp.asarray(data.FAC_M2V_AER)
         * jnp.asarray(_PCARBON_CORE_MASK), axis=-1)
 
-    dr_monolayers = _PCAGING["n_so4_monolayers"] * data.DR_SO4_MONOLAYER
+    if n_so4_monolayers is None:
+        n_so4_monolayers = _PCAGING["n_so4_monolayers"]
+    dr_monolayers = float(n_so4_monolayers) * data.DR_SO4_MONOLAYER
     tmp1 = vol_shell * dgn_a[..., npca] * _FAC_VOLSFC_PCARBON
     tmp2 = jnp.maximum(6.0 * dr_monolayers * vol_core, 0.0)
 

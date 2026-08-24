@@ -186,21 +186,27 @@ def test_aging_batched_matches_single_cell() -> None:
 
 
 def test_configure_pcarbon_aging_threshold() -> None:
-    """A larger monolayer requirement must age a smaller fraction, and
-    the configure hook must restore cleanly (process-global state)."""
+    """A larger monolayer requirement must age a smaller fraction; the
+    per-call override and the process-global configure hook must agree
+    (the override exists so hosts with several differently-configured
+    instances are not order-dependent — jax-gcm#726 review)."""
     qnum, qaer, dgn_a = _synthetic_view()
-    saved = _PCAGING["n_so4_monolayers"]
-    try:
-        configure_pcarbon_aging(n_so4_monolayers=1.0)   # HAMMOZ's value
-        n1_num, _ = _mam_pcarbon_aging_1subarea(qnum, qaer, dgn_a)
-        configure_pcarbon_aging(n_so4_monolayers=8.0)   # E3SM's value
-        n8_num, _ = _mam_pcarbon_aging_1subarea(qnum, qaer, dgn_a)
-    finally:
-        configure_pcarbon_aging(n_so4_monolayers=saved)
+    n1_num, _ = _mam_pcarbon_aging_1subarea(qnum, qaer, dgn_a,
+                                            n_so4_monolayers=1.0)  # HAMMOZ
+    n8_num, _ = _mam_pcarbon_aging_1subarea(qnum, qaer, dgn_a,
+                                            n_so4_monolayers=8.0)  # E3SM
     aged_1 = float(qnum[NPCA] - n1_num[NPCA])
     aged_8 = float(qnum[NPCA] - n8_num[NPCA])
     assert aged_1 > aged_8 > 0.0
     np.testing.assert_allclose(aged_1, 8.0 * aged_8, rtol=1e-10)
+    # The global configure hook is the default when no override is given.
+    saved = _PCAGING["n_so4_monolayers"]
+    try:
+        configure_pcarbon_aging(n_so4_monolayers=1.0)
+        g1_num, _ = _mam_pcarbon_aging_1subarea(qnum, qaer, dgn_a)
+    finally:
+        configure_pcarbon_aging(n_so4_monolayers=saved)
+    np.testing.assert_array_equal(np.asarray(g1_num), np.asarray(n1_num))
 
 
 # ---------------------------------------------------------------------------
@@ -286,19 +292,9 @@ def test_run_step_matches_canonical_fortran_with_aging(per_process) -> None:
     # The box-model reference build sets n_so4_monolayers_pcage = 3.0
     # (box_model_utils/phys_control.F90:26); the package default is the
     # E3SM production value 8.0, which under-ages vs this capture by
-    # exactly that 8/3 ratio.
-    saved = _PCAGING["n_so4_monolayers"]
-    configure_pcarbon_aging(n_so4_monolayers=3.0)
-    # The config is read at TRACE time and run_step is jitted: an earlier
-    # test (e.g. test_driver's multicolumn checks) may have compiled it
-    # with the default 8.0 for these exact shapes, so the cache must be
-    # dropped on both sides of the reconfigure or we silently run stale.
-    run_step.clear_cache()
-    try:
-        new_state = run_step(ic)
-    finally:
-        configure_pcarbon_aging(n_so4_monolayers=saved)
-        run_step.clear_cache()
+    # exactly that 8/3 ratio. Passed per call — it is a static jit arg,
+    # so no process-global reconfiguration (and no cache hazard).
+    new_state = run_step(ic, n_so4_monolayers=3.0)
     target = per_process["amicphys_after_writeback"]
     for key in ("q", "qqcw"):
         np.testing.assert_allclose(
@@ -319,16 +315,8 @@ def test_60_step_trajectory_matches_canonical_fortran(per_process) -> None:
     the two Fortran builds on Aitken/pcarbon tracers, so passing BOTH at
     5% is a real constraint on the aging port, not a tautology."""
     ic = _build_state(per_process["calcsize_before"], step=0)
-    saved = _PCAGING["n_so4_monolayers"]
-    configure_pcarbon_aging(n_so4_monolayers=3.0)   # box-harness value
-    run_step.clear_cache()          # trace-time config: drop stale compiles
-    run_timesteps.clear_cache()
-    try:
-        traj = run_timesteps(ic, n_steps=60)
-    finally:
-        configure_pcarbon_aging(n_so4_monolayers=saved)
-        run_step.clear_cache()
-        run_timesteps.clear_cache()
+    # Box-harness threshold, per call (static jit arg — no global state).
+    traj = run_timesteps(ic, n_steps=60, n_so4_monolayers=3.0)
     target = per_process["amicphys_after_writeback"]
     # The two GAS slots (SOAG pcnst 9, H2SO4 pcnst 6) carry the known
     # diffrax soaexch structural offset (ADR-015 coarse-dt regime;
