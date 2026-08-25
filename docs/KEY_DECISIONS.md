@@ -308,7 +308,7 @@ Status values: **Accepted**, **Proposed**, **Superseded by ADR-NNN**.
 
     `qs21`'s error is maximal at the sweep's upper edge (`dgnumB/dgnumA = 500`) and only **8.4× under** `test_coag.py`'s `RTOL = 1e-6`. Extrapolating the cancellation, a ratio of ~1000 exceeds the bar. **Widening the reference sweep will fail that test for a reason unrelated to porting error** — whoever does so must special-case `qs21` (or compare it against an exact-arithmetic reference rather than the Fortran).
   - Nothing downstream is affected today: `qs21 → betaij2j` is discarded by `_mam_coag_1subarea` (`amicphys.py:1547`), which consumes only `betaij0`, `betaij3`, `betaii0`, `betajj0`.
-  - Together with the reciprocal-form harmonic means, this resolves plan 023 §2's deferred *"audit other coag coefficients for f32 magnitude bounds"* row — whose premise ("only qv12 is f32-broken") was incorrect.
+  - Together with the reciprocal-form harmonic means, this resolves plan 023 §2's deferred *"audit other coag coefficients for f32 magnitude bounds"* row — whose premise ("only qv12 is f32-broken") was incorrect. Correction appended as plan 023 §8, including why `test_getcoags_finite_in_float32`'s finite-only tier could not detect a coefficient that flushes to zero.
 
 - **Alternatives considered:**
   - **Scope the `qs21` rewrite to the f32 path only**, leaving f64 bit-faithful to the Fortran. Keeps the reference test at machine ε across any sweep width. Rejected in the PR draft as carrying two code paths for one expression, but it is the conservative option if bit-parity is judged more valuable than being right in a regime the box model never reaches (`dgacc/dgatk ≤ 500` in every current fixture).

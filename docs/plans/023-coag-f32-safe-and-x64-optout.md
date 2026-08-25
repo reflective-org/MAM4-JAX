@@ -30,7 +30,7 @@ Documented as ADR-018 (amends ADR-002).
 | `test_jax_enable_x64_zero_opts_out` (subprocess) | ✅ | — |
 | Gate `dtype=jnp.float64` casts in kohler/wateruptake/calcsize/amicphys/newnuc on live x64 state | — | ✅ (see §5) |
 | Trajectory-level acceptance bar for f32 mode | — | ✅ (owner approval; ADR addendum) |
-| Audit other coag coefficients (qs11/qs22/qs12/qs21) for f32 magnitude bounds | — | ✅ (only qv12 is f32-broken; the qs* are below f32 useful range but were already so before this PR) |
+| Audit other coag coefficients (qs11/qs22/qs12/qs21) for f32 magnitude bounds | — | ✅ ~~(only qv12 is f32-broken; the qs* are below f32 useful range but were already so before this PR)~~ — **the parenthetical is wrong; resolved by plan 026. See §8.** |
 
 ---
 
@@ -87,3 +87,31 @@ docs/PROGRESS.md               (entry)
 - `python3 -W error::UserWarning -m pytest tests/test_coag.py::test_getcoags_finite_in_float32` — passes (no JAX promotion warnings).
 - `JAX_ENABLE_X64=0 python -c "import mam4_jax; import jax; assert not jax.config.read('jax_enable_x64'); assert mam4_jax.x64_enabled is False"` — passes.
 - Existing test suite (under default x64=on) unchanged.
+
+---
+
+## 8. Correction (2026-08-25) — the deferred audit's premise was wrong
+
+*Appended per ADR-007 (plans are append-only); §2's row is struck through rather than rewritten so the original record survives.*
+
+§2 deferred the audit of `qs11`/`qs22`/`qs12`/`qs21` on the grounds that **"only qv12 is f32-broken."** That claim was not measured, and it is false. Measured at box-typical diameters (`dgatk = 4.38e-8`, `dgacc = 1.98e-7`, `T = 273 K`, `p = 1e5 Pa`) on this plan's own merged code, **four** of the eight `getcoags_wrapper_f` outputs were identically zero in float32:
+
+```
+betaij0    f64=5.403e-15  f32=5.403e-15
+betaij2i   f64=2.881e-15  f32=0.000e+00   <-- dead
+betaij2j   f64=4.145e-16  f32=0.000e+00   <-- dead
+betaij3    f64=2.209e-15  f32=0.000e+00   <-- dead (this plan's target; see below)
+betaii0    f64=9.939e-16  f32=9.939e-16
+betaii2    f64=2.964e-16  f32=0.000e+00   <-- dead
+betajj0    f64=6.825e-16  f32=6.825e-16
+betajj2    f64=1.277e-16  f32=0.000e+00   <-- dead
+```
+
+Two things went wrong, and they are worth separating:
+
+1. **"Below f32 useful range" conflated two different failures.** The `qs*` coefficients are *not* out of float32's range — the finished `betaii2`/`betajj2` values (~1e-16 to 3e-16) are perfectly representable. What underflowed was the **intermediate product** `a*b` inside each harmonic mean `a*b/(a+b)`, where both operands sit near ~1e-19…1e-31 and the product lands below f32 min-normal (1.18e-38). The operands are in range; only the product is not. Any harmonic mean written in product form has this failure mode regardless of how "useful" its output magnitude is.
+2. **`test_getcoags_finite_in_float32` could not have caught it.** Its second-moment tier asserted **finite-only** (see `PROGRESS.md`, 2026-06-24). Zero is finite. A test tier that admits zero cannot detect a coefficient that flushed to zero — the assertion and the defect were mutually invisible. §3's fix to `qv12` was also incomplete for the same reason: factoring `dgat3` out kept the *operands* in range but left the product form intact, so `betaij3` still flushed. It took a downstream symptom (pcarbon aging losing its coagulated-shell pathway) to surface any of it.
+
+**Resolved by plan 026 / PR [#75](https://github.com/reflective-org/MAM4-JAX/pull/75)**: all seven harmonic means in `getcoags` route through a reciprocal-form `_harmonic_mean_safe(a, b) = 1/(1/a + 1/b)`, and `test_wrapper_all_outputs_nonzero_in_float32` asserts every wrapper output is **non-zero and within `rtol=1e-3` of f64** — replacing the finite-only tier that let this through. Fixing the harmonic means then exposed an independent catastrophic cancellation in `qs21`'s prefactor, recorded as **ADR-019**.
+
+**Lesson for future f32 work:** assert *agreement*, never *finiteness*, and reason about intermediate magnitudes rather than output magnitudes.

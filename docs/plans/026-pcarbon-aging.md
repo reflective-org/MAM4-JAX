@@ -33,7 +33,7 @@ Aging is what rescues the so4/soa the core condenses onto pcarbon each step: the
 | Marine-organic age pairs (`MODAL_AERO_9MODE`, F90:5931+) | — | ✅ out of build scope |
 | Trajectory-level f32 acceptance bar | — | ✅ still open from ADR-018 §5 |
 
-This PR **resolves** plan 023 §2's deferred row *"Audit other coag coefficients (qs11/qs22/qs12/qs21) for f32 magnitude bounds."* That row's claim — "only qv12 is f32-broken" — was wrong: all four second-moment coefficients also flushed to zero. See §5.
+This PR **resolves** plan 023 §2's deferred row *"Audit other coag coefficients (qs11/qs22/qs12/qs21) for f32 magnitude bounds."* That row's claim — "only qv12 is f32-broken" — was wrong: all four second-moment coefficients also flushed to zero, and so did `betaij3` itself, which plan 023 believed it had fixed. The correction is appended as **plan 023 §8**; the measurement is in §5 below.
 
 ---
 
