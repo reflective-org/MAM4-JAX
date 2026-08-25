@@ -214,22 +214,30 @@ def configure_pcarbon_aging(n_so4_monolayers=None) -> None:
     ``n_so4_monolayers`` is the hygroscopic-shell thickness — in units of
     one so4 monolayer, ``data.DR_SO4_MONOLAYER`` = 4.76e-10 m — at which
     the whole primary-carbon mode transfers to accumulation in a single
-    call (smaller = faster aging). ``None`` leaves it unchanged. The
-    per-call ``n_so4_monolayers`` argument of :func:`amicphys` /
-    ``run_step`` / ``run_timesteps`` overrides this global; hosts running
-    several differently-configured instances in one process must use the
-    per-call form.
+    call (smaller = faster aging). ``None`` leaves it unchanged.
 
-    **JIT cache contract** (mirrors ``configure_condensation``): the
-    global is read at TRACE time. ``run_step``/``run_timesteps`` declare
-    the per-call argument static, so a call with ``n_so4_monolayers=None``
-    bakes the *current* global into a trace cached under the key
-    ``None`` — calling ``configure_pcarbon_aging(...)`` afterwards does
-    NOT invalidate that cache, and the next default call silently keeps
-    the old threshold (an ~x200 trajectory-error spread across the 1.0-8.0
-    range, so a stale read is expensive). Set it once at startup, before
-    any traced path runs, or pass the value per call (each distinct value
-    gets its own cache entry). Not thread-safe: a plain module dict.
+    This is the process-global DEFAULT only. To override per call — and
+    to sweep or calibrate the threshold — pass
+    :class:`AmicphysParams` as the ``params`` argument of
+    :func:`amicphys` / ``run_step`` / ``run_timesteps`` instead::
+
+        run_step(state, AmicphysParams(n_so4_monolayers=3.0))
+
+    ``params`` leaves are ordinary TRACED operands: differentiable, and
+    every value shares one compiled step. Hosts running several
+    differently-configured instances in one process must use that form.
+    There is no per-call ``n_so4_monolayers`` keyword.
+
+    **JIT cache contract** (mirrors ``configure_condensation``): this
+    global is read at TRACE time and baked into the compiled binary, so
+    a ``params=None`` (or ``n_so4_monolayers=None``) call caches a step
+    carrying whatever the global held at first trace. Calling
+    ``configure_pcarbon_aging(...)`` afterwards does NOT invalidate that
+    cache — the next default call silently keeps the old threshold (an
+    ~x200 trajectory-error spread across the 1.0-8.0 range, so a stale
+    read is expensive). Set it once at startup before any traced path
+    runs, or bypass the global entirely by passing ``params``. Not
+    thread-safe: a plain module dict.
 
     Aging on/off is NOT configured here: it is the ``mdo_pcarbonaging``
     argument of :func:`amicphys` (and ``run_step``), symmetric with the
