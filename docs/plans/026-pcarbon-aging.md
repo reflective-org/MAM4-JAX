@@ -100,6 +100,6 @@ All seven harmonic means now route through a shared `_harmonic_mean_safe(a, b) =
 
 ## 7. Open items at review time
 
-- ADR-019's `qs21` decision (keep the more-accurate form and document, vs. scope it to f32).
-- `test_coag.py`'s `RTOL = 1e-6` is only 8.4× above `qs21`'s measured error and the margin shrinks with diameter ratio — see ADR-019 §Consequences.
+- ~~ADR-019's `qs21` decision~~ — **resolved on review**: keep the more-accurate form on both precisions (ADR-019 accepted).
+- `test_coag.py`'s `RTOL = 1e-6` is only 8.4× above `qs21`'s measured error and the margin shrinks with diameter ratio — noted at the constant itself, and in ADR-019 §Consequences. **Anyone widening the reference sweep past `dgnumB/dgnumA ≈ 1000` must special-case `qs21`.**
 - `AmicphysParams` landed after the first review round (ADR-020). The per-call static `n_so4_monolayers` argument this plan originally described no longer exists — use `params`.

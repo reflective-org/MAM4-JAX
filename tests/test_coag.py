@@ -24,6 +24,17 @@ from mam4_jax.physics.coag import getcoags, getcoags_wrapper_f
 
 REF = Path(__file__).resolve().parent / "reference" / "coag_coefficients" / "reference.npz"
 RTOL = 1e-6
+# NOTE (ADR-019): `qs21` has far less margin here than its siblings. Its
+# prefactor is computed as `rx4*expm1((2/3)*log1p(1/r6))` rather than the
+# Fortran's `(1+r6)**(2/3) - rx4`, which cancels catastrophically as the
+# diameter ratio grows (wrong SIGN at dgacc/dgatk = 1e6, in float64). The
+# rewrite is exact and strictly more accurate, so the residual below is the
+# Fortran's error, not ours: qs21 measures 1.19e-7 at the sweep's upper edge
+# (dgnumB/dgnumA = 500) where every other coefficient sits at ~4e-16. That is
+# only ~8x under this bar and it shrinks as the ratio grows — WIDENING THIS
+# SWEEP past a ratio of ~1000 will fail on qs21 for reasons unrelated to
+# porting error. Special-case it (or compare it against exact arithmetic
+# rather than the Fortran) rather than loosening RTOL for everything.
 # `qv12` ranges down to ~1e-38 (third-moment intermodal transfer for the
 # smallest Aitken diameters); atol absorbs noise on those near-zero values.
 ATOL = 1e-40
