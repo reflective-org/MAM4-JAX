@@ -285,3 +285,32 @@ Status values: **Accepted**, **Proposed**, **Superseded by ADR-NNN**.
   - **Project-specific env var (`MAM4_JAX_ENABLE_X64`).** Initial implementation used this. Rejected on review: introduces a parallel mechanism redundant with JAX's `JAX_ENABLE_X64`, and a host that sets only `JAX_ENABLE_X64=0` would be silently overridden by the package. Reusing JAX's var means there is one knob, not two.
   - **Just don't auto-enable x64 — let users do it themselves.** Rejected: ADR-002's "x64 by default" is load-bearing for the diffrax path; breaking it silently would surface as test failures across the existing suite. Opt-out keeps the upstream contract intact.
   - **Audit every `dtype=jnp.float64` cast in this PR.** Deferred to a follow-up PR. The qv12 refactor alone is the surgical change that makes the coag core f32-safe; touching ~25 explicit-f64 sites across 5 modules in the same PR would conflate two scopes.
+
+## ADR-019 — Two deliberate departures from the Fortran's floating-point arithmetic in `coag`
+
+- **Status:** Proposed 2026-08-25. Introduced alongside PR [#75](https://github.com/reflective-org/MAM4-JAX/pull/75) (plan 026) — pcarbon aging + float32-safe coag. **Item 2 needs owner sign-off** (see Decision).
+- **Context:** The port's standing contract is a line-by-line transcription of the Fortran, validated to ADR-003's 1e-6. PR #75 makes the coagulation core usable in float32 (jax-gcm runs the coupled model in f32), and two of the changes required to do that are *not* transcriptions — they are algebraically equivalent rewrites that give **different floating-point answers from the Fortran**, in the port's favour. Recording them so a future porter diffing `coag.py` against `modal_aero_coag.F90` does not "fix" them back.
+
+- **Decision:**
+
+  1. **`1 - exp(-x)` → `-expm1(-x)`** at the three coag transfer sites (`tmp_xf_ait`, `tmp_xf_pca` in `_mam_coag_1subarea`; `one_minus_c` in `_coag_number_loss_two_branch`). The Fortran writes the subtraction form at `modal_aero_amicphys.F90:4924, 4972, 5053, 5073`. For small `x` the subtraction loses `~eps/x` relative digits — ~1e-10 in f64 at `tmpc ~ 1e-6`, ~10 % in f32. Harmless while the transferred mass was invisible; load-bearing once pcarbon aging turns the ait→pca so4 delivery into the coating criterion. **Accepted**: the shift is ~1e-10 relative, four orders under ADR-003, and it moves *toward* the exact answer.
+
+  2. **`qs21`'s `(1+r6)^(2/3) - rx4` → `rx4 · expm1((2/3) · log1p(1/r6))`** (`getcoags`, Fortran `modal_aero_coag.F90:2716`). Exact identity: `rx4 = r⁴` and `r6 = r⁶`, so `r6^(2/3) = rx4` and `(1+r6)^(2/3) - rx4 = rx4·[(1+1/r6)^(2/3) - 1]`. The Fortran form is a difference of two nearly-equal terms whose cancellation cost grows with the diameter ratio; at `dgacc/dgatk = 1e6` it returns `−1.587e-3` where the true value is `+6.67e-7` — **wrong sign, in float64**. The rewrite is stable in both precisions. **Proposed, pending owner sign-off** — see Consequences for the cost.
+
+- **Consequences:**
+  - The port is now *more accurate than the reference* at large Aitken/accum separations. Bit-parity with the Fortran is no longer the right mental model for `qs21`.
+  - **`qs21` no longer agrees with the Fortran at machine ε.** Measured against `tests/reference/coag_coefficients/reference.npz` (240 records) on `2739a99`:
+
+    ```
+    qs11  3.482e-16    qn11  2.261e-16    qs22  3.892e-16    qn22  2.893e-16
+    qs12  4.139e-16    qs21  1.185e-07    qn12  4.848e-16    qv12  4.170e-16
+    ```
+
+    `qs21`'s error is maximal at the sweep's upper edge (`dgnumB/dgnumA = 500`) and only **8.4× under** `test_coag.py`'s `RTOL = 1e-6`. Extrapolating the cancellation, a ratio of ~1000 exceeds the bar. **Widening the reference sweep will fail that test for a reason unrelated to porting error** — whoever does so must special-case `qs21` (or compare it against an exact-arithmetic reference rather than the Fortran).
+  - Nothing downstream is affected today: `qs21 → betaij2j` is discarded by `_mam_coag_1subarea` (`amicphys.py:1547`), which consumes only `betaij0`, `betaij3`, `betaii0`, `betajj0`.
+  - Together with the reciprocal-form harmonic means, this resolves plan 023 §2's deferred *"audit other coag coefficients for f32 magnitude bounds"* row — whose premise ("only qv12 is f32-broken") was incorrect. Correction appended as plan 023 §8, including why `test_getcoags_finite_in_float32`'s finite-only tier could not detect a coefficient that flushes to zero.
+
+- **Alternatives considered:**
+  - **Scope the `qs21` rewrite to the f32 path only**, leaving f64 bit-faithful to the Fortran. Keeps the reference test at machine ε across any sweep width. Rejected in the PR draft as carrying two code paths for one expression, but it is the conservative option if bit-parity is judged more valuable than being right in a regime the box model never reaches (`dgacc/dgatk ≤ 500` in every current fixture).
+  - **Revert both and accept float32 being unusable for coagulation.** Rejected: PR #60 / ADR-018 already committed to a supported f32 building block, and a silently-zero mass-transfer coefficient is worse than a documented deviation.
+  - **Raise `test_coag.py`'s `RTOL` for `qs21`.** Rejected as premature — the current margin passes; the constraint should be documented (here) rather than loosened before it bites.
