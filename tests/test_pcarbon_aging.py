@@ -443,3 +443,21 @@ def test_run_step_params_is_traced_not_static(per_process) -> None:
         "traced, not static")
     # And the values genuinely differ (the sweep measures something).
     assert not np.allclose(np.asarray(out3["q"]), np.asarray(out8["q"]))
+
+
+def test_negative_threshold_equals_zero_never_reverses() -> None:
+    """A negative threshold must behave exactly like 0 (instant full
+    aging via the saturated branch) — never a reversed/negative
+    transfer. The max(0, tmp2) guard (mirroring F90:5234) provides
+    this even unclamped; the explicit clamp keeps it refactor-proof."""
+    qnum, qaer, dgn_a = _synthetic_view()
+    n_neg, a_neg = _mam_pcarbon_aging_1subarea(qnum, qaer, dgn_a,
+                                               n_so4_monolayers=-2.0)
+    n_zero, a_zero = _mam_pcarbon_aging_1subarea(qnum, qaer, dgn_a,
+                                                 n_so4_monolayers=0.0)
+    np.testing.assert_array_equal(np.asarray(n_neg), np.asarray(n_zero))
+    np.testing.assert_array_equal(np.asarray(a_neg), np.asarray(a_zero))
+    # Instant full aging, and strictly no reversal: accum gains, pcm
+    # keeps only the 10-eps sliver.
+    assert float(a_neg[IBC, NACC]) > float(qaer[IBC, NACC])
+    assert 0.0 < float(n_neg[NPCA]) < 1e-8 * float(qnum[NPCA])

@@ -1828,8 +1828,17 @@ def _mam_pcarbon_aging_1subarea(qnum_cur, qaer_cur, dgn_a,
         n_so4_monolayers = _PCAGING["n_so4_monolayers"]
     # jnp.asarray, not float(): the threshold may be a TRACED leaf
     # (AmicphysParams) — the criterion is smooth in it, so it is a
-    # legitimate differentiation/calibration target.
-    dr_monolayers = jnp.asarray(n_so4_monolayers) * data.DR_SO4_MONOLAYER
+    # legitimate differentiation/calibration target. Clamped to >= 0:
+    # a negative value CANNOT reverse the transfer even unclamped (the
+    # max(0, tmp2) below, mirroring F90:5234, already collapses it to
+    # the tmp2 = 0 saturated branch = instant full aging, same as 0),
+    # but the clamp makes that intent local and refactor-proof. NOTE
+    # for calibration: at and below 0 the loss surface is flat (the
+    # saturated branch's gradient is exactly 0), so an optimizer that
+    # wanders negative gets stuck there silently — keep search bounds
+    # positive.
+    dr_monolayers = (jnp.maximum(jnp.asarray(n_so4_monolayers), 0.0)
+                     * data.DR_SO4_MONOLAYER)
     tmp1 = vol_shell * dgn_a[..., npca] * _FAC_VOLSFC_PCARBON
     tmp2 = jnp.maximum(6.0 * dr_monolayers * vol_core, 0.0)
 
