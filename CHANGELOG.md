@@ -1,6 +1,85 @@
 # Changelog
 
-## v0.3.2 — unreleased
+## v0.4.0 — 2026-08-25
+
+Completes the amicphys port: primary-carbon aging was the last sub-process out
+of scope. It is **on by default**, which changes results for every caller on
+defaults — see Changed.
+
+### Added
+
+- **Primary-carbon aging** (`mam_pcarbon_aging_1subarea`, Fortran
+  `modal_aero_amicphys.F90:5111-5285`). Pcarbon particles that acquire a
+  sulfate-equivalent hygroscopic shell thick enough to coat the mode transfer
+  to the accumulation mode. Gated by `mdo_pcarbonaging` (default `1` — the
+  Fortran has no toggle, so on is the faithful setting).
+
+- **`configure_pcarbon_aging(n_so4_monolayers=...)`** — the coating threshold,
+  in monolayers of so4. Default **3.0**, the value the amicphys path actually
+  receives (`box_model_utils/phys_control.F90:26` ->
+  `modal_aero_initialize_data.F90:417,585`). The frequently quoted `8.0`
+  (`modal_aero_gasaerexch.F90:37`) belongs to the legacy `modal_aero_coag`
+  aging path and is *not* what this code path uses.
+
+- **`AmicphysParams`** — a pytree of traced, differentiable numeric knobs
+  (`n_so4_monolayers`, `qgas_netprod_h2so4`, `qgas_netprod_soa`), passed via
+  `amicphys`/`run_step`/`run_timesteps`'s `params` argument:
+
+  ```python
+  from mam4_jax import run_step, AmicphysParams
+  run_step(state, AmicphysParams(n_so4_monolayers=3.0))
+  ```
+
+  Fields left `None` fall back to the `configure_*` process globals. Leaves are
+  ordinary traced operands, so `jax.grad` reaches them and a parameter sweep
+  reuses one compiled step instead of recompiling per value. Code-path
+  selectors (the condensation `backend`, the `mdo_*` toggles) deliberately stay
+  static — see ADR-020.
+
+### Changed — behavioural
+
+- **Pcarbon aging is on by default.** Against the Fortran box model this moves
+  pcarbon tracers substantially — up to 14x on pcarbon BC and number over 60
+  steps — because the previous behaviour was missing the process entirely.
+  Callers who need the old results pass `mdo_pcarbonaging=0`.
+
+- **Sulfur and SOA are now conserved across the pcarbon mode.** The pcarbon
+  `LMAP_AER` row maps only pom/bc/mom, so so4/soa condensed or coagulated onto
+  that mode had no `pcnst` slot and was silently dropped at the amicphys
+  repack — a per-step sink. Aging moves those species to accumulation before
+  the repack, which closes it.
+
+- **Arithmetic deviations from the Fortran, both deliberate (ADR-019).**
+  `1 - exp(-x)` is now `-expm1(-x)` at the coagulation transfer sites (~1e-10
+  relative in f64, ~10 % in f32). `qs21`'s prefactor `(1+r6)**(2/3) - rx4` is
+  now the algebraically exact `rx4 * expm1((2/3) * log1p(1/r6))`; the Fortran
+  form cancels catastrophically and returns the wrong *sign* at large diameter
+  ratios. `qs21` consequently differs from the Fortran reference by 1.19e-7
+  where every other coefficient agrees to ~4e-16.
+
+### Fixed
+
+- **Float32 intermodal coagulation mass transfer was identically zero.**
+  `getcoags` formed its harmonic means as `a*b/(a+b)`; the operands are
+  representable in float32 but their product underflows min-normal, so
+  `betaij3` — and with it *all* intermodal third-moment (mass) transfer —
+  flushed to `0` in a float32 core. Number transfer was unaffected, so nothing
+  looked broken. All seven harmonic means are now reciprocal-form. Four
+  second-moment coefficients (`betaij2i`, `betaij2j`, `betaii2`, `betajj2`)
+  were dead the same way and are also fixed; `v0.3.x`'s claim that only `qv12`
+  was affected was wrong (see `docs/plans/023-*.md` §8).
+
+  Float64 results are unchanged beyond the ADR-019 deviations above.
+
+### Notes
+
+- Requires no changes for hosts already on `0.3.x` beyond deciding whether they
+  want aging on (they almost certainly do — without it, primary carbon never
+  ages and BC lifetime runs roughly 3x observed).
+- New ADRs: **ADR-019** (Fortran arithmetic deviations), **ADR-020** (numeric
+  knobs as traced pytree leaves). Plan: `docs/plans/026-pcarbon-aging.md`.
+
+## v0.3.2 — 2026-08-20
 
 Same content as v0.3.0, which was never published. Two tags were burned getting
 here, both for process reasons rather than anything wrong with the package:
