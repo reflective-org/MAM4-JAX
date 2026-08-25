@@ -72,6 +72,7 @@ def __getattr__(name):
 # ---------------------------------------------------------------------------
 from .driver import run_step, run_timesteps, cloud_chem_simple_sub  # noqa: E402
 from .coupling.amicphys import (  # noqa: E402
+    AmicphysParams,
     configure_gas_netprod,
     configure_pcarbon_aging,
 )
@@ -93,6 +94,7 @@ __all__ = [
     # gas-phase source terms. configure_gas_netprod(h2so4=..., soa=...) sets the
     # "other-process" production rate [mol/mol/s] that the aerosol system sees;
     # this is the hook a host model drives its own gas chemistry through.
+    "AmicphysParams",
     "configure_gas_netprod",
     "configure_pcarbon_aging",
     # mode configuration

@@ -355,3 +355,91 @@ def test_60_step_trajectory_matches_canonical_fortran(per_process) -> None:
             np.asarray(traj[key]), target[key],
             rtol=5e-3, atol=1e-15,
             err_msg=f"aging-on 60-step trajectory drifted on {key!r}")
+
+
+# ---------------------------------------------------------------------------
+# AmicphysParams: the differentiable / sweep-safe parameter path
+# ---------------------------------------------------------------------------
+
+def test_params_override_matches_configured_global(per_process) -> None:
+    """AmicphysParams(n_so4_monolayers=x) must produce exactly the state
+    the process-global configure path produces at the same x."""
+    from mam4_jax.coupling.amicphys import AmicphysParams
+    state = _build_state(per_process["amicphys_before"], step=0)
+
+    via_params = amicphys(state,
+                          params=AmicphysParams(n_so4_monolayers=1.0))
+    saved = _PCAGING["n_so4_monolayers"]
+    try:
+        configure_pcarbon_aging(n_so4_monolayers=1.0)
+        via_global = amicphys(state)
+    finally:
+        configure_pcarbon_aging(n_so4_monolayers=saved)
+    for key in ("q", "qqcw", "qaerwat"):
+        np.testing.assert_array_equal(
+            np.asarray(via_params[key]), np.asarray(via_global[key]),
+            err_msg=f"params vs configured-global mismatch on {key!r}")
+
+
+def test_threshold_gradient_finite_and_signed() -> None:
+    """d(aged-into-accum BC)/d(n_so4_monolayers) through the aging
+    routine: finite and NEGATIVE (a thicker required coating ages less)
+    in the sub-saturation regime."""
+    import jax
+    qnum, qaer, dgn_a = _synthetic_view()
+
+    def aged_bc(n):
+        _, new_qaer = _mam_pcarbon_aging_1subarea(
+            qnum, qaer, dgn_a, n_so4_monolayers=n)
+        return new_qaer[IBC, NACC]
+
+    g = jax.grad(aged_bc)(3.0)
+    assert np.isfinite(float(g))
+    assert float(g) < 0.0
+    # And zero in the saturated regime (whole mode already ages): the
+    # criterion clamps, so the threshold stops mattering.
+    qaer_sat = qaer.at[ISO4, NPCA].set(1.0e-6)
+
+    def aged_bc_sat(n):
+        _, new_qaer = _mam_pcarbon_aging_1subarea(
+            qnum, qaer_sat, dgn_a, n_so4_monolayers=n)
+        return new_qaer[IBC, NACC]
+
+    assert float(jax.grad(aged_bc_sat)(3.0)) == 0.0
+
+
+def test_full_amicphys_gradient_wrt_params(per_process) -> None:
+    """Reverse-mode through the FULL amicphys call w.r.t. both live
+    AmicphysParams fields: finite, and correctly signed where the sign
+    is unambiguous (more H2SO4 production ⇒ more accum sulfate)."""
+    import jax
+    from mam4_jax.coupling.amicphys import AmicphysParams
+    state = _build_state(per_process["amicphys_before"], step=0)
+    acc_so4_slot = int(data.LMAP_AER[data.ACCUM_MODE_IDX][ISO4])
+
+    def accum_so4(n, prod):
+        out = amicphys(state, params=AmicphysParams(
+            n_so4_monolayers=n, qgas_netprod_h2so4=prod))
+        return jnp.sum(out["q"][..., acc_so4_slot])
+
+    gn, gp = jax.grad(accum_so4, argnums=(0, 1))(3.0, 1.0e-16)
+    assert np.isfinite(float(gn)), "d/d(n_so4_monolayers) non-finite"
+    assert np.isfinite(float(gp)), "d/d(qgas_netprod_h2so4) non-finite"
+    assert float(gp) > 0.0, "more H2SO4 production must add accum so4"
+
+
+def test_run_step_params_is_traced_not_static(per_process) -> None:
+    """Two different threshold VALUES must reuse one compiled run_step —
+    the whole point of params being a traced pytree (a calibration sweep
+    must not recompile per value)."""
+    from mam4_jax.coupling.amicphys import AmicphysParams
+    ic = _build_state(per_process["calcsize_before"], step=0)
+    run_step.clear_cache()
+    out3 = run_step(ic, AmicphysParams(n_so4_monolayers=jnp.asarray(3.0)))
+    size_after_first = run_step._cache_size()
+    out8 = run_step(ic, AmicphysParams(n_so4_monolayers=jnp.asarray(8.0)))
+    assert run_step._cache_size() == size_after_first, (
+        "a new threshold VALUE triggered a recompile — params must be "
+        "traced, not static")
+    # And the values genuinely differ (the sweep measures something).
+    assert not np.allclose(np.asarray(out3["q"]), np.asarray(out8["q"]))

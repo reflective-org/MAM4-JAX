@@ -52,7 +52,7 @@ Returned state has the same keys with any updates each enabled sub-process makes
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -143,6 +143,54 @@ def configure_gas_netprod(h2so4=None, soa=None) -> None:
         _GAS_NETPROD["h2so4"] = float(h2so4)
     if soa is not None:
         _GAS_NETPROD["soa"] = float(soa)
+
+
+
+class AmicphysParams(NamedTuple):
+    """Numeric amicphys parameters, as a JAX pytree of traced leaves.
+
+    This is the calibration-facing half of amicphys configuration: every
+    field is a NUMBER the physics is differentiable with respect to, and
+    passing it per call makes the value an ordinary traced operand — no
+    process-global state, no trace-time capture, no recompile per value
+    (a sweep over ``n_so4_monolayers`` reuses one compiled step). The
+    ``configure_*`` functions survive as process-global DEFAULTS for
+    hosts that do not pass params; any field left ``None`` resolves to
+    its configured default at trace time.
+
+    Code-path selectors stay OUT of this struct by design: the
+    condensation ``backend`` and the ``mdo_*`` toggles select traced
+    code structurally and remain static configuration/arguments (the
+    split mirrors jcm's flax.struct convention — pytree leaves for
+    numbers you might differentiate, static aux for branch selectors).
+    In particular ``mdo_pcarbonaging`` is NOT expressible through
+    ``n_so4_monolayers``: ``n_so4_monolayers=0`` means a zero-thickness
+    coating requirement, i.e. the WHOLE mode ages instantly (full-on,
+    not off), and no finite threshold suppresses the wholesale
+    shell-species transfer — only the toggle reproduces the
+    ``skip_pcarbon_aging`` reference build.
+
+    Fields
+    ------
+    n_so4_monolayers : scalar, optional
+        Pcarbon-aging coating threshold [monolayers of so4,
+        ``data.DR_SO4_MONOLAYER`` = 4.76e-10 m each]. Smaller ages
+        faster. Default (None) → ``configure_pcarbon_aging`` global
+        (3.0, the amicphys-path reference value).
+    qgas_netprod_h2so4 : scalar, optional
+        "Other-process" H2SO4 production rate [mol/mol/s] seen by the
+        gasaerexch solver. Default (None) → ``configure_gas_netprod``
+        global (the driver.F90:1248 stub, 1e-16; hosts with their own
+        sulfur chemistry configure/pass 0.0).
+    qgas_netprod_soa : scalar, optional
+        Stored for forward compatibility; NOT yet consumed by the
+        physics (the SOA exchange ODE has no source term — see
+        ``configure_gas_netprod``).
+    """
+
+    n_so4_monolayers: Any = None
+    qgas_netprod_h2so4: Any = None
+    qgas_netprod_soa: Any = None
 
 
 # ``n_so4_monolayers`` — the number of so4(+nh4) monolayers of hygroscopic
@@ -919,11 +967,11 @@ def _repack_amicphys_view_to_state(state: dict[str, Any],
     return {**state, "q": new_q, "qaerwat": new_qaerwat}
 
 
-def amicphys(state: dict[str, Any], params=None, config=None, *,
+def amicphys(state: dict[str, Any], params: AmicphysParams | None = None,
+             config=None, *,
              mdo_gasaerexch: int = 1, mdo_rename: int = 1,
              mdo_newnuc: int = 1, mdo_coag: int = 1,
-             mdo_pcarbonaging: int = 1,
-             n_so4_monolayers=None) -> dict[str, Any]:
+             mdo_pcarbonaging: int = 1) -> dict[str, Any]:
     """ADR-009 entry point — see module docstring.
 
     The ``mdo_*`` keywords mirror the Fortran namelist toggles and
@@ -939,28 +987,29 @@ def amicphys(state: dict[str, Any], params=None, config=None, *,
     ``skip_pcarbon_aging.patch`` build overlay instead, and tests
     validating against those must pass 0 explicitly.
 
-    ``n_so4_monolayers`` overrides the aging threshold FOR THIS CALL
-    (trace); ``None`` uses the :func:`configure_pcarbon_aging` global.
-    Hosts that construct several differently-configured instances in one
-    process must pass it per call — the global is read at trace time, so
-    relying on constructor-time configuration makes trace caching
-    order-dependent.
+    ``params`` (:class:`AmicphysParams`) carries the NUMERIC knobs as a
+    pytree of traced leaves — differentiable, sweepable without
+    recompilation, and immune to the configure-globals' trace-time cache
+    hazard. ``None`` (or ``None`` fields) resolve to the ``configure_*``
+    process-global defaults at trace time. Hosts that construct several
+    differently-configured instances in one process must use ``params``.
     """
-    del params, config
+    del config
+    if params is None:
+        params = AmicphysParams()
     return _mam_amicphys_1gridcell(
-        state,
+        state, params,
         mdo_gasaerexch=mdo_gasaerexch, mdo_rename=mdo_rename,
         mdo_newnuc=mdo_newnuc,         mdo_coag=mdo_coag,
         mdo_pcarbonaging=mdo_pcarbonaging,
-        n_so4_monolayers=n_so4_monolayers,
     )
 
 
-def _mam_amicphys_1gridcell(state: dict[str, Any], *,
+def _mam_amicphys_1gridcell(state: dict[str, Any],
+                            params: AmicphysParams, *,
                             mdo_gasaerexch: int, mdo_rename: int,
                             mdo_newnuc: int, mdo_coag: int,
-                            mdo_pcarbonaging: int,
-                            n_so4_monolayers=None) -> dict[str, Any]:
+                            mdo_pcarbonaging: int) -> dict[str, Any]:
     """Port of ``mam_amicphys_1gridcell``.
 
     The Fortran routine splits each grid cell into clear and cloudy
@@ -976,19 +1025,18 @@ def _mam_amicphys_1gridcell(state: dict[str, Any], *,
     # and our tests pass that explicitly. Cloudy support would land as a
     # later PR alongside `_mam_amicphys_1subarea_cloudy`.
     return _mam_amicphys_1subarea_clear(
-        state,
+        state, params,
         mdo_gasaerexch=mdo_gasaerexch, mdo_rename=mdo_rename,
         mdo_newnuc=mdo_newnuc,         mdo_coag=mdo_coag,
         mdo_pcarbonaging=mdo_pcarbonaging,
-        n_so4_monolayers=n_so4_monolayers,
     )
 
 
-def _mam_amicphys_1subarea_clear(state: dict[str, Any], *,
+def _mam_amicphys_1subarea_clear(state: dict[str, Any],
+                                 params: AmicphysParams, *,
                                  mdo_gasaerexch: int, mdo_rename: int,
                                  mdo_newnuc: int, mdo_coag: int,
-                                 mdo_pcarbonaging: int,
-                                 n_so4_monolayers=None) -> dict[str, Any]:
+                                 mdo_pcarbonaging: int) -> dict[str, Any]:
     """Port of ``mam_amicphys_1subarea_clear``.
 
     Unpacks the outer ``q[pcnst]`` state into amicphys's local view,
@@ -1027,6 +1075,7 @@ def _mam_amicphys_1subarea_clear(state: dict[str, Any], *,
             state["dgncur_a"], state["dgncur_awet"], state["wetdens"],
             state["t"], state["pmid"], state["deltat"],
             jnp.asarray(data.FAC_M2V_AER),
+            qgas_netprod_h2so4=params.qgas_netprod_h2so4,
         )
 
     # qaer_delsub_grow4rnam = change made by gasaerexch in this sub-area.
@@ -1062,7 +1111,7 @@ def _mam_amicphys_1subarea_clear(state: dict[str, Any], *,
         # closing what would otherwise be a per-step mass leak.
         qnum, qaer = _mam_pcarbon_aging_1subarea(
             qnum, qaer, state["dgncur_a"],
-            n_so4_monolayers=n_so4_monolayers)
+            n_so4_monolayers=params.n_so4_monolayers)
 
     return _repack_amicphys_view_to_state(state, qgas, qaer, qnum, qwtr)
 
@@ -1075,7 +1124,8 @@ def _mam_amicphys_1subarea_clear(state: dict[str, Any], *,
 
 def _mam_gasaerexch_1subarea(qgas, qaer, qnum, qwtr,
                              dgn_a, dgn_awet, wetdens,
-                             temp, pmid, deltat, fac_m2v_aer):
+                             temp, pmid, deltat, fac_m2v_aer,
+                             qgas_netprod_h2so4=None):
     """Port of ``mam_gasaerexch_1subarea`` (``modal_aero_amicphys.F90:3279-3584``).
 
     H₂SO₄ analytical-solver path only — SOA exchange (separate sub-call
@@ -1166,7 +1216,11 @@ def _mam_gasaerexch_1subarea(qgas, qaer, qnum, qwtr,
     # use the analytic closed form directly (~machine precision, one shot).
     qgas_h2so4_prv = qgas[..., igas_h2so4]                  # (...,)
     qaer_h2so4_prv = qaer[..., iaer_h2so4, :]               # (..., NTOT_AMODE)
-    qgas_netprod_h2so4 = _GAS_NETPROD["h2so4"]              # mol/mol/s (driver.F90:1248; see configure_gas_netprod)
+    if qgas_netprod_h2so4 is None:                          # mol/mol/s
+        # Trace-time default (driver.F90:1248 stub); the per-call value
+        # arrives as a traced leaf via AmicphysParams and is the
+        # differentiable / sweep-safe path.
+        qgas_netprod_h2so4 = _GAS_NETPROD["h2so4"]
 
     g_h2so4_init = jnp.maximum(qgas_h2so4_prv, 0.0)
     a_h2so4_init = jnp.maximum(qaer_h2so4_prv, 0.0)
@@ -1772,7 +1826,10 @@ def _mam_pcarbon_aging_1subarea(qnum_cur, qaer_cur, dgn_a,
 
     if n_so4_monolayers is None:
         n_so4_monolayers = _PCAGING["n_so4_monolayers"]
-    dr_monolayers = float(n_so4_monolayers) * data.DR_SO4_MONOLAYER
+    # jnp.asarray, not float(): the threshold may be a TRACED leaf
+    # (AmicphysParams) — the criterion is smooth in it, so it is a
+    # legitimate differentiation/calibration target.
+    dr_monolayers = jnp.asarray(n_so4_monolayers) * data.DR_SO4_MONOLAYER
     tmp1 = vol_shell * dgn_a[..., npca] * _FAC_VOLSFC_PCARBON
     tmp2 = jnp.maximum(6.0 * dr_monolayers * vol_core, 0.0)
 
