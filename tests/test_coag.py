@@ -130,11 +130,12 @@ def test_getcoags_finite_in_float32() -> None:
       any non-negligible mass transfer) track the f64 reference to float32
       epsilon; smaller ones flush toward zero (atol absorbs them).
     * **Second-moment** (``qs11``, ``qs22``, ``qs12``, ``qs21``) — magnitudes
-      1e-30 to 1e-27. These are physically below float32's useful precision
-      (one cubic-metre's worth of MMR-rate noise dwarfs them). They stay
-      *finite* in float32 — that is the property we lock in here — but they
-      are NOT numerically meaningful in float32 and the test does not
-      assert agreement.
+      1e-30 to 1e-27. Their harmonic means formed products (~1e-60) far
+      below float32 min-normal and flushed to zero; with the
+      reciprocal-form ``_harmonic_mean_safe`` every intermediate stays in
+      normal range, so they now track the f64 reference at float32
+      epsilon like the other tiers (asserted below; wrapper-level
+      coverage in ``test_wrapper_all_outputs_nonzero_in_float32``).
     """
     # The test toggles jax_enable_x64 in-process. It MUST be True at entry —
     # otherwise we'd be a silent no-op, the rest of the test suite would be
@@ -187,11 +188,17 @@ def test_getcoags_finite_in_float32() -> None:
             err_msg="float32 qv12 diverged from the f64 reference",
         )
 
-        # 4) Second-moment coefficients (qs11, qs22, qs12, qs21) intentionally
-        # not asserted for numerical agreement — magnitudes 1e-30 to 1e-27 are
-        # at or below float32's useful precision floor. The finite-check above
-        # is the only invariant we can lock in. This is a fundamental float32
-        # precision limit, not a bug introduced by this PR.
+        # 4) Second-moment coefficients: computed via the reciprocal-form
+        # harmonic mean, so they track the f64 reference at float32 epsilon
+        # (previously the product form flushed them to exact zero and only
+        # finiteness could be asserted). atol floor absorbs the reference's
+        # own near-zero tail.
+        for name in ("qs11", "qs22", "qs12", "qs21"):
+            np.testing.assert_allclose(
+                np.asarray(out_by_name[name]).astype(np.float64), d[name],
+                rtol=2e-6, atol=1e-33,
+                err_msg=f"float32 {name} diverged from the f64 reference",
+            )
     finally:
         # Restore unconditionally: pre-condition asserts x64 was True at entry.
         jax.config.update("jax_enable_x64", True)
@@ -228,16 +235,18 @@ def test_jax_enable_x64_zero_opts_out() -> None:
     assert "OK" in result.stdout
 
 
-def test_wrapper_betaij3_nonzero_in_float32() -> None:
-    """Regression: the intermodal 3rd-moment (mass-transfer) coefficient
-    must survive float32 at box-typical mode diameters.
+def test_wrapper_all_outputs_nonzero_in_float32() -> None:
+    """Regression: every getcoags_wrapper_f coefficient must survive
+    float32 at box-typical mode diameters.
 
-    Before the reciprocal-form harmonic mean, ``nc3 * fm3`` (~1e-39)
-    flushed below float32's min normal, so ``betaij3`` came out exactly 0
-    for EVERY pair — a float32 core silently did zero intermodal coag
-    mass transfer (number transfer was unaffected). Invisible while the
-    delivered pcarbon mass was dropped at the amicphys repack; fatal once
-    pcarbon aging turns that delivery into the coating criterion.
+    The product-form harmonic means underflowed float32 min-normal and
+    flushed to 0 — first caught on ``betaij3`` (which silently killed
+    ALL intermodal coag mass transfer in a float32 core; invisible
+    while the delivered pcarbon mass was dropped at the amicphys
+    repack, fatal once pcarbon aging turned that delivery into the
+    coating criterion), then found on the four second-moment
+    coefficients in review. All harmonic means now go through the
+    reciprocal-form ``_harmonic_mean_safe``; this locks in every output.
     """
     if not jax.config.read("jax_enable_x64"):
         pytest.skip("Test requires the default x64=on configuration to toggle.")
@@ -250,20 +259,25 @@ def test_wrapper_betaij3_nonzero_in_float32() -> None:
     def run(dtype):
         def c(v):
             return jnp.asarray(v, dtype)
-        out = getcoags_wrapper_f(
+        return getcoags_wrapper_f(
             c(273.0), c(1.0e5), c(args["dgatk"]), c(args["dgacc"]),
             c(args["sgatk"]), c(args["sgacc"]),
             c(args["xxlsgat"]), c(args["xxlsgac"]),
             c(args["pdensat"]), c(args["pdensac"]))
-        return float(out[3])   # betaij3
 
-    b64 = run(jnp.float64)
+    names = ("betaij0", "betaij2i", "betaij2j", "betaij3",
+             "betaii0", "betaii2", "betajj0", "betajj2")
+    out64 = run(jnp.float64)
     try:
         jax.config.update("jax_enable_x64", False)
-        b32 = run(jnp.float32)
+        out32 = run(jnp.float32)
     finally:
         jax.config.update("jax_enable_x64", True)
 
-    assert b64 > 0.0
-    assert b32 > 0.0, "float32 betaij3 flushed to zero (mass-coag dead)"
-    np.testing.assert_allclose(b32, b64, rtol=1e-3)
+    for name, b64, b32 in zip(names, out64, out32):
+        b64, b32 = float(b64), float(b32)
+        assert b64 > 0.0, f"{name} f64 unexpectedly zero"
+        assert b32 > 0.0, f"{name} flushed to zero in float32"
+        np.testing.assert_allclose(
+            b32, b64, rtol=1e-3,
+            err_msg=f"float32 {name} diverged from f64")

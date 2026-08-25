@@ -76,6 +76,25 @@ def _clip_index(idx):
     return jnp.clip(jnp.round(idx).astype(jnp.int32), 1, 10) - 1
 
 
+
+def _harmonic_mean_safe(a, b):
+    """``a*b/(a+b)`` in reciprocal form, double-where guarded.
+
+    The product form underflows float32: the second/third-moment
+    coagulation terms pair operands like ~1e-15 x ~1e-24 (or ~1e-30 each
+    for the intramodal second moment), whose products land below
+    float32's min normal (1.18e-38) and flush to 0 — silently zeroing
+    the coefficient. ``1/(1/a + 1/b)`` keeps every intermediate in
+    normal range for both precisions and is algebraically identical.
+    The double-where keeps the dead branch benign for reverse-mode
+    (a masked 1/0 still poisons cotangents).
+    """
+    ok = (a > 0.0) & (b > 0.0)
+    safe_a = jnp.where(ok, a, 1.0)
+    safe_b = jnp.where(ok, b, 1.0)
+    return jnp.where(ok, 1.0 / (1.0 / safe_a + 1.0 / safe_b), 0.0)
+
+
 def getcoags(lamda, kfmatac, kfmat, kfmac, knc,
              dgatk, dgacc, sgatk, sgacc, xxlsgat, xxlsgac):
     """Whitby-style closed-form coagulation coefficients.
@@ -209,7 +228,7 @@ def getcoags(lamda, kfmatac, kfmat, kfmac, knc,
         + rx4 * esat09 * esac16 + ri3 * esat16 * esac09
         + 2.0 * ri1 * esat04 + esac01
     )
-    coagatac0 = coagnc0 * coagfm0 / (coagnc0 + coagfm0)
+    coagatac0 = _harmonic_mean_safe(coagnc0, coagfm0)
     qn12 = coagatac0
 
     # --- intermodal: second moment (lines 2678–2718) ----------------------
@@ -232,12 +251,17 @@ def getcoags(lamda, kfmatac, kfmat, kfmac, knc,
         + 2.0 * ri1 * esat36 * esac01
         + r * esat16 * esac01
     )
-    i1 = (i1fm * i1nc) / (i1fm + i1nc)
+    i1 = _harmonic_mean_safe(i1fm, i1nc)
 
     coagatac2 = i1
     qs12 = coagatac2
 
-    coagacat2 = ((1.0 + r6) ** _TWO3RDS - rx4) * i1
+    # (1+r6)^(2/3) - rx4 with rx4 = (r6)^(2/3) exactly: a difference of
+    # two nearly-equal ~O(r4) terms whose cancellation costs ~eps/|diff|
+    # relative digits (up to ~70x error in float32 across the sweep).
+    # Rewritten exactly as rx4 * expm1((2/3) * log1p(1/r6)) — no
+    # subtraction, stable in both precisions.
+    coagacat2 = rx4 * jnp.expm1(_TWO3RDS * jnp.log1p(1.0 / r6)) * i1
     qs21 = coagacat2 * bm2ji_v
 
     # --- intermodal: third moment (lines 2724–2747) -----------------------
@@ -263,32 +287,25 @@ def getcoags(lamda, kfmatac, kfmat, kfmac, knc,
         + ri3 * esat100 * esac09
         + 2.0 * ri1 * esat64 * esac01
     )
-    # Harmonic mean in RECIPROCAL form: nc3*fm3 spans ~1e-15 x ~1e-24 =
-    # 1e-39, below float32's min normal (1.18e-38), so the product form
-    # flushes to 0 and betaij3 — ALL intermodal 3rd-moment (mass) coag
-    # transfer — silently vanishes in a float32 core (aging then loses
-    # its coagulated-shell pathway). 1/nc3 + 1/fm3 stays in normal range
-    # for both precisions; double-where keeps the dead branch benign for
-    # reverse-mode (a masked 1/0 still poisons cotangents). The final
-    # dgat3 * hm (~1e-37 at dgn~4e-8 m) can still flush for the very
-    # smallest Aitken diameters (dgn ≲ 2e-8 m), where betaij3 < ~4e-17
-    # — a physically-nil transfer; the wrapper's divide by
-    # dumatk3 ∝ dgat3 restores normal range immediately above that.
-    hm_ok = (nc3 > 0.0) & (fm3 > 0.0)
-    safe_nc3 = jnp.where(hm_ok, nc3, 1.0)
-    safe_fm3 = jnp.where(hm_ok, fm3, 1.0)
-    qv12 = dgat3 * jnp.where(
-        hm_ok, 1.0 / (1.0 / safe_nc3 + 1.0 / safe_fm3), 0.0)
+    # Reciprocal-form harmonic mean (see _harmonic_mean_safe): the
+    # product form flushed to 0 in float32, silently killing betaij3 —
+    # ALL intermodal 3rd-moment (mass) coag transfer (aging then loses
+    # its coagulated-shell pathway). The final dgat3 * hm (~1e-37 at
+    # dgn~4e-8 m) can still flush for the very smallest Aitken diameters
+    # (dgn ≲ 2e-8 m), where betaij3 < ~4e-17 — a physically-nil
+    # transfer; the wrapper's divide by dumatk3 ∝ dgat3 restores normal
+    # range immediately above that.
+    qv12 = dgat3 * _harmonic_mean_safe(nc3, fm3)
 
     # --- intramodal: zeroeth moment (lines 2757–2787) ---------------------
     coagnc_at = knc * (1.0 + esat08 + _A * kngat * (esat20 + esat04))
     coagfm_at = kfmat * sqdgat * bm0_n2n * (esat01 + esat25 + 2.0 * esat05)
-    coagatat0 = coagfm_at * coagnc_at / (coagfm_at + coagnc_at)
+    coagatat0 = _harmonic_mean_safe(coagfm_at, coagnc_at)
     qn11 = coagatat0
 
     coagnc_ac = knc * (1.0 + esac08 + _A * kngac * (esac20 + esac04))
     coagfm_ac = kfmac * sqdgac * bm0_n2a * (esac01 + esac25 + 2.0 * esac05)
-    coagacac0 = coagfm_ac * coagnc_ac / (coagfm_ac + coagnc_ac)
+    coagacac0 = _harmonic_mean_safe(coagfm_ac, coagnc_ac)
     qn22 = coagacac0
 
     # --- intramodal: second moment (lines 2801–2853) ----------------------
@@ -310,7 +327,7 @@ def getcoags(lamda, kfmatac, kfmat, kfmac, knc,
         + 2.0 * esat36 * esat01
         + esat16 * esat01
     )
-    i1_at = (i1nc_at * i1fm_at) / (i1nc_at + i1fm_at)
+    i1_at = _harmonic_mean_safe(i1nc_at, i1fm_at)
     coagatat2 = _CONSTII * i1_at
     qs11 = coagatat2 * bm2iitt_n2n
 
@@ -332,7 +349,7 @@ def getcoags(lamda, kfmatac, kfmat, kfmac, knc,
         + 2.0 * esac36 * esac01
         + esac16 * esac01
     )
-    i1_ac = (i1nc_ac * i1fm_ac) / (i1nc_ac + i1fm_ac)
+    i1_ac = _harmonic_mean_safe(i1nc_ac, i1fm_ac)
     coagacac2 = _CONSTII * i1_ac
     qs22 = coagacac2 * bm2iitt_n2a
 

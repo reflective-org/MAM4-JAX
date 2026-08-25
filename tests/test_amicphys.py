@@ -376,7 +376,7 @@ def test_condensation_substep_matches_fortran(gasaerexch_captured) -> None:
         new_state = amicphys(state,
                              mdo_gasaerexch=1, mdo_rename=0,
                              mdo_newnuc=0, mdo_coag=0,
-                         mdo_pcarbonaging=0)
+                             mdo_pcarbonaging=0)
         for key in ("q", "qqcw"):
             arr = np.asarray(new_state[key])
             assert np.all(np.isfinite(arr)), f"substep produced non-finite {key!r}"
@@ -407,7 +407,7 @@ def test_condensation_astem_matches_fortran(gasaerexch_captured) -> None:
         new_state = amicphys(state,
                              mdo_gasaerexch=1, mdo_rename=0,
                              mdo_newnuc=0, mdo_coag=0,
-                         mdo_pcarbonaging=0)
+                             mdo_pcarbonaging=0)
         for key in ("q", "qqcw"):
             arr = np.asarray(new_state[key])
             assert np.all(np.isfinite(arr)), f"astem produced non-finite {key!r}"
@@ -442,12 +442,12 @@ def test_substep_and_astem_agree_per_call(gasaerexch_captured) -> None:
         substep_out = amicphys(state,
                                mdo_gasaerexch=1, mdo_rename=0,
                                mdo_newnuc=0, mdo_coag=0,
-                         mdo_pcarbonaging=0)
+                               mdo_pcarbonaging=0)
         _amic.configure_condensation(backend="astem")
         astem_out = amicphys(state,
                              mdo_gasaerexch=1, mdo_rename=0,
                              mdo_newnuc=0, mdo_coag=0,
-                         mdo_pcarbonaging=0)
+                             mdo_pcarbonaging=0)
         for key in ("q", "qqcw"):
             np.testing.assert_allclose(
                 np.asarray(substep_out[key]), np.asarray(astem_out[key]),
@@ -482,7 +482,7 @@ def test_astem_backend_not_grad_compatible(gasaerexch_captured) -> None:
             new_state = amicphys(s,
                                  mdo_gasaerexch=1, mdo_rename=0,
                                  mdo_newnuc=0, mdo_coag=0,
-                         mdo_pcarbonaging=0)
+                                 mdo_pcarbonaging=0)
             return jnp.sum(new_state["q"])
 
         # `jax.grad` through `lax.while_loop` raises at trace time. We

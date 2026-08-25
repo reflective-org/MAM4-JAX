@@ -185,6 +185,17 @@ def test_aging_batched_matches_single_cell() -> None:
                                           np.asarray(s_aer))
 
 
+def test_default_threshold_is_the_amicphys_reference_value() -> None:
+    """3.0 — what the amicphys path actually receives via phys_control
+    (modal_aero_initialize_data.F90:417,585 → modal_aero_amicphys_init;
+    box_model_utils/phys_control.F90:26). NOT 8.0: that constant
+    (modal_aero_gasaerexch.F90:37) feeds the legacy modal_aero_coag
+    aging path (modal_aero_coag.F90:87), a different code path. A
+    changed default silently un-reproduces every canonical fixture (the
+    60-step trajectory moves ~434% on pcarbon tracers at 8.0)."""
+    assert _PCAGING["n_so4_monolayers"] == 3.0
+
+
 def test_configure_pcarbon_aging_threshold() -> None:
     """A larger monolayer requirement must age a smaller fraction; the
     per-call override and the process-global configure hook must agree
@@ -289,12 +300,10 @@ def test_run_step_matches_canonical_fortran_with_aging(per_process) -> None:
     Bars are test_driver.py's ADR-015 coarse-dt values (dt=30s): the
     diffrax soaexch offset dominates, not the aging port."""
     ic = _build_state(per_process["calcsize_before"], step=0)
-    # The box-model reference build sets n_so4_monolayers_pcage = 3.0
-    # (box_model_utils/phys_control.F90:26); the package default is the
-    # E3SM production value 8.0, which under-ages vs this capture by
-    # exactly that 8/3 ratio. Passed per call — it is a static jit arg,
-    # so no process-global reconfiguration (and no cache hazard).
-    new_state = run_step(ic, n_so4_monolayers=3.0)
+    # Plain defaults: the package default (3.0) IS the amicphys-path
+    # reference value the capture was made with (phys_control →
+    # modal_aero_amicphys_init) — defaults reproduce the reference.
+    new_state = run_step(ic)
     target = per_process["amicphys_after_writeback"]
     for key in ("q", "qqcw"):
         np.testing.assert_allclose(
@@ -315,8 +324,7 @@ def test_60_step_trajectory_matches_canonical_fortran(per_process) -> None:
     the two Fortran builds on Aitken/pcarbon tracers, so passing BOTH at
     5% is a real constraint on the aging port, not a tautology."""
     ic = _build_state(per_process["calcsize_before"], step=0)
-    # Box-harness threshold, per call (static jit arg — no global state).
-    traj = run_timesteps(ic, n_steps=60, n_so4_monolayers=3.0)
+    traj = run_timesteps(ic, n_steps=60)   # defaults reproduce the reference
     target = per_process["amicphys_after_writeback"]
     # The two GAS slots (SOAG pcnst 9, H2SO4 pcnst 6) carry the known
     # diffrax soaexch structural offset (ADR-015 coarse-dt regime;

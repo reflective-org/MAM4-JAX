@@ -146,25 +146,42 @@ def configure_gas_netprod(h2so4=None, soa=None) -> None:
 
 
 # ``n_so4_monolayers`` — the number of so4(+nh4) monolayers of hygroscopic
-# shell required to "age" the entire pcarbon mode in one call. E3SM production
-# hard-codes 8.0 (modal_aero_gasaerexch.F90:37, a Fortran ``parameter``); the
-# box-model harness this port was validated against uses 3.0
-# (box_model_utils/phys_control.F90:26); ECHAM-HAM's counterpart criterion
-# (m7_coat's ``so4_coating_threshold``) uses 1.0. We default to the E3SM
-# production value and expose the knob because the choice spans an order of
-# magnitude across reference models and directly sets the BC/POM lifetime.
-_PCAGING: dict = {"n_so4_monolayers": 8.0}
+# shell required to "age" the entire pcarbon mode in one call. The AMICPHYS
+# path this module ports reads it through phys_control
+# (modal_aero_initialize_data.F90:417,585 → modal_aero_amicphys_init), and the
+# vendored ACME/CAM5-derived phys_control sets **3.0**
+# (box_model_utils/phys_control.F90:26) — so 3.0 is the reference value and
+# the default (defaults reproduce the reference; deviations are opt-in). The
+# oft-quoted 8.0 (modal_aero_gasaerexch.F90:37, a Fortran ``parameter``)
+# belongs to the LEGACY modal_aero_coag aging path (modal_aero_coag.F90:87
+# USEs it), not to amicphys. ECHAM-HAM's counterpart criterion (m7_coat's
+# ``so4_coating_threshold``) uses 1.0. The knob exists because the spread
+# across models is an order of magnitude and directly sets BC/POM lifetime.
+_PCAGING: dict = {"n_so4_monolayers": 3.0}
 
 
 def configure_pcarbon_aging(n_so4_monolayers=None) -> None:
-    """Set the pcarbon-aging monolayer threshold (process-global).
+    """Set the pcarbon-aging monolayer threshold (process-global DEFAULT).
 
-    Mirrors :func:`configure_condensation`'s config pattern (read at JIT
-    trace time; set once at startup, before the first jitted call).
     ``n_so4_monolayers`` is the hygroscopic-shell thickness — in units of
     one so4 monolayer, ``data.DR_SO4_MONOLAYER`` = 4.76e-10 m — at which
     the whole primary-carbon mode transfers to accumulation in a single
-    call (smaller = faster aging). ``None`` leaves it unchanged.
+    call (smaller = faster aging). ``None`` leaves it unchanged. The
+    per-call ``n_so4_monolayers`` argument of :func:`amicphys` /
+    ``run_step`` / ``run_timesteps`` overrides this global; hosts running
+    several differently-configured instances in one process must use the
+    per-call form.
+
+    **JIT cache contract** (mirrors ``configure_condensation``): the
+    global is read at TRACE time. ``run_step``/``run_timesteps`` declare
+    the per-call argument static, so a call with ``n_so4_monolayers=None``
+    bakes the *current* global into a trace cached under the key
+    ``None`` — calling ``configure_pcarbon_aging(...)`` afterwards does
+    NOT invalidate that cache, and the next default call silently keeps
+    the old threshold (an ~x200 trajectory-error spread across the 1.0-8.0
+    range, so a stale read is expensive). Set it once at startup, before
+    any traced path runs, or pass the value per call (each distinct value
+    gets its own cache entry). Not thread-safe: a plain module dict.
 
     Aging on/off is NOT configured here: it is the ``mdo_pcarbonaging``
     argument of :func:`amicphys` (and ``run_step``), symmetric with the
@@ -985,10 +1002,12 @@ def _mam_amicphys_1subarea_clear(state: dict[str, Any], *,
     When all toggles are 0, returns ``state`` unchanged without
     unpacking/repacking — preserves the bit-exact passthrough invariant
     (round-tripping ``qaerwat * FCVT_WTR / FCVT_WTR`` introduces a 1-ULP
-    error otherwise). Note pcarbon aging alone (``mdo_pcarbonaging=1``,
-    others 0) is NOT a passthrough: with all growth processes off the
-    shell is whatever the host handed in on the pcarbon mode, and aging
-    faithfully transfers it.
+    error otherwise). Pcarbon aging alone (``mdo_pcarbonaging=1``, others
+    0) is ALSO a no-op in this build — the pcarbon ``LMAP_AER`` row has
+    no soa/so4/ncl/dst slots, so the unpack zeroes the shell species
+    unconditionally, giving ``vol_shell = 0`` → ``xferfrac = 0`` and
+    nothing for the wholesale branch to move — but it still pays the
+    unpack/repack round trip (the ``qaerwat`` 1-ULP caveat above).
     """
     if not (mdo_gasaerexch or mdo_rename or mdo_newnuc or mdo_coag
             or mdo_pcarbonaging):
@@ -1645,10 +1664,15 @@ def _coag_number_loss_two_branch(tmpa, tmpb, tmpn):
         1.0 + (tmpa + tmpb * tmpn) * (1.0 + 0.5 * tmpa)
     )
     # Branch B — exact form with safe denominator on the dead branch.
+    # 1 - exp(-x) is written as -expm1(-x): the branch threshold 1e-5 is
+    # tuned for f64, and just above it the subtraction form carries
+    # ~eps32/tmpa ≈ 1% relative error in float32; expm1 makes the
+    # threshold precision-independent for free.
     safe_tmpa = jnp.where(small, 1.0, tmpa)
     c = jnp.where(small, 1.0, jnp.exp(-tmpa))
+    one_minus_c = jnp.where(small, 0.0, -jnp.expm1(-safe_tmpa))
     qnum_b_branch = (tmpn * c) / (
-        1.0 + (tmpb * tmpn / safe_tmpa) * (1.0 - c)
+        1.0 + (tmpb * tmpn / safe_tmpa) * one_minus_c
     )
     return jnp.where(small, qnum_a_branch, qnum_b_branch)
 
@@ -1694,6 +1718,9 @@ def _mam_pcarbon_aging_1subarea(qnum_cur, qaer_cur, dgn_a,
     the accumulation mode has pcnst slots for them, the pcarbon mode does
     not, so this is also what keeps condensed-on-pcarbon mass from being
     dropped at the LMAP_AER repack.
+
+    The monolayer threshold defaults to the reference value 3.0 (see
+    ``_PCAGING``); pass ``n_so4_monolayers`` to override per call.
 
     Faithfulness notes (deviations that cannot change the state):
 
