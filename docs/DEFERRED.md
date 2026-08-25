@@ -96,6 +96,12 @@ The point of this file is to keep the *decided to skip for now* knowledge out of
 - **Why:** The SOA exchange ODE (`_soaexch_rhs` and the substep/ASTEM backends) is deliberately mass-conserving — `dg/dt = -sum(flux)`, no source term — matching the Fortran, where the `driver.F90:1248` gas-chem stub applies to H₂SO₄ only. Wiring an SOA production term into all three condensation backends (diffrax RHS, closed-form substep, ASTEM step1/step2) is a substantive numerical change that needs its own plan and validation, not a config-knob PR. Keeping the parameter now avoids a signature break later.
 - **Resurface when:** a host needs a VOC-oxidation SOA source inside gasaerexch (e.g., coupled gas-chem without its own SOAG prognosis), or the M14 cloud-chem work touches the gas source pathway anyway.
 
+## Pcarbon-aging cond/coag budget attribution (`qaer_del_cond` / `qaer_del_coag`)
+
+- **Status:** deferred. Introduced with PR [#75](https://github.com/reflective-org/MAM4-JAX/pull/75) (plan 026).
+- **Why:** `mam_pcarbon_aging_1subarea` splits every transfer between the `qaer_del_cond` and `qaer_del_coag` budget arrays using the shell-provenance ratio `tmp3/tmp4` (`modal_aero_amicphys.F90:5169-5210`), with the coagulation share accumulated by `mam_coag_1subarea` into `qaer_del_coag_in` (`:4983-4999`). Those arrays are **write-only per-process diagnostics** that this port does not carry, and `vol_shell` is built purely from the current mode composition (`:5168`, `:5198`) — so omitting the attribution machinery leaves `qnum`/`qaer` evolution bit-identical. The routine's `do_cond` argument gates only that split (`:5204-5209`) and is likewise unnecessary. Porting it would mean threading two extra `(naer, nmode)` arrays and one `(naer, nagepair)` array through `coag` and `amicphys` for output nobody reads.
+- **Resurface when:** a host needs per-process aerosol mass budgets (condensation-driven vs coagulation-driven aging), e.g. for an AeroCom-style diagnostic comparison or a tendency-attribution figure. At that point it should land together with the other `q*_del_*` diagnostic arrays the port drops, not piecemeal.
+
 ---
 
 *When adding a new deferred item: state what, why, and the condition that would bring it back.*

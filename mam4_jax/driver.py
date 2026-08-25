@@ -79,8 +79,9 @@ def cloud_chem_simple_sub(state: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
-@jax.jit
-def run_step(state: dict[str, Any]) -> dict[str, Any]:
+@functools.partial(jax.jit, static_argnames=("mdo_pcarbonaging",))
+def run_step(state: dict[str, Any], params=None, *,
+             mdo_pcarbonaging: int = 1) -> dict[str, Any]:
     """One operator-splitting timestep.
 
     Sequence mirrors ``driver.F90:1080-1367`` (``main_time_loop``):
@@ -90,8 +91,21 @@ def run_step(state: dict[str, Any]) -> dict[str, Any]:
     3. *gas-chem* — currently absorbed inside ``gasaerexch``'s analytical
        solver (see module docstring); no separate step here.
     4. ``cloud_chem_simple_sub`` — no-op on the box-model fixture.
-    5. ``amicphys`` (``mdo_gasaerexch=mdo_rename=mdo_newnuc=mdo_coag=1``)
-       — the full microphysics including the vmr↔mmr writeback.
+    5. ``amicphys`` (all ``mdo_*`` default to 1) — the full microphysics
+       including pcarbon aging and the vmr↔mmr writeback.
+
+    ``params`` (:class:`~mam4_jax.coupling.amicphys.AmicphysParams`)
+    carries the numeric knobs as a TRACED pytree — differentiable and
+    sweepable without recompilation; ``None`` resolves each field to the
+    ``configure_*`` globals at trace time.
+
+    ``mdo_pcarbonaging=1`` is the faithful default (the unpatched box
+    model always ages). Pass 0 only to reproduce the
+    ``*_no_pcarbon_aging`` reference builds (``skip_pcarbon_aging.patch``
+    applied), e.g. in the fixture-parity tests. The toggle is NOT
+    redundant with ``n_so4_monolayers``: 0 monolayers means the whole
+    mode ages instantly (full-on), and no finite threshold suppresses
+    the wholesale shell-species transfer.
 
     Returns the updated state dict (same keys as the input, with
     ``q``/``qqcw``/``dgncur_a``/``dgncur_awet``/``qaerwat``/``wetdens``
@@ -100,7 +114,7 @@ def run_step(state: dict[str, Any]) -> dict[str, Any]:
     state = calcsize(state)
     state = wateruptake(state)
     state = cloud_chem_simple_sub(state)   # currently a no-op
-    state = amicphys(state)                # all four mdo_* default to 1
+    state = amicphys(state, params, mdo_pcarbonaging=mdo_pcarbonaging)
     return state
 
 
@@ -111,8 +125,10 @@ _TRAJ_KEYS = ("q", "qqcw", "dgncur_a", "dgncur_awet",
               "qaerwat", "wetdens")
 
 
-@functools.partial(jax.jit, static_argnums=(1,))
-def run_timesteps(state: dict[str, Any], n_steps: int) -> dict[str, Any]:
+@functools.partial(jax.jit,
+                   static_argnames=("n_steps", "mdo_pcarbonaging"))
+def run_timesteps(state: dict[str, Any], n_steps: int, params=None, *,
+                  mdo_pcarbonaging: int = 1) -> dict[str, Any]:
     """Run ``n_steps`` operator-splitting timesteps and return a
     stacked trajectory.
 
@@ -184,7 +200,8 @@ def run_timesteps(state: dict[str, Any], n_steps: int) -> dict[str, Any]:
     def _scan_body(carry_state: dict[str, Any], _) -> tuple[
         dict[str, Any], dict[str, Any]
     ]:
-        new_state = run_step(carry_state)
+        new_state = run_step(carry_state, params,
+                             mdo_pcarbonaging=mdo_pcarbonaging)
         output = {k: new_state[k] for k in _TRAJ_KEYS}
         return new_state, output
 

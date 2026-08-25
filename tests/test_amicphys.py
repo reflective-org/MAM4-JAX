@@ -71,7 +71,8 @@ def test_amicphys_all_off_is_passthrough(captured) -> None:
     state = _build_state(before)
     new_state = amicphys(state,
                          mdo_gasaerexch=0, mdo_rename=0,
-                         mdo_newnuc=0, mdo_coag=0)
+                         mdo_newnuc=0, mdo_coag=0,
+                         mdo_pcarbonaging=0)
     for key in ("q", "qqcw", "dgncur_a", "dgncur_awet", "qaerwat", "wetdens"):
         np.testing.assert_array_equal(
             np.asarray(new_state[key]), after[key],
@@ -113,7 +114,8 @@ def test_orchestration_rename_only_matches_fortran(rename_only_captured) -> None
     state = _build_state(before)
     new_state = amicphys(state,
                          mdo_gasaerexch=0, mdo_rename=1,
-                         mdo_newnuc=0, mdo_coag=0)
+                         mdo_newnuc=0, mdo_coag=0,
+                         mdo_pcarbonaging=0)
     for key in ("q", "qqcw", "dgncur_a", "dgncur_awet", "qaerwat", "wetdens"):
         np.testing.assert_allclose(
             np.asarray(new_state[key]), after[key],
@@ -185,7 +187,8 @@ def test_orchestration_gasaerexch_and_newnuc_matches_fortran(
     state = _build_state(before)
     new_state = amicphys(state,
                          mdo_gasaerexch=1, mdo_rename=0,
-                         mdo_newnuc=1, mdo_coag=0)
+                         mdo_newnuc=1, mdo_coag=0,
+                         mdo_pcarbonaging=0)
     for key in ("q", "qqcw"):
         np.testing.assert_allclose(
             np.asarray(new_state[key]), aw[key],
@@ -244,7 +247,8 @@ def test_orchestration_coag_only_matches_fortran(coag_captured) -> None:
     state = _build_state(before)
     new_state = amicphys(state,
                          mdo_gasaerexch=0, mdo_rename=0,
-                         mdo_newnuc=0, mdo_coag=1)
+                         mdo_newnuc=0, mdo_coag=1,
+                         mdo_pcarbonaging=0)
 
     pcnst = before["q"].shape[-1]
     aerosol_slots = [i for i in range(pcnst) if i not in gas_slots]
@@ -281,7 +285,8 @@ def test_orchestration_gasaerexch_matches_fortran(gasaerexch_captured) -> None:
     state = _build_state(before)
     new_state = amicphys(state,
                          mdo_gasaerexch=1, mdo_rename=0,
-                         mdo_newnuc=0, mdo_coag=0)
+                         mdo_newnuc=0, mdo_coag=0,
+                         mdo_pcarbonaging=0)
 
     for key in ("q", "qqcw"):
         np.testing.assert_allclose(
@@ -370,7 +375,8 @@ def test_condensation_substep_matches_fortran(gasaerexch_captured) -> None:
         _amic.configure_condensation(backend="substep", n_substeps=4)
         new_state = amicphys(state,
                              mdo_gasaerexch=1, mdo_rename=0,
-                             mdo_newnuc=0, mdo_coag=0)
+                             mdo_newnuc=0, mdo_coag=0,
+                             mdo_pcarbonaging=0)
         for key in ("q", "qqcw"):
             arr = np.asarray(new_state[key])
             assert np.all(np.isfinite(arr)), f"substep produced non-finite {key!r}"
@@ -400,7 +406,8 @@ def test_condensation_astem_matches_fortran(gasaerexch_captured) -> None:
         _amic.configure_condensation(backend="astem")
         new_state = amicphys(state,
                              mdo_gasaerexch=1, mdo_rename=0,
-                             mdo_newnuc=0, mdo_coag=0)
+                             mdo_newnuc=0, mdo_coag=0,
+                             mdo_pcarbonaging=0)
         for key in ("q", "qqcw"):
             arr = np.asarray(new_state[key])
             assert np.all(np.isfinite(arr)), f"astem produced non-finite {key!r}"
@@ -434,11 +441,13 @@ def test_substep_and_astem_agree_per_call(gasaerexch_captured) -> None:
         _amic.configure_condensation(backend="substep", n_substeps=4)
         substep_out = amicphys(state,
                                mdo_gasaerexch=1, mdo_rename=0,
-                               mdo_newnuc=0, mdo_coag=0)
+                               mdo_newnuc=0, mdo_coag=0,
+                               mdo_pcarbonaging=0)
         _amic.configure_condensation(backend="astem")
         astem_out = amicphys(state,
                              mdo_gasaerexch=1, mdo_rename=0,
-                             mdo_newnuc=0, mdo_coag=0)
+                             mdo_newnuc=0, mdo_coag=0,
+                             mdo_pcarbonaging=0)
         for key in ("q", "qqcw"):
             np.testing.assert_allclose(
                 np.asarray(substep_out[key]), np.asarray(astem_out[key]),
@@ -472,7 +481,8 @@ def test_astem_backend_not_grad_compatible(gasaerexch_captured) -> None:
             s = {**state, "q": q}
             new_state = amicphys(s,
                                  mdo_gasaerexch=1, mdo_rename=0,
-                                 mdo_newnuc=0, mdo_coag=0)
+                                 mdo_newnuc=0, mdo_coag=0,
+                                 mdo_pcarbonaging=0)
             return jnp.sum(new_state["q"])
 
         # `jax.grad` through `lax.while_loop` raises at trace time. We

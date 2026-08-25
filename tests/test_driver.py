@@ -78,7 +78,9 @@ def test_run_step_one_step_matches_fortran(per_process) -> None:
     over a single timestep.
     """
     ic = _build_state(per_process["calcsize_before"], step=0)
-    new_state = run_step(ic)
+    # The reference bundle was captured with skip_pcarbon_aging.patch
+    # applied, so the faithful-default aging must be off to compare.
+    new_state = run_step(ic, mdo_pcarbonaging=0)
 
     target = per_process["amicphys_after_writeback"]
     for key in ("q", "qqcw"):
@@ -152,7 +154,8 @@ def test_run_timesteps_60_step_trajectory_matches_fortran(per_process) -> None:
     M6 PR-J3 closes that gap. The 3 % bar matches `tests/test_sweep.py`.
     """
     ic = _build_state(per_process["calcsize_before"], step=0)
-    traj = run_timesteps(ic, n_steps=60)
+    # Aging off: the reference trajectory is the skip_pcarbon_aging build.
+    traj = run_timesteps(ic, n_steps=60, mdo_pcarbonaging=0)
 
     target = per_process["amicphys_after_writeback"]
     for key in ("q", "qqcw"):
