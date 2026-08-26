@@ -465,3 +465,129 @@ def modal_aero_gasaerexch_cam(q, t, pmid, deltat, dgncur_a, dgncur_awet,
     # Rename A1 (aitken -> accum), then apply everything (:806-838).
     dqdt = _rename_no_acc_crs_cam(q, dqdt, deltat, tb)
     return q + dqdt * deltat
+
+
+# ---------------------------------------------------------------------------
+# newnuc — modal_aero_newnuc_sub (modal_aero_newnuc.F90:59-520)
+# ---------------------------------------------------------------------------
+
+#: skip nucleation entirely below this H2SO4 vmr (newnuc.F90:30).
+_QH2SO4_CUTOFF = 4.0e-16
+
+
+def modal_aero_newnuc_cam(q, t, pmid, deltat, qv, zm, pblh,
+                          del_h2so4_gasprod, del_h2so4_aeruptk,
+                          *, topology=None):
+    """One newnuc call on the gas window — CAM's wrapper, SO4-only.
+
+    Port of ``modal_aero_newnuc_sub`` around the already-ported
+    ``mer07_veh02_nuc_mosaic_1box`` dispatcher (the leaf
+    parameterizations are 0-diff between CAM and E3SM; the WRAPPER is
+    CAM-specific). What the wrapper owns:
+
+    * the reconstruction of the step-average H2SO4 from
+      ``del_h2so4_gasprod`` (gas-phase production over the step) and
+      ``del_h2so4_aeruptk`` (loss to condensation over the step, <= 0):
+      ``tmp_q2 = q3 + max(0, -aeruptk)`` is the pre-uptake gas,
+      ``tmpb = log(q2/q3)`` (clamped to 20, with q3 clamped up to
+      ``q2*exp(-20)``) gives the uptake rate, and the average follows the
+      production-during-decay closed form (:262-292);
+    * relative humidity through CAM's TABLE ``qsat``
+      (:mod:`mam4_jax.physics.cam_saturation`) — mixed-phase, NOT the
+      direct over-water formula;
+    * the two H2SO4 cutoffs (4e-16 on current AND average), the
+      100 #/kmol-air/s rate floor, and the grown-particle size
+      constraints against the aitken lo/hi single-particle masses;
+    * tendencies onto (H2SO4, so4_aitken, num_aitken). ``cld = 0`` in
+      the box scope, so the ``(1-cldx)`` weights are 1 and the
+      ``cld >= 0.99`` skip never fires; NH3 is absent.
+
+    Every Fortran ``cycle`` becomes a mask; dispatcher inputs are
+    clamped to benign values on masked cells (double-where) so no dead
+    branch poisons reverse-mode.
+
+    Returns the updated ``q``.
+    """
+    from mam4_jax.physics.cam_saturation import qsat_cam
+    from mam4_jax.physics.newnuc import mer07_veh02_nuc_mosaic_1box
+
+    tb = _cam_tables(topology)
+    topo = tb.topology
+    mait = tb.mode_aitken
+    lnum = int(tb.num_ptr[mait])
+    lso4 = int(tb.lptr_so4[mait])
+    mw_so4 = CAM_PARAMS[topo.name]["specmw_amode"][
+        topo.specname_amode.index("so4")]
+    dens_so4 = topo.specdens_amode[topo.specname_amode.index("so4")]
+
+    # Grown-particle dry-diameter window and single-particle masses.
+    dplom = float(np.exp(0.67 * np.log(topo.dgnumlo_amode[mait])
+                         + 0.33 * np.log(topo.dgnum_amode[mait])))
+    dphim = topo.dgnumhi_amode[mait]
+    mass1p_aitlo = dens_so4 * np.pi / 6.0 * dplom ** 3
+    mass1p_aithi = dens_so4 * np.pi / 6.0 * dphim ** 3
+
+    qh2so4_cur = q[..., tb.l_h2so4]
+    go = qh2so4_cur > _QH2SO4_CUTOFF
+
+    # Step-average H2SO4 reconstruction (:262-292).
+    tmpa = jnp.maximum(0.0, del_h2so4_gasprod)
+    tmp_q3 = qh2so4_cur
+    tmp_q2 = tmp_q3 + jnp.maximum(0.0, -del_h2so4_aeruptk)
+    tmpc = tmp_q2 * np.exp(-20.0)
+    no_uptake = tmp_q2 <= tmp_q3
+    clamped = (~no_uptake) & (tmp_q3 <= tmpc)
+    q3_eff = jnp.where(clamped, tmpc, tmp_q3)
+    safe_ratio = jnp.where(no_uptake | clamped, 1.0, tmp_q2 /
+                           jnp.where(q3_eff > 0.0, q3_eff, 1.0))
+    tmpb = jnp.where(no_uptake, 0.0,
+                     jnp.where(clamped, 20.0, jnp.log(safe_ratio)))
+    tmp_uptkrate = tmpb / deltat
+
+    small = tmpb <= 0.1
+    safe_tmpb = jnp.where(small, 1.0, tmpb)
+    tmpc2 = tmpa / safe_tmpb
+    avg_big = (q3_eff - tmpc2) * (jnp.expm1(safe_tmpb) / safe_tmpb) + tmpc2
+    avg_small = q3_eff * (1.0 + 0.5 * tmpb) - 0.5 * tmpa
+    qh2so4_avg = jnp.where(small, avg_small, avg_big)
+    go = go & (qh2so4_avg > _QH2SO4_CUTOFF)
+
+    # RH via the TABLE qsat; cld = 0 so grid-average == clear-sky.
+    _es, qs = qsat_cam(t, pmid)
+    qvswtr = jnp.maximum(qs, 1.0e-20)
+    relhum = jnp.clip(qv / qvswtr, 0.0, 1.0)
+    relhumnn = jnp.clip(relhum, 0.01, 0.99)
+
+    # Dispatcher, on benign inputs where masked.
+    safe_cur = jnp.where(go, qh2so4_cur, 1.0e-14)
+    safe_avg = jnp.where(go, qh2so4_avg, 1.0e-14)
+    (_isize, qnuma_del, qso4a_del, _qnh4a_del, _qh2so4_del, _qnh3_del,
+     _dens, _dncl) = mer07_veh02_nuc_mosaic_1box(
+        dtnuc=deltat, temp=t, rh=relhumnn, press=pmid, zm=zm, pblh=pblh,
+        qh2so4_cur=safe_cur, qh2so4_avg=safe_avg,
+        h2so4_uptkrate=tmp_uptkrate,
+        dplom_sect=dplom, dphim_sect=dphim,
+        newnuc_method_flagaa=11, mw_so4a_host=mw_so4)
+
+    # (#/mol-air) -> (#/kmol-air); rates; SO4-only mass fraction = 1.
+    qnuma_del = jnp.where(go, qnuma_del, 0.0) * 1.0e3
+    qso4a_del = jnp.where(go, qso4a_del, 0.0)
+    dndt = qnuma_del / deltat
+    tmpa_m = qso4a_del * mw_so4
+    tmp_frso4 = jnp.maximum(tmpa_m, 1.0e-35) / jnp.maximum(tmpa_m, 1.0e-35)
+    dmdt = jnp.maximum(0.0, tmpa_m / deltat)
+
+    # Rate floor (:404) then size constraints (:415-428).
+    live = dndt >= 1.0e2
+    dndt = jnp.where(live, dndt, 0.0)
+    dmdt = jnp.where(live, dmdt, 0.0)
+    safe_dndt = jnp.where(live, dndt, 1.0)
+    mass1p = jnp.where(live, dmdt / safe_dndt, mass1p_aitlo)
+    dndt = jnp.where(mass1p < mass1p_aitlo, dmdt / mass1p_aitlo, dndt)
+    dmdt = jnp.where(mass1p > mass1p_aithi, dndt * mass1p_aithi, dmdt)
+
+    dso4dt = dmdt * tmp_frso4 / mw_so4
+    q = q.at[..., tb.l_h2so4].add(-dso4dt * deltat)
+    q = q.at[..., lso4].add(dso4dt * deltat)
+    q = q.at[..., lnum].add(dndt * deltat)
+    return q
