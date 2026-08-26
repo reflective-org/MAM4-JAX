@@ -7,6 +7,8 @@ while the newest tag was v0.2.0-beta.1.
 from __future__ import annotations
 
 import importlib.metadata as md
+import re
+from pathlib import Path
 
 import pytest
 
@@ -23,7 +25,14 @@ def test_version_is_single_sourced() -> None:
         installed = md.version("mam4-jax")
     except md.PackageNotFoundError:
         pytest.skip("not installed; nothing to compare against")
-    assert installed == mam4_jax.__version__
+    assert installed == mam4_jax.__version__, (
+        f"installed metadata says {installed}, source says "
+        f"{mam4_jax.__version__}. Either a literal version was reintroduced "
+        f"(pyproject reads the attribute -- check for one), or this is an "
+        f"editable install whose metadata predates a bump, in which case "
+        f"reinstall (`pip install -e .`) and re-run. CI installs after "
+        f"checkout, so it never sees the stale-metadata case."
+    )
 
 
 def test_public_api_is_importable_from_the_top_level() -> None:
@@ -49,3 +58,27 @@ def test_coag_tables_are_present() -> None:
     happened once already (#62) and the file moved again in v0.3.0."""
     from mam4_jax.physics import coag
     assert coag._TABLES_PATH.exists(), f"missing: {coag._TABLES_PATH}"
+
+
+def test_changelog_documents_the_current_version() -> None:
+    """CHANGELOG.md must carry a dated section for the current version.
+
+    `__version__` is only ever bumped as part of cutting a release, so by the
+    time it says X.Y.Z the changelog owes the reader a section for X.Y.Z --
+    dated, not "unreleased". This has been wrong: the heading read
+    `## v0.3.2 -- unreleased` for five days after v0.3.2 was live on PyPI,
+    because nothing checked. `scripts/bump_version.py` writes both together.
+    """
+    changelog = Path(__file__).resolve().parent.parent / "CHANGELOG.md"
+    heading = re.search(
+        rf"^## v{re.escape(mam4_jax.__version__)}\s*(?:--|\u2014)?\s*(.*)$",
+        changelog.read_text(), re.M)
+    assert heading is not None, (
+        f"CHANGELOG.md has no section for v{mam4_jax.__version__}. "
+        f"Run scripts/bump_version.py, which writes both."
+    )
+    marker = heading.group(1).strip().lower()
+    assert "unreleased" not in marker, (
+        f"CHANGELOG.md still marks v{mam4_jax.__version__} as {marker!r}, but "
+        f"__version__ has already been bumped to it. Date the heading."
+    )
