@@ -259,3 +259,65 @@ the mode-mean `dmean = dgncur_awet·exp(1.5·alnsg²)` from the PREVIOUS step
 | **A9** | Comparing dimensionless fractions is sufficient to validate the algorithm | ✅ **Confirmed.** Avoids the unit mapping entirely, and the divergent-regime points show it discriminates |
 | **A10** | The five original capture points are representative | ❌ **Was wrong, now fixed.** They all sat in the saturated regime where both branches agree. Six divergent-regime points added |
 | **A11** | `qaer_cur` is post-growth and the delta is informational | Verified against the Fortran reference: it conserves against `qaer_cur` to 0.0 and against `qaer_cur + delta` to 2.4e-3 |
+
+---
+
+## 7. The driver itself — sub-plan (started 2026-08-26, owner go-ahead "Let's do it")
+
+**A6 is resolved**: owner approved proceeding with the driver including
+sub-stepping exposed and defaulting ON (2026-08-26). The default substep
+COUNT is still to be picked empirically in G5 (smallest n bringing a 30 s
+step within ~1 % of the converged answer on the reference scenario).
+
+### Findings from the source read that reshape §1's table
+
+- **A1 correction — CAM's `gas_aer_uptkrates` is a THIRD variant, not the
+  ported one.** The "bit-identical 58/58" claim compared CAM against
+  E3SM-*legacy*. The JAX port (`_gas_aer_uptkrates_1box1gas`) implements
+  the *amicphys* variant: Knudsen-dependent β, caller-supplied
+  accommodation/diffusivity/free path, exact √π/√2. CAM's
+  (modal_aero_gasaerexch.F90:953-1086): **fixed β = 2**, hardcoded
+  ac = 0.65 literals (`0.4875`, `1.184`), truncated `tworootpi = 3.5449077`
+  / `root2 = 1.4142135`, its own `gasdiffus = 0.557e-4·T^1.75/p`,
+  `gasspeed = 14.70·√T`, and the result is multiplied by number
+  concentration and gasdiffus inside. Must be ported, not reused.
+- **The legacy 8.0-monolayer aging runs INSIDE CAM's gasaerexch** (:719-806,
+  `modefrm_pcage` block, `dr_so4_monolayers_pcage` from the gasaerexch
+  module parameter = **8.0**), and AGAIN inside `modal_aero_coag_sub` for
+  the coagulated shell (modal_aero_coag.F90:502-546). This closes the
+  #75-review attribution question for good: the CAM code line genuinely
+  ages at 8.0 through the legacy path; E3SM/amicphys receives 3.0 via
+  phys_control. Both are now facts of their respective drivers, not a knob
+  disagreement.
+- **`DGNUM` pbuf-initialises to 0.0** (modal_aero_calcsize.F90:131), so a
+  reference run with calcsize/wateruptake off is garbage — END-TO-END
+  parity requires topology-threaded calcsize + wateruptake (the deferred
+  plan-024 PR C "~66 call sites" job, scoped to what the driver calls).
+  The MICROPHYSICS sequence (gasaerexch → newnuc → coag) can be validated
+  first against isolated captures, which need no calcsize.
+- **The box's `troplev = pver` asymmetry**: gasaerexch gates strat on
+  `k <= troplev` (fires in the box), wateruptake on `k < troplev` (never
+  fires in the box). So the box strat scenario = Köhler water uptake
+  (ported) + sulfeq computation (ported) + reversible condensation
+  (ported). CAM's own asymmetry, inherited knowingly.
+- **MAM5 reference runs pin `nl_acc_crs = 0`** — the box defaults
+  `modal_accum_coarse_exch` to ON under MAM5, but rename-A2 (636 lines)
+  stays deferred per plan 024 (measured inert below qso2 ~1e-5); the
+  reference must be captured with the same setting the port implements.
+- **PR #73's branch (`feat/cam-mam5-topology`) is merged into this branch**
+  — the driver is the first real consumer of `CAM_MAM4`/`CAM_MAM5`. The
+  topologies carry no molecular weights; `specmw_amode`/`adv_mass` must be
+  dumped from the initialised box model like the index tables were (same
+  argument: `adv_mass` comes from the chemistry preprocessor).
+
+### Commit-sized steps
+
+| Step | Content | Validation |
+| --- | --- | --- |
+| **G0** | Extend `mam-box-fortran/tools/dump_tables` to emit per-slot `SPECMW_AMODE`, the gas-window `ADV_MASS`, `CNST_NAMES`, `MWDRY`; regenerate both topologies; land the values as `mam4_jax/core/cam_params.py` (generated, sha-stamped) | round-trip test vs the committed dump; so4 MW = 115.107340 etc. cross-checked against plan 024 §3 |
+| **G1** | `mam4_jax/coupling/cam_driver.py`: CAM `gas_aer_uptkrates` (third variant) + SO4-only `gasaerexch_cam` — fgain/avg_uprt trop path, reversible strat path (ported), the gasaerexch aging block at 8.0, rename-cam call, tendency application. All topology-threaded (static arg) | new `tools/capture_gasaerexch` (public subroutine, needs `mam_box_init_cam` tables): machine-precision parity on states covering trop + strat + aging-firing |
+| **G2** | CAM `modal_aero_newnuc_sub` wrapper over the ported nucleation leafs (`del_h2so4_gasprod`/`aeruptk` semantics) | `tools/capture_newnuc`; parity + the h2so4-budget invariants |
+| **G3** | CAM `modal_aero_coag_sub` port (pair_option 3: ait→acc, pca→acc, ait→pca + coag-side aging), reusing `getcoags_wrapper_f` | `tools/capture_coag`; parity across the mode-size grid |
+| **G4** | Topology-thread calcsize + wateruptake enough for the driver; assemble `cam_run_step` (SO2→H2SO4 stub, mmr↔vmr via `cam_params`, sub-stepping control per A6) | driver smoke + conservation (totS) tests |
+| **G5** | End-to-end vs `mam-box-fortran` at a pinned tag: `cam_mam4` and `cam_mam5` (`nl_acc_crs=0`), trop + strat scenarios; pick the substep default empirically | acceptance bar proposed after measuring, ADR to record it |
+
