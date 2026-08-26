@@ -188,10 +188,50 @@ the `v2nhirlx` floor, so `num_t_oldbnd` clamped every input to the same value:
 two visibly different states (v2n 4.090e20 and 9.695e20) produced
 **byte-identical output with no error anywhere.**
 
+### ✅ The sulfeq equilibrium cluster — ported and validated at machine precision
+
+The `sulfate_equilib` work splits in two: the EQUILIBRIUM VALUE (computed per
+mode inside CAM's water uptake) and its CONSUMPTION (the reversible
+condensation branch in gasaerexch). The first half is done:
+
+- `mam4_jax/physics/strat_sulfate.py` ports `calc_h2so4_wtpct` (Tabazadeh
+  1997 composition) + `calc_h2so4_equilib_mixrat` (Ayers/Kulmala vapor
+  pressure, Giauque enthalpy, dual Kelvin factors) + the CAM `qsat_water`
+  they stand on — which is NOT the already-ported E3SM box `qsat_water`:
+  CAM returns `qs = 1` whenever `p <= es`, the E3SM box clamps only a
+  negative-denominator `qs`, and they disagree on `es ∈ [p, p/(1−ε)]`
+  (reachable at the routine's own `t = 450 K` clamp).
+- The routines were **private** to `modal_aero_wateruptake`; exposed by a
+  visibility-only patch applied to a staged copy by the new
+  `mam-box-fortran/tools/capture_sulfeq` (the box model's process masks
+  cannot isolate them — they only run under `modal_strat_sulfate`, deep in
+  the wateruptake driver).
+- The capture grid pins every branch by construction: both T clamps
+  (135→140, 460→450 K), all three Tabazadeh activity regimes plus both
+  activity clamps (qh2o is BUILT as `activ_target × qs`, so regime coverage
+  cannot drift with T/p), and Kelvin-strong→negligible diameters (1e-8 →
+  9e-7 m, the MAM5 `coarse_strat` dgnum). 27 qsat + 189 wtpct + 567 full
+  cases → `tests/reference/cam_sulfeq/sulfeq.json`.
+- **Measured worst relative errors** (`tests/test_strat_sulfate.py`):
+  wtpct **1.3e-15**, sulden **7.1e-16**, qh2so4_equilib **3.5e-14** (the
+  ~100-magnitude exponent inside `exp` amplifies its last ULP by ~1e-14 —
+  gated at 5e-13). Plus Kelvin monotonicity in diameter and reverse-mode
+  gradient finiteness across every branch.
+- ⚠ **Upstream defect found while porting, preserved faithfully**: the
+  first surface-tension interpolation pairs knot `i−1`'s ordinate with knot
+  `i`'s abscissa (`surf_tens = sig1 + dsigma_dwt*(wtpct_flat - stwtp(i))`,
+  F90:1005), offsetting the whole segment by `−(sig2−sig1)`. Both sibling
+  lookups in the same routine are correct. Written up in mam-box-fortran
+  `docs/bugs/BUG-cam-wateruptake-surftens-interp.md`; the port keeps
+  bit-parity with the bug.
+
 ### Remaining, in order
 
-1. **`sulfate_equilib` condensation** — the `sulfeq` branch. CAM-only, so no
-   existing port to lean on.
+1. **The reversible condensation branch** — gasaerexch's
+   `uptk·(g_avg − sulfeq)` per-mode form with the exponential-decay
+   `g_avg` (modal_aero_gasaerexch.F90:523-566, ~45 lines), consuming the
+   cluster above. Needs the mode-mean `dmean = dgncur_awet·exp(1.5·alnsg²)`
+   from the PREVIOUS step — the lagged carried state plan 024 §6 describes.
 2. **The driver itself** — CAM's sequence on grid-cell means, sub-stepping
    exposed.
 3. **Reference comparison** against `mam-box-fortran` at a pinned tag, for both
