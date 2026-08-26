@@ -105,7 +105,9 @@ def _run_and_compare(state: dict, nstep: int, dt: int) -> dict[str, float]:
 
     Returns a dict of max per-field per-mode rel-err.
     """
-    traj = run_timesteps(state, n_steps=nstep)
+    # sweep_24h_no_pcarbon_aging was captured with
+    # skip_pcarbon_aging.patch applied — aging must be off to compare.
+    traj = run_timesteps(state, n_steps=nstep, mdo_pcarbonaging=0)
     nc_path = REF_24H_DIR / f"mam_dt{dt}_ndt{nstep}.nc"
     ds = nc.Dataset(nc_path, "r")
     try:

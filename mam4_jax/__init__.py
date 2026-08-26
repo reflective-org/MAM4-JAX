@@ -71,7 +71,11 @@ def __getattr__(name):
 # because the science modules read the x64 flag at import time.
 # ---------------------------------------------------------------------------
 from .driver import run_step, run_timesteps, cloud_chem_simple_sub  # noqa: E402
-from .coupling.amicphys import configure_gas_netprod  # noqa: E402
+from .coupling.amicphys import (  # noqa: E402
+    AmicphysParams,
+    configure_gas_netprod,
+    configure_pcarbon_aging,
+)
 from .core.topology import (  # noqa: E402
     Topology,
     available_topologies,
@@ -90,7 +94,9 @@ __all__ = [
     # gas-phase source terms. configure_gas_netprod(h2so4=..., soa=...) sets the
     # "other-process" production rate [mol/mol/s] that the aerosol system sees;
     # this is the hook a host model drives its own gas chemistry through.
+    "AmicphysParams",
     "configure_gas_netprod",
+    "configure_pcarbon_aging",
     # mode configuration
     "Topology",
     "get_topology",
@@ -104,4 +110,4 @@ __all__ = [
     "x64_enabled",
 ]
 
-__version__ = "0.3.2"
+__version__ = "0.4.0"
