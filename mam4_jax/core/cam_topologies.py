@@ -23,7 +23,7 @@ from __future__ import annotations
 from mam4_jax.core.topology import Topology, register_topology
 
 # --- CAM MAM4 --------------------------------------------------------
-# source: cam_mam4_indices.py  sha256: d51d3379199331e4…
+# source: cam_mam4_indices.py  sha256: 1dd51e380a38ea35…
 CAM_MAM4 = register_topology(Topology(
     name="cam_mam4",
     variant="cesm",
@@ -64,7 +64,7 @@ CAM_MAM4 = register_topology(Topology(
 ))
 
 # --- CAM MAM5 --------------------------------------------------------
-# source: cam_mam5_indices.py  sha256: 989ae4e263afe9f0…
+# source: cam_mam5_indices.py  sha256: 9a4b4a28e7206bc7…
 CAM_MAM5 = register_topology(Topology(
     name="cam_mam5",
     variant="cesm",

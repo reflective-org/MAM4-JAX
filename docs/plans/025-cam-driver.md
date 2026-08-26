@@ -24,7 +24,7 @@ new numerical check:
 
 | Process | Reusable for CAM? | Basis |
 | --- | --- | --- |
-| **Uptake rates** (`gas_aer_uptkrates`) | ✅ **Yes** | CAM vs E3SM-legacy **bit-identical, 58/58 normalised lines** (condensation report). The JAX port already ports it |
+| **Uptake rates** (`gas_aer_uptkrates`) | ❌ **No — corrected in §7** | CAM vs E3SM-legacy is bit-identical (58/58), but the JAX port implements the *amicphys* variant, a third one (Knudsen-dependent β vs CAM's fixed β=2, exact vs truncated constants, ac handling). CAM's must be ported |
 | **Condensation, H2SO4, tropospheric** | ✅ **Yes — verified numerically** | See §2 |
 | **Condensation, H2SO4, `sulfate_equilib`** | ❌ **No** | CAM-only. No E3SM counterpart exists to have been ported |
 | **Coagulation** | ✅ **Yes** | `getcoags` is **byte-for-byte identical** between CAM and E3SM — comments and whitespace included — over 1519 lines |
