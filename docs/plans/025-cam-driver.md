@@ -225,16 +225,31 @@ condensation branch in gasaerexch). The first half is done:
   `docs/bugs/BUG-cam-wateruptake-surftens-interp.md`; the port keeps
   bit-parity with the bug.
 
+### ✅ The reversible condensation branch (the cluster's consumer)
+
+`h2so4_reversible_uptake` (same module) ports
+modal_aero_gasaerexch.F90:523-566: exponential decay of the gas toward the
+mode-weighted equilibrium `g_equ = Σ(uptk·sulfeq)/Σuptk`, per-mode
+`dqdt = uptk·(g_avg − sulfeq)` with the `a_end ≥ 0` evaporation floor, the
+`kxt < 1e-5` first-order branch, the `deltatxx = deltat·(1+1e-15)` nudge,
+and the three-state `ido_so4a` mode classification (1 = has slot, 2 = CAM's
+slotless pcarbon age-source, 0 = inactive). Validated against a verbatim
+NumPy transcription of the Fortran (loops, `1-exp`, cycles) over 300
+randomized states spanning both branches, condensation/evaporation, the
+floor, and all ido classes — bar 5e-11, sized by the one documented
+arithmetic deviation (`-expm1(-kxt)`, repo-standard per plan 026/ADR-019,
+worth ~2e-11 at the branch threshold). Exact-zero equilibrium fixed point,
+floor semantics, branch continuity, and reverse-mode grads locked in.
+When the driver lands, the end-to-end comparison (item 2 below) validates
+this against the actual Fortran box rather than a transcription. It needs
+the mode-mean `dmean = dgncur_awet·exp(1.5·alnsg²)` from the PREVIOUS step
+— the lagged carried state plan 024 §6 describes.
+
 ### Remaining, in order
 
-1. **The reversible condensation branch** — gasaerexch's
-   `uptk·(g_avg − sulfeq)` per-mode form with the exponential-decay
-   `g_avg` (modal_aero_gasaerexch.F90:523-566, ~45 lines), consuming the
-   cluster above. Needs the mode-mean `dmean = dgncur_awet·exp(1.5·alnsg²)`
-   from the PREVIOUS step — the lagged carried state plan 024 §6 describes.
-2. **The driver itself** — CAM's sequence on grid-cell means, sub-stepping
+1. **The driver itself** — CAM's sequence on grid-cell means, sub-stepping
    exposed.
-3. **Reference comparison** against `mam-box-fortran` at a pinned tag, for both
+2. **Reference comparison** against `mam-box-fortran` at a pinned tag, for both
    `cam_mam4` and `cam_mam5`.
 
 ### Assumptions added since §5 was written

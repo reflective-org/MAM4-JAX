@@ -16,6 +16,9 @@ Ported line-by-line from the CESM3 snapshot vendored in the sibling repo
 * :func:`calc_h2so4_equilib_mixrat` — ``modal_aero_wateruptake.F90:895-1083``.
   Equilibrium H2SO4 mixing ratio over particles of mean diameter ``dmean``,
   plus the (Kelvin-adjusted) composition and sulfate density.
+* :func:`h2so4_reversible_uptake` — ``modal_aero_gasaerexch.F90:523-566``.
+  The consumer: per-mode so4 tendencies relaxing the gas toward the
+  mode-weighted equilibrium (over-saturated modes evaporate).
 * :func:`_qsat_water_cam` — CAM's ``wv_sat_methods.F90`` Goff-Gratch +
   ``wv_sat_svp_to_qsat``. NOT the same as :mod:`mam4_jax.physics.saturation`
   (the E3SM box ``qsat_water``): CAM returns ``qs = 1`` whenever ``p <= es``,
@@ -334,3 +337,65 @@ def calc_h2so4_equilib_mixrat(temp, pres, qh2o, dmean):
     qh2so4_equilib = sulfequil * jnp.exp(expon)
 
     return qh2so4_equilib, wtpct, sulden
+
+
+def h2so4_reversible_uptake(qgas_h2so4, qaer_so4, uptkratebb, sulfeq,
+                            deltat, ido_so4a):
+    """Per-mode so4 tendencies from REVERSIBLE H2SO4 uptake (mol/mol/s).
+
+    Port of the stratospheric (``associated(sulfeq) .and. k <= troplev``)
+    branch of CAM's gasaerexch (modal_aero_gasaerexch.F90:523-566) — the
+    consumer of :func:`calc_h2so4_equilib_mixrat`. Where the tropospheric
+    branch condenses irreversibly (``dqdt = fgain*q_gas*avg_uprt``), this
+    one relaxes the gas toward the mode-weighted equilibrium and lets
+    over-saturated modes EVAPORATE::
+
+        kxt   = dtxx * sum_n(uptk_n)                     (active modes)
+        pxt   = max(0, dtxx * sum_n(uptk_n * sulfeq_n))
+        g_equ = pxt / kxt
+        g_avg = g_equ + (g_bgn - g_equ) * (1 - exp(-kxt)) / kxt
+                (first-order form  g_bgn*(1 - kxt/2) + pxt/2  for kxt < 1e-5)
+        a_end(n) = max(0, a_bgn(n) + dtxx * uptk_n * (g_avg - sulfeq_n))
+        dqdt(n)  = (a_end(n) - a_bgn(n)) / dtxx
+
+    with ``dtxx = deltat * (1 + 1e-15)`` (the Fortran's :392 nudge, applied
+    here so callers pass the plain ``deltat``).
+
+    ``ido_so4a`` mirrors the Fortran mode classification: ``1`` = the mode
+    carries an so4 tracer (``a_bgn`` read from ``qaer_so4``), ``2`` = the
+    mode condenses but has no so4 slot (``a_bgn = 0`` — CAM's pcarbon
+    age-source mode; the driver routes its uptake through the age pair),
+    ``0`` = inactive (zero tendency, excluded from every sum).
+
+    Deviation from Fortran arithmetic, repo-standard (see plan 026 /
+    ADR-019): ``1 - exp(-kxt)`` is written ``-expm1(-kxt)``. At the branch
+    threshold ``kxt = 1e-5`` the forms differ by ~2e-11 relative — the
+    test gates the transcribed-Fortran form at exactly that level.
+
+    All array arguments broadcast; the mode axis is LAST. Returns
+    ``(dqdt_so4, sum_dqdt_so4)``.
+    """
+    dtxx = deltat * (1.0 + 1.0e-15)
+    active = jnp.asarray(ido_so4a) > 0
+    has_slot = jnp.asarray(ido_so4a) == 1
+
+    uptk = jnp.where(active, uptkratebb, 0.0)
+    kxt = dtxx * jnp.sum(uptk, axis=-1)
+    pxt = jnp.maximum(0.0, dtxx * jnp.sum(uptk * sulfeq, axis=-1))
+
+    g_bgn = qgas_h2so4
+    # Exponential decay toward equilibrium; g_equ = pxt/kxt is guarded on
+    # the small-kxt branch (double-where — a masked 0/0 still poisons
+    # reverse-mode cotangents).
+    big = kxt >= 1.0e-5
+    safe_kxt = jnp.where(big, kxt, 1.0)
+    g_equ = pxt / safe_kxt
+    g_avg_big = g_equ + (g_bgn - g_equ) * (-jnp.expm1(-safe_kxt)) / safe_kxt
+    g_avg_small = g_bgn * (1.0 - 0.5 * kxt) + 0.5 * pxt
+    g_avg = jnp.where(big, g_avg_big, g_avg_small)
+
+    a_bgn = jnp.where(has_slot, qaer_so4, 0.0)
+    a_end = jnp.maximum(
+        0.0, a_bgn + dtxx * uptk * (g_avg[..., None] - sulfeq))
+    dqdt = jnp.where(active, (a_end - a_bgn) / dtxx, 0.0)
+    return dqdt, jnp.sum(dqdt, axis=-1)

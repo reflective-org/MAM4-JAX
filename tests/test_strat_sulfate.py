@@ -125,3 +125,115 @@ def test_equilib_grad_finite_across_branches() -> None:
         for name, gi in zip(("t", "qh2o", "dmean"), g):
             assert np.isfinite(float(gi)), (
                 f"d(qeq)/d({name}) non-finite at T={t}, activ={activ}")
+
+
+# ---------------------------------------------------------------------------
+# h2so4_reversible_uptake — the gasaerexch consumer of the cluster
+# ---------------------------------------------------------------------------
+
+def _fortran_reversible_uptake(qgas, qaer_so4, uptk, sulfeq, deltat, ido):
+    """Verbatim NumPy transcription of modal_aero_gasaerexch.F90:523-566
+    (loops, ``1 - exp``, per-mode cycle), as an independent reference.
+    The JAX port's only arithmetic deviation is ``-expm1(-kxt)``."""
+    dtxx = deltat * (1.0 + 1.0e-15)
+    n_modes = len(ido)
+    kxt = dtxx * sum(uptk[n] for n in range(n_modes) if ido[n] > 0)
+    pxt = sum(uptk[n] * sulfeq[n] for n in range(n_modes) if ido[n] > 0)
+    pxt = max(0.0, pxt * dtxx)
+    if kxt >= 1.0e-5:
+        g_equ = pxt / kxt
+        g_avg = g_equ + (qgas - g_equ) * (1.0 - np.exp(-kxt)) / kxt
+    else:
+        g_avg = qgas * (1.0 - 0.5 * kxt) + 0.5 * pxt
+    dqdt = np.zeros(n_modes)
+    for n in range(n_modes):
+        if ido[n] <= 0:
+            continue
+        a_bgn = qaer_so4[n] if ido[n] == 1 else 0.0
+        a_end = max(0.0, a_bgn + dtxx * uptk[n] * (g_avg - sulfeq[n]))
+        dqdt[n] = (a_end - a_bgn) / dtxx
+    return dqdt
+
+
+def test_reversible_uptake_matches_fortran_transcription() -> None:
+    """Randomized sweep spanning both g_avg branches, condensation and
+    evaporation, the a_end floor, and all three ido classes. Bar 5e-11:
+    the expm1-vs-(1-exp) form difference peaks at ~2e-11 relative right
+    at the kxt = 1e-5 branch threshold (documented deviation)."""
+    from mam4_jax.physics.strat_sulfate import h2so4_reversible_uptake
+    rng = np.random.default_rng(20260826)
+    ido = np.array([1, 1, 2, 1])                       # accum/aitken/pcarbon/coarse
+    for _ in range(300):
+        deltat = float(rng.uniform(1.0, 1800.0))
+        # uptake rates spanning kxt from ~1e-8 to ~1e2 across the sweep
+        uptk = rng.uniform(0.1, 1.0, 4) * 10.0 ** rng.uniform(-11, -1)
+        qgas = float(10.0 ** rng.uniform(-16, -9))
+        qaer = rng.uniform(0.1, 1.0, 4) * 10.0 ** rng.uniform(-15, -9)
+        sulfeq = rng.uniform(0.1, 1.0, 4) * 10.0 ** rng.uniform(-18, -8)
+        ref = _fortran_reversible_uptake(qgas, qaer, uptk, sulfeq,
+                                         deltat, ido)
+        dqdt, total = h2so4_reversible_uptake(
+            jnp.asarray(qgas), jnp.asarray(qaer), jnp.asarray(uptk),
+            jnp.asarray(sulfeq), jnp.asarray(deltat), jnp.asarray(ido))
+        np.testing.assert_allclose(
+            np.asarray(dqdt), ref, rtol=5e-11, atol=1e-40,
+            err_msg="dqdt_so4 diverged from the Fortran transcription")
+        np.testing.assert_allclose(float(total), ref.sum(),
+                                   rtol=5e-11, atol=1e-40)
+
+
+def test_reversible_uptake_equilibrium_is_a_fixed_point() -> None:
+    """g_bgn == sulfeq_n == s for every active mode: pxt = kxt*s exactly,
+    so g_avg = s and every tendency is exactly zero — no drift at
+    equilibrium, to the bit."""
+    from mam4_jax.physics.strat_sulfate import h2so4_reversible_uptake
+    s = 3.7e-12
+    dqdt, total = h2so4_reversible_uptake(
+        jnp.asarray(s), jnp.asarray([1e-11, 2e-12, 0.0, 5e-13]),
+        jnp.asarray([1e-4, 3e-5, 2e-6, 4e-7]), jnp.full((4,), s),
+        jnp.asarray(600.0), jnp.asarray([1, 1, 2, 1]))
+    np.testing.assert_array_equal(np.asarray(dqdt), np.zeros(4))
+    assert float(total) == 0.0
+
+
+def test_reversible_uptake_evaporates_but_never_below_zero() -> None:
+    """Over-saturated modes (sulfeq > g) evaporate: dqdt < 0 where the
+    mode holds so4, and the floor stops evaporation at a_end = 0 (a mode
+    can lose at most a_bgn/dtxx). The slotless ido=2 mode and the
+    inactive ido=0 mode contribute nothing."""
+    from mam4_jax.physics.strat_sulfate import h2so4_reversible_uptake
+    deltat = 600.0
+    dtxx = deltat * (1.0 + 1.0e-15)
+    qaer = np.array([1e-11, 1e-18, 0.0, 0.0])
+    dqdt, _ = h2so4_reversible_uptake(
+        jnp.asarray(1e-15), jnp.asarray(qaer),
+        jnp.asarray([1e-3, 1e-3, 1e-3, 1e-3]),
+        jnp.full((4,), 1e-9),                 # sulfeq >> gas: evaporation
+        jnp.asarray(deltat), jnp.asarray([1, 1, 2, 0]))
+    dqdt = np.asarray(dqdt)
+    assert dqdt[0] < 0.0
+    # mode 1 has almost nothing: the floor limits the loss to a_bgn/dtxx
+    np.testing.assert_allclose(dqdt[1], -qaer[1] / dtxx, rtol=1e-12)
+    assert dqdt[2] == 0.0 and dqdt[3] == 0.0
+
+
+def test_reversible_uptake_branch_continuity_and_grads() -> None:
+    """The two g_avg forms agree to first order at the kxt = 1e-5
+    threshold (relative gap ~kxt²/6 ≈ 2e-11), and reverse-mode gradients
+    are finite on both sides of every where()."""
+    from mam4_jax.physics.strat_sulfate import h2so4_reversible_uptake
+
+    def total_at(scale):
+        _, tot = h2so4_reversible_uptake(
+            jnp.asarray(2e-12), jnp.asarray([1e-11, 4e-12]),
+            scale * jnp.asarray([0.6, 0.4]), jnp.asarray([1e-12, 3e-12]),
+            jnp.asarray(1.0), jnp.asarray([1, 1]))
+        return tot
+
+    lo = float(total_at(jnp.asarray(0.999e-5)))
+    hi = float(total_at(jnp.asarray(1.001e-5)))
+    np.testing.assert_allclose(lo, hi, rtol=1e-2)
+
+    for s in (0.5e-5, 2e-5, 1e-1):
+        g = jax.grad(lambda x: total_at(x))(jnp.asarray(s))
+        assert np.isfinite(float(g)), f"grad non-finite at uptk scale {s}"
