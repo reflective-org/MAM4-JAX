@@ -295,11 +295,12 @@ step within ~1 % of the converged answer on the reference scenario).
   plan-024 PR C "~66 call sites" job, scoped to what the driver calls).
   The MICROPHYSICS sequence (gasaerexch → newnuc → coag) can be validated
   first against isolated captures, which need no calcsize.
-- **The box's `troplev = pver` asymmetry**: gasaerexch gates strat on
-  `k <= troplev` (fires in the box), wateruptake on `k < troplev` (never
-  fires in the box). So the box strat scenario = Köhler water uptake
-  (ported) + sulfeq computation (ported) + reversible condensation
-  (ported). CAM's own asymmetry, inherited knowingly.
+- ~~The box's `troplev = pver` asymmetry means Köhler-only water uptake~~
+  **CORRECTED during G5**: under `strat` the box driver calls
+  `tropopause_set_box_level(pver+1)` (mam_box_driver_cam.F90:182), so
+  wateruptake's `k < troplev` strat branch IS live — the wt%-composition
+  solution volume replaces Köhler for every mode. Ported as
+  `wateruptake(strat=...)`.
 - **MAM5 reference runs pin `nl_acc_crs = 0`** — the box defaults
   `modal_accum_coarse_exch` to ON under MAM5, but rename-A2 (636 lines)
   stays deferred per plan 024 (measured inert below qso2 ~1e-5); the
@@ -319,6 +320,38 @@ step within ~1 % of the converged answer on the reference scenario).
 | **G2** ✅ | CAM `modal_aero_newnuc_sub` wrapper over the ported nucleation leafs (`del_h2so4_gasprod`/`aeruptk` semantics; `mw_so4a_host` threaded into the dispatcher as an optional arg exactly as the Fortran passes it — E3SM default untouched). Includes `physics/cam_saturation.py`: CAM's generic `qsat` is the mixed-phase TABLE (`estblf`, 250 entries, water/ice blend over 20 K) — NOT the direct over-water formula (~2× apart at 200 K) | **Done.** `tools/capture_newnuc` (96 cases × both topologies): worst rel-err **2.0e-11**, the ~1-ulp form differences (`expm1`, table interp) amplified by nucleation's ~10th-power H2SO4/RH sensitivity; gated 1e-10. Sulfur closure exact per case; cutoff/floor gates exercised both ways |
 | **G3** ✅ | CAM `modal_aero_coag_sub` port (pair_option 3: ait→acc, pca→acc, ait→pca-effective-accum + coag-side 8-monolayer aging), reusing `getcoags_wrapper_f` | **Done.** `tools/capture_coag` (32 cases × both topologies, all three number-solve branches, saturated + fractional aging): worst non-sliver rel-err **6e-16**. Found en route: `shr_const_rgas` is the PRODUCT `6.02214e26·1.38065e-23 = 8314.467591` — the rounded `8314.46` was 9.1e-7 off and the implicit number solves amplified it to ~2e-6. Conservation/monotonicity/untouched-mode (coarse, coarse_strat) invariants asserted |
 | **G4a** ✅ | `mam_microphysics_cam`: the exact one-call chain gasaerexch → newnuc → coag with the `del_h2so4_aeruptk` positive-down bookkeeping (aero_model.F90:1191-1214). Sub-stepping deliberately NOT here — it wraps the whole per-step physics in the driver so `n_substeps = n` ≡ running the box at `deltat/n`, the exact quantity the Fortran dt-study varied | **Done.** `tools/capture_microphys` (12 cases × both topologies, trop + both strat kinds): worst non-sliver rel-err **1.5e-12** (the G1-G3 ulp differences compounded through three chained stages). Sulfur closure through the chain at 1e-13; a test proves the aeruptk bookkeeping is live (zeroing it changes the answer) |
-| **G4b** | Topology-thread calcsize + wateruptake enough for the driver; assemble `cam_run_step` (SO2→H2SO4 stub, mmr↔vmr via `cam_params`, substep loop per A6, sulfeq from the lagged `dgncur_awet`) | driver smoke + conservation (totS) tests |
+| **G4b** ✅ | calcsize + wateruptake threaded via optional `tables` bundles (`CalcsizeTables`/`WateruptakeTables`; `None` default = the E3SM module constants, bit-identical — suite proves it); wateruptake gains `qv=` (CAM keeps water vapor outside the aerosol window) and `strat=` (the wt%-composition solution-volume branch, wateruptake_sub:583-591 — live in the box because the driver sets its tropopause above the single level); `cam_run_step`/`cam_run_timesteps` assemble SO2 stub → calcsize → sulfeq → wateruptake → mmr↔vmr → microphysics, substep loop wrapping the WHOLE step | **Done.** See G5 |
+| **G5** ✅ | End-to-end vs the `mam-box-fortran` **fixdumfac** builds: {cam_mam4, cam_mam5} × {trop, strat}, all-default namelist, 120 steps × dt 30 s | **Done — first MAM5 physics against an independent reference.** Every printed tracer within the reference's own 7-significant-digit print floor (~5e-7; gated 2e-6); the one full-precision column, total sulfur, agrees at **4.5e-15** on all four trajectories. `tests/test_cam_driver.py` + `tests/reference/cam_box/` |
 | **G5** | End-to-end vs `mam-box-fortran` at a pinned tag: `cam_mam4` and `cam_mam5` (`nl_acc_crs=0`), trop + strat scenarios; pick the substep default empirically | acceptance bar proposed after measuring, ADR to record it |
 
+
+### G5 findings (2026-08-26)
+
+1. **The lagged-`dgncur_awet` feedback never survives a step in the box
+   reference**: the vendored time-manager shim's `is_first_step()` is TRUE
+   every step (`time_manager.F90:13-22`; the driver never advances it), so
+   wateruptake re-seeds `dgncur_awet = dgncur_a` each step and sulfeq is
+   computed from fresh post-calcsize DRY diameters. Production CAM lags
+   genuinely. The port exposes `reseed_dgnwet_each_step` (default True =
+   the reference's behaviour); before this was found, the strat trajectory
+   was 2x off by step 9.
+2. **A6 substep measurement** (dt=30 s, default scenario, vs n=32):
+
+   | n_substeps | num_a2 | num_a1 | so4_a1 | h2so4 |
+   |---|---|---|---|---|
+   | 1 (CAM-faithful) | 26% | 60% | 57% | 78% |
+   | 2 | 16% | 34% | 31% | 51% |
+   | 4 | 9% | 17% | 16% | 27% |
+   | 8 | 4% | 8% | 7% | 13% |
+   | 16 | 1.4% | 2.5% | 2.2% | 4.4% |
+
+   First-order splitting, exactly the Fortran study's 2.08x finding. **The
+   shipped default is `n_substeps = 1`** — A6 said "default ON", but the
+   #75-review convention (defaults reproduce the reference) takes
+   precedence: the reference is un-substepped, and a default that makes
+   plain runs ~60% different from every parity fixture repeats the
+   n_so4_monolayers mistake. Hosts should pass `n_substeps >= 8`; the
+   docstring and this table say so. ⚠ OWNER CALL: if A6's
+   "default ON" should win instead, it is a one-line change plus an ADR.
+3. The E3SM path is bit-unchanged by the threading (the `tables=None`
+   defaults are the same module constants; full suite green throughout).

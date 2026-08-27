@@ -61,6 +61,8 @@ from mam4_jax.core.topology import Topology, get_topology
 from mam4_jax.physics.strat_sulfate import h2so4_reversible_uptake
 
 __all__ = [
+    "cam_run_step",
+    "cam_run_timesteps",
     "gas_aer_uptkrates_cam",
     "mam_microphysics_cam",
     "modal_aero_coag_cam",
@@ -839,3 +841,251 @@ def mam_microphysics_cam(q, t, pmid, deltat, qv, zm, pblh,
             q, t, pmid, deltat, dgncur_a, dgncur_awet, wetdens_a,
             topology=topology)
     return q
+
+
+# ---------------------------------------------------------------------------
+# the driver — cam_run_step / cam_run_timesteps (plan 025 G4b)
+# (mirrors mam-box-fortran src/driver/mam_box_driver_cam.F90:mam_box_run_cam)
+# ---------------------------------------------------------------------------
+
+def _cam_calcsize_tables(tb: _CamTables):
+    """CalcsizeTables for a CAM topology, gas-window indexed.
+
+    The csizxf species lists come from RENAME's tables in CAM
+    (modal_aero_calcsize.F90:42, validated at init :190-211): number
+    first, then each aitken species name-matched to accum — exactly
+    ``tb.rename_pairs``. ``noxf_acc2ait`` marks accum slots whose species
+    prefix has no aitken counterpart (pom, bc). Cloud-borne pointers
+    equal interstitial ones in both CAM topologies.
+    """
+    from mam4_jax.physics.calcsize import CalcsizeTables
+
+    topo = tb.topology
+    nm = topo.nmodes
+    smax = len(topo.lmassptr_amode[0])
+    lmass = np.full((nm, smax), -1, dtype=int)
+    dens = np.ones((nm, smax))
+    valid = np.zeros((nm, smax), dtype=bool)
+    for m in range(nm):
+        for s_ in range(topo.nspec_amode[m]):
+            lmass[m, s_] = topo.lmassptr_amode[m][s_] - tb.loffset
+            dens[m, s_] = topo.specdens_amode[topo.lspectype_amode[m][s_]]
+            valid[m, s_] = True
+
+    frm = [p[0] for p in tb.rename_pairs]
+    too = [p[1] for p in tb.rename_pairs]
+
+    mait, macc = tb.mode_aitken, tb.mode_accum
+    ait_prefixes = {
+        tb.cnst_names[topo.lmassptr_amode[mait][s_]
+                      - tb.loffset].rsplit("_", 1)[0]
+        for s_ in range(topo.nspec_amode[mait])}
+    noxf = np.zeros(smax, dtype=bool)
+    for s_ in range(topo.nspec_amode[macc]):
+        pre = tb.cnst_names[topo.lmassptr_amode[macc][s_]
+                            - tb.loffset].rsplit("_", 1)[0]
+        noxf[s_] = pre not in ait_prefixes
+
+    v2n = topo.voltonumb_amode
+    return CalcsizeTables(
+        nait=mait, nacc=macc, nspec_amode=topo.nspec_amode,
+        lmassptr=lmass, lmassptrcw=lmass,
+        numptr=tb.num_ptr, numptrcw=tb.num_ptr,
+        slot_valid=valid, per_slot_density=dens,
+        voltonumb=v2n, voltonumblo=topo.voltonumblo_amode,
+        voltonumbhi=topo.voltonumbhi_amode,
+        dgnum=topo.dgnum_amode, dgnumlo=topo.dgnumlo_amode,
+        dgnumhi=topo.dgnumhi_amode, dumfac=topo.dumfac_amode,
+        csizxf_frma=frm, csizxf_tooa=too,
+        csizxf_frmc=frm, csizxf_tooc=too,
+        noxf_acc2ait=noxf,
+        v2nzz=float(np.sqrt(v2n[mait] * v2n[macc])),
+    )
+
+
+def _cam_wateruptake_tables(tb: _CamTables):
+    """WateruptakeTables for a CAM topology, gas-window indexed."""
+    from mam4_jax.physics.wateruptake import WateruptakeTables
+
+    topo = tb.topology
+    nm = topo.nmodes
+    smax = len(topo.lmassptr_amode[0])
+    lmass = np.full((nm, smax), -1, dtype=int)
+    dens = np.ones((nm, smax))
+    hyg = np.zeros((nm, smax))
+    valid = np.zeros((nm, smax), dtype=bool)
+    for m in range(nm):
+        for s_ in range(topo.nspec_amode[m]):
+            t_ = topo.lspectype_amode[m][s_]
+            lmass[m, s_] = topo.lmassptr_amode[m][s_] - tb.loffset
+            dens[m, s_] = topo.specdens_amode[t_]
+            hyg[m, s_] = topo.spechygro_amode[t_]
+            valid[m, s_] = True
+    return WateruptakeTables(
+        lmassptr=lmass, slot_valid=valid, per_slot_density=dens,
+        per_slot_hygro=hyg, sigmag=topo.sigmag_amode,
+        rhcrystal=topo.rhcrystal_amode, rhdeliques=topo.rhdeliques_amode,
+    )
+
+
+def cam_run_step(state, *, topology=None, strat=False, n_substeps=1,
+                 do_calcsize=True, do_wateruptake=True,
+                 do_gasaerexch=True, do_newnuc=True, do_coag=True,
+                 so2_to_h2so4_rate=1.0e-5,
+                 bug_compat_stale_dumfac=False,
+                 first_step=False,
+                 reseed_dgnwet_each_step=True):
+    """One CAM box-model step (mam_box_run_cam's loop body).
+
+    Per SUBSTEP of ``deltat / n_substeps`` — sub-stepping wraps the WHOLE
+    physics (A6, owner-approved 2026-08-26), so ``n_substeps = n`` is
+    semantically identical to running the box at ``deltat/n``, the exact
+    quantity the Fortran dt-convergence study varied:
+
+    1. SO2 → H2SO4 first-order conversion (the gas-chemistry stub,
+       sulfur-mole-conserving by MW ratio; default rate 1e-5 /s =
+       ``nl_so2_to_h2so4_rate``), producing ``del_h2so4_gasprod`` as a
+       vmr increment for nucleation;
+    2. calcsize (mmr, aitacc transfer on, the fixed per-mode ``dumfac``
+       by default — ``bug_compat_stale_dumfac=True`` reproduces upstream
+       CAM including the bug, matching the non-fixdumfac reference
+       builds);
+    3. ``sulfeq`` when ``strat``: per-mode equilibrium H2SO4 from the
+       Tabazadeh cluster at the LAGGED wet diameter — the incoming
+       ``dgncur_awet``, i.e. the previous substep's, exactly as CAM's
+       pbuf carries it (plan 024 §6's explicit carried state);
+    4. wateruptake (mmr; ``qv`` passed explicitly; updates
+       ``dgncur_awet``/``qaerwat``/``wetdens``);
+    5. mmr → vmr over the gas window (``q·mwdry/adv_mass``, number
+       tracers included with their mechanism ``adv_mass``, exactly as
+       the box does), the microphysics chain, vmr → mmr back.
+
+    STATE (a dict; all tracers MASS mixing ratio over the gas window):
+    ``q`` (..., gas_pcnst); ``qv``, ``t``, ``pmid``, ``zm``, ``pblh``
+    (...,); ``dgncur_a``, ``dgncur_awet``, ``wetdens`` (..., nmodes);
+    ``deltat`` scalar. ``qqcw`` is identically zero in scope and not
+    carried. Returns the updated state dict (same keys, plus
+    ``qaerwat`` once wateruptake has run).
+    """
+    from mam4_jax.physics.calcsize import calcsize
+    from mam4_jax.physics.strat_sulfate import calc_h2so4_equilib_mixrat
+    from mam4_jax.physics.wateruptake import wateruptake
+
+    tb = _cam_tables(topology)
+    cs_tables = _cam_calcsize_tables(tb)
+    wu_tables = _cam_wateruptake_tables(tb)
+    adv = jnp.asarray(tb.adv_mass)
+    mwdry = tb.mwdry
+    dt_s = state["deltat"] / n_substeps
+
+    q = jnp.asarray(state["q"], dtype=jnp.float64)
+    dgncur_a = jnp.asarray(state["dgncur_a"], dtype=jnp.float64)
+    dgncur_awet = jnp.asarray(state["dgncur_awet"], dtype=jnp.float64)
+    wetdens = jnp.asarray(state["wetdens"], dtype=jnp.float64)
+    qaerwat = state.get("qaerwat")
+    qv, t, pmid = state["qv"], state["t"], state["pmid"]
+
+    so4_slot = np.full(tb.topology.nmodes, -1, dtype=int)
+    so4_type = tb.topology.specname_amode.index("so4")
+    for m in range(tb.topology.nmodes):
+        for s_ in range(tb.topology.nspec_amode[m]):
+            if tb.topology.lspectype_amode[m][s_] == so4_type:
+                so4_slot[m] = s_
+    dens_so4 = tb.topology.specdens_amode[so4_type]
+
+    for isub in range(n_substeps):
+        # 1. SO2 -> H2SO4 stub (mam_box_driver_cam.F90:363-373).
+        if tb.l_so2 >= 0:
+            prod = q[..., tb.l_so2] * (-jnp.expm1(-so2_to_h2so4_rate * dt_s))
+            q = q.at[..., tb.l_so2].add(-prod)
+            q = q.at[..., tb.l_h2so4].add(
+                prod * (tb.adv_mass[tb.l_h2so4] / tb.adv_mass[tb.l_so2]))
+            del_h2so4_gasprod = prod * (mwdry / tb.adv_mass[tb.l_so2])
+        else:
+            del_h2so4_gasprod = jnp.zeros_like(q[..., 0])
+
+        # 2. calcsize (mmr).
+        if do_calcsize:
+            cs = calcsize(
+                {"q": q, "qqcw": jnp.zeros_like(q), "deltat": dt_s},
+                tables=cs_tables,
+                bug_compat_stale_dumfac=bug_compat_stale_dumfac)
+            q, dgncur_a = cs["q"], cs["dgncur_a"]
+
+        # CAM's wateruptake_dr seeds the lagged wet diameter from the
+        # CURRENT dry one under is_first_step()
+        # (modal_aero_wateruptake.F90:329-331) — BEFORE the sulfeq loop
+        # reads it. In production CAM that fires once (step 0), making
+        # sulfeq a genuinely LAGGED-wet-diameter quantity (plan 024 §6's
+        # carried state). In the box REFERENCE, the time-manager shim's
+        # is_first_step() is TRUE EVERY STEP (vendor
+        # time_manager.F90:13-22, never advanced by the driver), so the
+        # reference recomputes sulfeq from the fresh post-calcsize DRY
+        # diameters each step and the lag never survives.
+        # ``reseed_dgnwet_each_step=True`` (default) reproduces the
+        # reference; False gives the production-CAM lagged behaviour
+        # (seed on the first step only). Without any seed, step 1's
+        # sulfeq would see dgncur_awet = 0 and the Kelvin clamp
+        # evaporates every so4 mode (measured: so4_a1 off by 1e4x).
+        if do_wateruptake and (reseed_dgnwet_each_step
+                               or (first_step and isub == 0)):
+            dgncur_awet = dgncur_a
+
+        # 3. sulfeq + Tabazadeh composition at the LAGGED wet diameter
+        # (before wateruptake updates it) — modal_aero_wateruptake.F90:392-396.
+        if strat:
+            dmean = dgncur_awet * jnp.exp(1.5 * jnp.asarray(tb.alnsg) ** 2)
+            sulfeq, wtpct, sulden = calc_h2so4_equilib_mixrat(
+                jnp.asarray(t)[..., None], jnp.asarray(pmid)[..., None],
+                jnp.asarray(qv)[..., None], dmean)
+            strat_wu = {"so4_slot": so4_slot, "so4specdens": dens_so4,
+                        "wtpct": wtpct, "sulden": sulden}
+        else:
+            sulfeq = None
+            strat_wu = None
+
+        # 4. wateruptake (mmr; qv explicit; the strat branch replaces
+        # Köhler with the wt%-composition solution volume — the box sets
+        # its tropopause above the single level, so under strat that
+        # branch is live everywhere).
+        if do_wateruptake:
+            wu = wateruptake(
+                {"q": q, "dgncur_a": dgncur_a, "t": t, "pmid": pmid,
+                 "cldn": jnp.zeros_like(jnp.asarray(t))},
+                tables=wu_tables, qv=qv, strat=strat_wu)
+            dgncur_awet = wu["dgncur_awet"]
+            qaerwat = wu["qaerwat"]
+            wetdens = wu["wetdens"]
+
+        # 5. the microphysics chain, on vmr.
+        q_vmr = q * (mwdry / adv)
+        q_vmr = mam_microphysics_cam(
+            q_vmr, t, pmid, dt_s, qv, state["zm"], state["pblh"],
+            dgncur_a, dgncur_awet, wetdens, del_h2so4_gasprod,
+            topology=topology, sulfeq=sulfeq,
+            do_gasaerexch=do_gasaerexch, do_newnuc=do_newnuc,
+            do_coag=do_coag)
+        q = q_vmr * (adv / mwdry)
+
+    out = {**state, "q": q, "dgncur_a": dgncur_a,
+           "dgncur_awet": dgncur_awet, "wetdens": wetdens}
+    if qaerwat is not None:
+        out["qaerwat"] = qaerwat
+    return out
+
+
+def cam_run_timesteps(state, n_steps, **kwargs):
+    """Run ``n_steps`` CAM box steps; return the final state plus a
+    trajectory dict of stacked per-step snapshots of ``q``,
+    ``dgncur_a``, ``dgncur_awet``, ``wetdens`` (post-step values,
+    matching the Fortran box's per-step output rows). Plain Python loop
+    — phase A; jit/scan is the phase-B optimization pass."""
+    import jax
+
+    traj = {k: [] for k in ("q", "dgncur_a", "dgncur_awet", "wetdens")}
+    for istep in range(n_steps):
+        state = cam_run_step(state, first_step=(istep == 0), **kwargs)
+        for k in traj:
+            traj[k].append(state[k])
+    stacked = {k: jax.numpy.stack(v) for k, v in traj.items()}
+    return state, stacked
