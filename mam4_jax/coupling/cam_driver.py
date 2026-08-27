@@ -62,14 +62,17 @@ from mam4_jax.physics.strat_sulfate import h2so4_reversible_uptake
 
 __all__ = [
     "gas_aer_uptkrates_cam",
+    "modal_aero_coag_cam",
     "modal_aero_gasaerexch_cam",
+    "modal_aero_newnuc_cam",
 ]
 
-# CAM physconst rair = shr_const_rgas / shr_const_mwdair (J/K/kg). Spelled
-# from the shr constants so this module is auditable against the CAM tree
-# it ports (identical to core.constants.RDAIR).
-_RGAS_UNIV = 8.31446e3          # J/K/kmol (shr_const_rgas)
-_MWDAIR = 28.966                # kg/kmol  (shr_const_mwdair)
+# CAM physconst constants, spelled EXACTLY as shr_const_mod computes them:
+# SHR_CONST_RGAS = AVOGAD * BOLTZ = 8314.467591 J/K/kmol — NOT the rounded
+# 8.31446e3 (that shortcut is 9.1e-7 relative off, which the implicit
+# coagulation number solves amplify to ~2e-6; found by capture parity).
+_RGAS_UNIV = 6.02214e26 * 1.38065e-23   # J/K/kmol (shr_const_rgas)
+_MWDAIR = 28.966                        # kg/kmol  (shr_const_mwdair)
 _RAIR = _RGAS_UNIV / _MWDAIR
 
 #: gasaerexch's own aging threshold (modal_aero_gasaerexch.F90:37-44):
@@ -189,6 +192,47 @@ class _CamTables:
             (topology.lmassptr_amode[mf][s] - off, self.fac_m2v[mf][s])
             for s in range(topology.nspec_amode[mf])
         ]
+
+        # Coagulation pair species lists (coag_init:800-870, name-matched
+        # against the EFFECTIVE destination = accum for all three pairs).
+        # Pair 3 (ait->pca, effective accum) carries the same (from, to)
+        # species list as pair 1, so only two lists are needed; what pair
+        # 3 adds is fac_m2v_aitage (init:906-955): so4 at face value, soa
+        # scaled by its equivalent-so4 hygroscopicity factor
+        # (spechygro_soa / spechygro_so4, gasaerexch_init:1861), every
+        # other species contributing ZERO shell volume.
+        def _match(mfrm, mtoo):
+            pairs = []
+            for s_ in range(topology.nspec_amode[mfrm]):
+                lf_ = topology.lmassptr_amode[mfrm][s_] - off
+                pre = names[lf_].rsplit("_", 1)[0]
+                lt_ = -1
+                for s2_ in range(topology.nspec_amode[mtoo]):
+                    cand_ = topology.lmassptr_amode[mtoo][s2_] - off
+                    if names[cand_].rsplit("_", 1)[0] == pre:
+                        lt_ = cand_
+                        break
+                pairs.append((lf_, lt_))
+            return pairs
+
+        self.coag_ait_pairs = _match(self.mode_aitken, self.mode_accum)
+        self.coag_pca_pairs = _match(self.mode_pcarbon, self.mode_accum) \
+            if self.mode_pcarbon >= 0 else []
+        so4_t = topology.specname_amode.index("so4")
+        soa_t = (topology.specname_amode.index("soa")
+                 if "soa" in topology.specname_amode else -1)
+        hygro = topology.spechygro_amode
+        self.fac_m2v_aitage = []
+        for s_ in range(topology.nspec_amode[self.mode_aitken]):
+            t_ = topology.lspectype_amode[self.mode_aitken][s_]
+            if t_ == so4_t:
+                self.fac_m2v_aitage.append(self.fac_m2v[self.mode_aitken][s_])
+            elif t_ == soa_t:
+                self.fac_m2v_aitage.append(
+                    (hygro[soa_t] / hygro[so4_t])
+                    * self.fac_m2v[self.mode_aitken][s_])
+            else:
+                self.fac_m2v_aitage.append(0.0)
 
 
 @functools.lru_cache(maxsize=8)
@@ -590,4 +634,152 @@ def modal_aero_newnuc_cam(q, t, pmid, deltat, qv, zm, pblh,
     q = q.at[..., tb.l_h2so4].add(-dso4dt * deltat)
     q = q.at[..., lso4].add(dso4dt * deltat)
     q = q.at[..., lnum].add(dndt * deltat)
+    return q
+
+
+# ---------------------------------------------------------------------------
+# coag — modal_aero_coag_sub, pair_option_acoag == 3
+# (modal_aero_coag.F90:73-709; init tables :714-990)
+# ---------------------------------------------------------------------------
+
+def _coag_number_new(tmpn, tmpa, tmpb):
+    """The three-branch closed form for a mode's number after ``deltat``
+    of intermodal (rate ``tmpa/deltat``) plus self (coefficient
+    ``tmpb/deltat``) coagulation loss (modal_aero_coag.F90:459-471,
+    faithful branch thresholds |tmpc| < 0.01, |tmpa| < 0.001).
+
+    Every branch is evaluated on guarded operands (double-where) so no
+    dead branch poisons reverse-mode.
+    """
+    tmpc = tmpa + tmpb * tmpn
+    b_small_c = jnp.abs(tmpc) < 0.01
+    b_small_a = jnp.abs(tmpa) < 0.001
+
+    n_small_c = tmpn * jnp.exp(-tmpc)
+    n_small_a = jnp.exp(-tmpa) * tmpn / (1.0 + tmpb * tmpn)
+
+    safe_tmpc = jnp.where(jnp.abs(tmpc) > 0.0, tmpc, 1.0)
+    tmpf = tmpb * tmpn / safe_tmpc
+    tmpg = jnp.exp(-tmpa)
+    den = 1.0 - tmpg * tmpf
+    safe_den = jnp.where(jnp.abs(den) > 0.0, den, 1.0)
+    tmph = tmpg * (1.0 - tmpf) / safe_den
+    n_general = tmpn * jnp.maximum(0.0, jnp.minimum(1.0, tmph))
+
+    return jnp.where(b_small_c, n_small_c,
+                     jnp.where(b_small_a, n_small_a, n_general))
+
+
+def modal_aero_coag_cam(q, t, pmid, deltat, dgncur_a, dgncur_awet,
+                        wetdens_a, *, topology=None):
+    """One coag call on the gas window — CAM's ``pair_option_acoag = 3``.
+
+    Port of ``modal_aero_coag_sub``: three pairs (aitken→accum,
+    pcarbon→accum, aitken→pcarbon-effective-accum) with Whitby fast
+    coefficients from the byte-identical (and already-ported)
+    ``getcoags_wrapper_f``, then:
+
+    1. number: accum self-coag (``n/(1+Δt·βjj0·n)``), then pcarbon and
+       aitken via the three-branch closed form
+       (:func:`_coag_number_new`), each consuming the PRIOR mode's
+       time-average number — sequencing is load-bearing;
+    2. aitken mass: one transfer at the COMBINED loss
+       ``βij3(ait,acc)·n̄acc + βij3(ait,pca)·n̄pca``, all of it delivered
+       to the ACCUM species (the pcarbon-destined share is deemed aged
+       through); that share × ``fac_m2v_aitage`` accumulates the aging
+       SHELL volume (so4 at face value, soa at its equivalent-so4
+       hygroscopicity factor, ncl/dst contributing zero — init:906-955);
+    3. the aging fraction from shell vs core against the same legacy
+       8.0-monolayer criterion as gasaerexch (the Fortran comment says
+       "this duplicates the code in modal_aero_gasaerexch");
+    4. pcarbon mass and number: direct coagulation PLUS the aging
+       fraction, capped at ``1 − 10ε``.
+
+    ``nfreqcoag = 1`` (the box calls with the model step, so the
+    every-3-hours skip logic reduces to "always run"); the ``dqdt``
+    diagnostics are not carried (``q`` is updated in place in the
+    Fortran and returned here).
+
+    Returns the updated ``q``.
+    """
+    from mam4_jax.physics.coag import getcoags_wrapper_f
+
+    tb = _cam_tables(topology)
+    topo = tb.topology
+    mait, macc, mpca = tb.mode_aitken, tb.mode_accum, tb.mode_pcarbon
+    xferfrac_max = 1.0 - 10.0 * float(jnp.finfo(jnp.float64).eps)
+
+    aircon = pmid / (_RGAS_UNIV * t)          # kmol-air/m3
+
+    def numbconc(m):
+        return jnp.maximum(0.0, q[..., tb.num_ptr[m]] * aircon)
+
+    n_acc, n_ait, n_pca = numbconc(macc), numbconc(mait), numbconc(mpca)
+
+    # Coefficients per pair. (frm, too) play getcoags' (aitken, accum)
+    # roles; only ij0/ij3/ii0/jj0 are consumed (as in the Fortran).
+    def betas(mf, mt):
+        return getcoags_wrapper_f(
+            t, pmid,
+            dgncur_awet[..., mf], dgncur_awet[..., mt],
+            topo.sigmag_amode[mf], topo.sigmag_amode[mt],
+            float(tb.alnsg[mf]), float(tb.alnsg[mt]),
+            wetdens_a[..., mf], wetdens_a[..., mt])
+
+    ij0_aa, _i2a, _j2a, ij3_aa, ii0_aa, _ii2a, jj0_aa, _jj2a = betas(mait, macc)
+    ij0_pa, _i2b, _j2b, ij3_pa, ii0_pa, _ii2b, jj0_pa, _jj2b = betas(mpca, macc)
+    ij0_ap, _i2c, _j2c, ij3_ap, ii0_ap, _ii2c, jj0_ap, _jj2c = betas(mait, mpca)
+
+    # --- numbers (:443-500), sequential ------------------------------------
+    new_acc = n_acc / (1.0 + deltat * jj0_aa * n_acc)
+    avg_acc = 0.5 * (new_acc + n_acc)
+    q = q.at[..., tb.num_ptr[macc]].set(new_acc / aircon)
+
+    new_pca = _coag_number_new(
+        n_pca, deltat * ij0_pa * avg_acc, deltat * ii0_pa)
+    avg_pca = 0.5 * (new_pca + n_pca)
+    q = q.at[..., tb.num_ptr[mpca]].set(new_pca / aircon)
+
+    new_ait = _coag_number_new(
+        n_ait, deltat * (ij0_aa * avg_acc + ij0_ap * avg_pca),
+        deltat * ii0_aa)
+    q = q.at[..., tb.num_ptr[mait]].set(new_ait / aircon)
+
+    # --- aitken mass: combined ait->acc + ait->pca(->acc) (:504-527) -------
+    dumloss = ij3_aa * avg_acc + ij3_ap * avg_pca
+    tmpa_frac = ij3_ap * avg_pca / jnp.maximum(dumloss, 1.0e-37)
+    xferfracvol = -jnp.expm1(-dumloss * deltat)
+    xferfracvol = jnp.clip(xferfracvol, 0.0, xferfrac_max)
+    vol_shell = jnp.zeros_like(dumloss)
+    for (lf, lt), m2v_age in zip(tb.coag_ait_pairs, tb.fac_m2v_aitage):
+        xferamt = q[..., lf] * xferfracvol
+        q = q.at[..., lf].add(-xferamt)
+        if lt >= 0:
+            q = q.at[..., lt].add(xferamt)
+        vol_shell = vol_shell + xferamt * tmpa_frac * m2v_age
+
+    # --- aging fraction (:531-546), same criterion as gasaerexch -----------
+    vol_core = jnp.zeros_like(vol_shell)
+    for s, lw in enumerate(tb.lmass[mpca]):
+        vol_core = vol_core + q[..., lw] * tb.fac_m2v_pcarbon[s]
+    tmp1 = vol_shell * dgncur_a[..., mpca] * tb.fac_volsfc_pcarbon
+    tmp2 = jnp.maximum(6.0 * _DR_SO4_MONOLAYERS_PCAGE * vol_core, 0.0)
+    saturated = tmp1 >= tmp2
+    safe_tmp2 = jnp.where(saturated, 1.0, tmp2)
+    xferfrac_pcage = jnp.where(
+        saturated, xferfrac_max,
+        jnp.minimum(tmp1 / safe_tmp2, xferfrac_max))
+
+    # --- pcarbon mass + number: direct coag + aging (:550-580) -------------
+    dumloss_p = ij3_pa * avg_acc
+    xferfracvol = -jnp.expm1(-dumloss_p * deltat) + xferfrac_pcage
+    xferfracvol = jnp.clip(xferfracvol, 0.0, xferfrac_max)
+    for lf, lt in tb.coag_pca_pairs:
+        xferamt = q[..., lf] * xferfracvol
+        q = q.at[..., lf].add(-xferamt)
+        if lt >= 0:
+            q = q.at[..., lt].add(xferamt)
+    xferamt = q[..., tb.num_ptr[mpca]] * xferfrac_pcage
+    q = q.at[..., tb.num_ptr[mpca]].add(-xferamt)
+    q = q.at[..., tb.num_ptr[macc]].add(xferamt)
     return q
