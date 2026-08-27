@@ -1,6 +1,6 @@
 # Plan 027 — CAM driver phase-B: `jit` + `lax.scan`
 
-**Status:** IN PROGRESS (started 2026-08-26, owner: "Can you work on the
+**Status:** DONE (2026-08-26; started 2026-08-26, owner: "Can you work on the
 optimization and make the next PR?"). Stacked on `feat/cam-driver`
 (plan 025); PR targets that branch while merges to `main` are held.
 
@@ -41,3 +41,16 @@ Make them compiled, mirroring what M6 PR-J1/J2 did for the E3SM driver:
 `vmap`/sharding (no batched host yet); making `mam_microphysics_cam` and
 below individually jitted (they compile as part of the driver body);
 any physics or API change beyond the wrapper/inner split.
+
+## Results (2026-08-26)
+
+- All existing tests pass unchanged; full G5 parity bars intact.
+- `lax.scan`-over-steps trajectory is **bit-identical** to repeated
+  `cam_run_step` calls (same jitted body, asserted with
+  `assert_array_equal`).
+- Cache semantics locked by `test_rate_is_traced_and_substeps_are_static`:
+  rate sweep reuses one compilation; a new `n_substeps` retraces.
+- **Measured** (G5 workload: 120 steps × 16 substeps, strat, cam_mam4):
+  eager 81.6 s → jitted ~1.0 s cold (compile + run) / **0.02 s warm** —
+  ~4000× warm. The trajectory scan traces the step body once regardless
+  of `n_steps`.

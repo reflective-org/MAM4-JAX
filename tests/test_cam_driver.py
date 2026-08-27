@@ -168,3 +168,44 @@ def test_documented_defaults() -> None:
     sig = inspect.signature(cd.cam_run_step)
     assert sig.parameters["n_substeps"].default == 16
     assert sig.parameters["reseed_dgnwet_each_step"].default is True
+
+
+# ---------------------------------------------------------------------------
+# plan 027 — jit/scan semantics
+# ---------------------------------------------------------------------------
+
+def test_scan_trajectory_is_bit_identical_to_stepping() -> None:
+    """cam_run_timesteps' scan inlines the SAME jitted step body that
+    cam_run_step dispatches, so the trajectory must equal per-step
+    calls exactly — not just approximately."""
+    topo = CAM_MAM4
+    s = build_ic(topo)
+    for i in range(3):
+        s = cd.cam_run_step(s, topology=topo, strat=True, n_substeps=4,
+                            first_step=(i == 0))
+    _, traj = cd.cam_run_timesteps(build_ic(topo), 3, topology=topo,
+                                   strat=True, n_substeps=4)
+    np.testing.assert_array_equal(np.asarray(traj["q"][-1]),
+                                  np.asarray(s["q"]))
+
+
+def test_rate_is_traced_and_substeps_are_static() -> None:
+    """ADR-020's split, enforced: a different so2_to_h2so4_rate VALUE
+    must reuse the compilation (traced leaf — a rate sweep must not
+    recompile), while a different n_substeps must get its own cache
+    entry (it changes the scan length — genuinely different code)."""
+    topo = CAM_MAM4
+    ic = build_ic(topo)
+    cd._cam_run_step_jit.clear_cache()
+    out_a = cd.cam_run_step(ic, topology=topo, n_substeps=2,
+                            so2_to_h2so4_rate=1.0e-5)
+    size_1 = cd._cam_run_step_jit._cache_size()
+    out_b = cd.cam_run_step(ic, topology=topo, n_substeps=2,
+                            so2_to_h2so4_rate=2.0e-5)
+    assert cd._cam_run_step_jit._cache_size() == size_1, (
+        "a new rate VALUE triggered a recompile — it must be traced")
+    assert not np.allclose(np.asarray(out_a["q"]), np.asarray(out_b["q"]))
+    cd.cam_run_step(ic, topology=topo, n_substeps=3,
+                    so2_to_h2so4_rate=1.0e-5)
+    assert cd._cam_run_step_jit._cache_size() == size_1 + 1, (
+        "a new n_substeps did not retrace — it must be static")

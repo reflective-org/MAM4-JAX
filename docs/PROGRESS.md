@@ -31,6 +31,15 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 - **Known limitation (deferred)**: the `qaer_del_cond` / `qaer_del_coag` budget-attribution split (F90:5169-5210) is not ported — write-only diagnostics, state evolution unaffected. See `docs/DEFERRED.md`.
 
 ---
+## 2026-08-26 — CAM driver phase-B: jit + lax.scan (branch `feat/cam-driver-jit`)
+
+- PR: stacked on `feat/cam-driver` (#74) while merges to `main` are held. Plan: `docs/plans/027-cam-driver-jit.md`.
+- `cam_run_step`/`cam_run_timesteps` become thin unjitted wrappers (resolving `topology=None` outside the trace) over jitted inners; the substep loop and the step loop are `lax.scan`, with the per-substep reseed flag and the per-step `first_step` flag as traced scan `xs` so both reseed modes share one compilation. Statics per ADR-020: topology, `strat`, `n_substeps`, `do_*`, the two compat flags; `so2_to_h2so4_rate` and the state are traced (rate sweeps don't recompile — locked by test).
+- Scan trajectory bit-identical to repeated single steps; all G5 parity bars unchanged.
+- **Measured** (120 steps × 16 substeps, strat): eager 81.6 s → ~1.0 s cold / **0.02 s warm** (~4000×).
+
+---
+
 
 ## 2026-07-08 — Configurable other-process gas production (`configure_gas_netprod`) (`main`)
 
