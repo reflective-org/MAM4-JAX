@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import functools
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -927,58 +928,34 @@ def _cam_wateruptake_tables(tb: _CamTables):
         rhcrystal=topo.rhcrystal_amode, rhdeliques=topo.rhdeliques_amode,
     )
 
+_STEP_STATICS = ("topology", "strat", "n_substeps", "do_calcsize",
+                 "do_wateruptake", "do_gasaerexch", "do_newnuc", "do_coag",
+                 "bug_compat_stale_dumfac", "reseed_dgnwet_each_step")
 
-def cam_run_step(state, *, topology=None, strat=False, n_substeps=16,
-                 do_calcsize=True, do_wateruptake=True,
-                 do_gasaerexch=True, do_newnuc=True, do_coag=True,
-                 so2_to_h2so4_rate=1.0e-5,
-                 bug_compat_stale_dumfac=False,
-                 first_step=False,
-                 reseed_dgnwet_each_step=True):
-    """One CAM box-model step (mam_box_run_cam's loop body).
+#: evolving per-step state; everything else in the state dict is constant
+#: forcing echoed through the scan carry untouched.
+_EVOLVING = ("q", "dgncur_a", "dgncur_awet", "wetdens", "qaerwat")
 
-    Per SUBSTEP of ``deltat / n_substeps`` — sub-stepping wraps the WHOLE
-    physics, so ``n_substeps = n`` is semantically identical to running
-    the box at ``deltat/n``, the exact quantity the Fortran
-    dt-convergence study varied.
 
-    **``n_substeps`` defaults to 16 (ADR-021)** — a deliberate deviation
-    from the defaults-reproduce-the-reference convention, owner-decided
-    (plan 025 A6): CAM's un-substepped sequential splitting does not
-    converge while nucleation is active, and n = 1 (CAM's own behaviour,
-    and the reference box's) is 26-78%% from the converged answer at
-    dt = 30 s on the default scenario. The error is first-order (halves
-    per doubling); 16 lands at ~1.4-4.4%% for 16x cost. **Pass
-    ``n_substeps=1`` to reproduce CAM / the Fortran reference exactly**
-    — every parity test does. The full measured table is in ADR-021 and
-    plan 025 §7.
+@functools.partial(jax.jit, static_argnames=_STEP_STATICS)
+def _cam_run_step_jit(state, so2_to_h2so4_rate, first_step, *,
+                      topology, strat, n_substeps,
+                      do_calcsize, do_wateruptake,
+                      do_gasaerexch, do_newnuc, do_coag,
+                      bug_compat_stale_dumfac, reseed_dgnwet_each_step):
+    """Jitted one-step body — plan 027. See :func:`cam_run_step`.
 
-    The per-substep sequence:
+    Code-path selectors are STATIC (each combination compiles once, per
+    the ADR-020 split); ``so2_to_h2so4_rate`` and ``first_step`` are
+    traced operands, so sweeping the rate or flipping the first-step
+    flag reuses one compilation. The substep loop is a ``lax.scan``
+    whose ``xs`` is the per-substep reseed flag — both reseed modes
+    (the box shim's every-substep, production CAM's first-only) share
+    one compiled body.
 
-    1. SO2 → H2SO4 first-order conversion (the gas-chemistry stub,
-       sulfur-mole-conserving by MW ratio; default rate 1e-5 /s =
-       ``nl_so2_to_h2so4_rate``), producing ``del_h2so4_gasprod`` as a
-       vmr increment for nucleation;
-    2. calcsize (mmr, aitacc transfer on, the fixed per-mode ``dumfac``
-       by default — ``bug_compat_stale_dumfac=True`` reproduces upstream
-       CAM including the bug, matching the non-fixdumfac reference
-       builds);
-    3. ``sulfeq`` when ``strat``: per-mode equilibrium H2SO4 from the
-       Tabazadeh cluster at the LAGGED wet diameter — the incoming
-       ``dgncur_awet``, i.e. the previous substep's, exactly as CAM's
-       pbuf carries it (plan 024 §6's explicit carried state);
-    4. wateruptake (mmr; ``qv`` passed explicitly; updates
-       ``dgncur_awet``/``qaerwat``/``wetdens``);
-    5. mmr → vmr over the gas window (``q·mwdry/adv_mass``, number
-       tracers included with their mechanism ``adv_mass``, exactly as
-       the box does), the microphysics chain, vmr → mmr back.
-
-    STATE (a dict; all tracers MASS mixing ratio over the gas window):
-    ``q`` (..., gas_pcnst); ``qv``, ``t``, ``pmid``, ``zm``, ``pblh``
-    (...,); ``dgncur_a``, ``dgncur_awet``, ``wetdens`` (..., nmodes);
-    ``deltat`` scalar. ``qqcw`` is identically zero in scope and not
-    carried. Returns the updated state dict (same keys, plus
-    ``qaerwat`` once wateruptake has run).
+    ``topology`` must be a concrete ``Topology`` here (the PUBLIC
+    wrapper resolves ``None`` before the trace — ``get_topology()``
+    deliberately raises inside a jit trace, core/topology.py).
     """
     from mam4_jax.physics.calcsize import calcsize
     from mam4_jax.physics.strat_sulfate import calc_h2so4_equilib_mixrat
@@ -990,13 +967,8 @@ def cam_run_step(state, *, topology=None, strat=False, n_substeps=16,
     adv = jnp.asarray(tb.adv_mass)
     mwdry = tb.mwdry
     dt_s = state["deltat"] / n_substeps
-
-    q = jnp.asarray(state["q"], dtype=jnp.float64)
-    dgncur_a = jnp.asarray(state["dgncur_a"], dtype=jnp.float64)
-    dgncur_awet = jnp.asarray(state["dgncur_awet"], dtype=jnp.float64)
-    wetdens = jnp.asarray(state["wetdens"], dtype=jnp.float64)
-    qaerwat = state.get("qaerwat")
     qv, t, pmid = state["qv"], state["t"], state["pmid"]
+    zm, pblh = state["zm"], state["pblh"]
 
     so4_slot = np.full(tb.topology.nmodes, -1, dtype=int)
     so4_type = tb.topology.specname_amode.index("so4")
@@ -1006,10 +978,18 @@ def cam_run_step(state, *, topology=None, strat=False, n_substeps=16,
                 so4_slot[m] = s_
     dens_so4 = tb.topology.specdens_amode[so4_type]
 
-    for isub in range(n_substeps):
+    if reseed_dgnwet_each_step:
+        sub_reseed = jnp.ones(n_substeps, dtype=bool)
+    else:
+        sub_reseed = jnp.zeros(n_substeps, dtype=bool).at[0].set(first_step)
+
+    def _substep(carry, reseed):
+        q, dgncur_a, dgncur_awet, wetdens, qaerwat = carry
+
         # 1. SO2 -> H2SO4 stub (mam_box_driver_cam.F90:363-373).
         if tb.l_so2 >= 0:
-            prod = q[..., tb.l_so2] * (-jnp.expm1(-so2_to_h2so4_rate * dt_s))
+            prod = q[..., tb.l_so2] * (
+                -jnp.expm1(-so2_to_h2so4_rate * dt_s))
             q = q.at[..., tb.l_so2].add(-prod)
             q = q.at[..., tb.l_h2so4].add(
                 prod * (tb.adv_mass[tb.l_h2so4] / tb.adv_mass[tb.l_so2]))
@@ -1028,26 +1008,17 @@ def cam_run_step(state, *, topology=None, strat=False, n_substeps=16,
         # CAM's wateruptake_dr seeds the lagged wet diameter from the
         # CURRENT dry one under is_first_step()
         # (modal_aero_wateruptake.F90:329-331) — BEFORE the sulfeq loop
-        # reads it. In production CAM that fires once (step 0), making
-        # sulfeq a genuinely LAGGED-wet-diameter quantity (plan 024 §6's
-        # carried state). In the box REFERENCE, the time-manager shim's
-        # is_first_step() is TRUE EVERY STEP (vendor
-        # time_manager.F90:13-22, never advanced by the driver), so the
-        # reference recomputes sulfeq from the fresh post-calcsize DRY
-        # diameters each step and the lag never survives.
-        # ``reseed_dgnwet_each_step=True`` (default) reproduces the
-        # reference; False gives the production-CAM lagged behaviour
-        # (seed on the first step only). Without any seed, step 1's
-        # sulfeq would see dgncur_awet = 0 and the Kelvin clamp
-        # evaporates every so4 mode (measured: so4_a1 off by 1e4x).
-        if do_wateruptake and (reseed_dgnwet_each_step
-                               or (first_step and isub == 0)):
-            dgncur_awet = dgncur_a
+        # reads it. The box reference's time-manager shim makes that
+        # true EVERY step (plan 025 §7 G5 finding 1); production CAM
+        # lags genuinely. ``reseed`` is the traced per-substep flag.
+        if do_wateruptake:
+            dgncur_awet = jnp.where(reseed, dgncur_a, dgncur_awet)
 
-        # 3. sulfeq + Tabazadeh composition at the LAGGED wet diameter
-        # (before wateruptake updates it) — modal_aero_wateruptake.F90:392-396.
+        # 3. sulfeq + Tabazadeh composition at the (possibly reseeded)
+        # pre-wateruptake wet diameter (wateruptake.F90:392-396).
         if strat:
-            dmean = dgncur_awet * jnp.exp(1.5 * jnp.asarray(tb.alnsg) ** 2)
+            dmean = dgncur_awet * jnp.exp(
+                1.5 * jnp.asarray(tb.alnsg) ** 2)
             sulfeq, wtpct, sulden = calc_h2so4_equilib_mixrat(
                 jnp.asarray(t)[..., None], jnp.asarray(pmid)[..., None],
                 jnp.asarray(qv)[..., None], dmean)
@@ -1057,10 +1028,7 @@ def cam_run_step(state, *, topology=None, strat=False, n_substeps=16,
             sulfeq = None
             strat_wu = None
 
-        # 4. wateruptake (mmr; qv explicit; the strat branch replaces
-        # Köhler with the wt%-composition solution volume — the box sets
-        # its tropopause above the single level, so under strat that
-        # branch is live everywhere).
+        # 4. wateruptake (mmr; qv explicit; strat branch per plan 025).
         if do_wateruptake:
             wu = wateruptake(
                 {"q": q, "dgncur_a": dgncur_a, "t": t, "pmid": pmid,
@@ -1073,32 +1041,159 @@ def cam_run_step(state, *, topology=None, strat=False, n_substeps=16,
         # 5. the microphysics chain, on vmr.
         q_vmr = q * (mwdry / adv)
         q_vmr = mam_microphysics_cam(
-            q_vmr, t, pmid, dt_s, qv, state["zm"], state["pblh"],
+            q_vmr, t, pmid, dt_s, qv, zm, pblh,
             dgncur_a, dgncur_awet, wetdens, del_h2so4_gasprod,
             topology=topology, sulfeq=sulfeq,
             do_gasaerexch=do_gasaerexch, do_newnuc=do_newnuc,
             do_coag=do_coag)
         q = q_vmr * (adv / mwdry)
 
-    out = {**state, "q": q, "dgncur_a": dgncur_a,
-           "dgncur_awet": dgncur_awet, "wetdens": wetdens}
-    if qaerwat is not None:
-        out["qaerwat"] = qaerwat
-    return out
+        return (q, dgncur_a, dgncur_awet, wetdens, qaerwat), None
+
+    carry0 = tuple(jnp.asarray(state[k], dtype=jnp.float64)
+                   for k in _EVOLVING)
+    carry, _ = jax.lax.scan(_substep, carry0, sub_reseed)
+    return {**state, **dict(zip(_EVOLVING, carry))}
 
 
-def cam_run_timesteps(state, n_steps, **kwargs):
-    """Run ``n_steps`` CAM box steps; return the final state plus a
-    trajectory dict of stacked per-step snapshots of ``q``,
-    ``dgncur_a``, ``dgncur_awet``, ``wetdens`` (post-step values,
-    matching the Fortran box's per-step output rows). Plain Python loop
-    — phase A; jit/scan is the phase-B optimization pass."""
-    import jax
+@functools.partial(jax.jit, static_argnames=("n_steps",) + _STEP_STATICS)
+def _cam_run_timesteps_jit(state, so2_to_h2so4_rate, *,
+                           n_steps, topology, strat, n_substeps,
+                           do_calcsize, do_wateruptake,
+                           do_gasaerexch, do_newnuc, do_coag,
+                           bug_compat_stale_dumfac,
+                           reseed_dgnwet_each_step):
+    """Jitted trajectory — ``lax.scan`` over steps (static ``n_steps``),
+    each step the jitted step body (inlined by the outer trace). The
+    per-step ``first_step`` flag is the scan ``xs``."""
+    statics = dict(
+        topology=topology, strat=strat, n_substeps=n_substeps,
+        do_calcsize=do_calcsize, do_wateruptake=do_wateruptake,
+        do_gasaerexch=do_gasaerexch, do_newnuc=do_newnuc,
+        do_coag=do_coag, bug_compat_stale_dumfac=bug_compat_stale_dumfac,
+        reseed_dgnwet_each_step=reseed_dgnwet_each_step)
 
-    traj = {k: [] for k in ("q", "dgncur_a", "dgncur_awet", "wetdens")}
-    for istep in range(n_steps):
-        state = cam_run_step(state, first_step=(istep == 0), **kwargs)
-        for k in traj:
-            traj[k].append(state[k])
-    stacked = {k: jax.numpy.stack(v) for k, v in traj.items()}
-    return state, stacked
+    def _body(carry_state, first):
+        new = _cam_run_step_jit(carry_state, so2_to_h2so4_rate, first,
+                                **statics)
+        out = {k: new[k] for k in ("q", "dgncur_a", "dgncur_awet",
+                                   "wetdens")}
+        return new, out
+
+    firsts = jnp.arange(n_steps) == 0
+    return jax.lax.scan(_body, state, firsts)
+
+
+def _prepare_state(state):
+    """Stable-pytree precondition for the scan carry: ``qaerwat`` exists
+    (zeros before the first wateruptake, exactly the pbuf's physpkg
+    default) — same pattern as the E3SM driver's placeholder keys."""
+    if "qaerwat" not in state:
+        state = {**state,
+                 "qaerwat": jnp.zeros_like(
+                     jnp.asarray(state["dgncur_awet"]))}
+    return state
+
+
+def cam_run_step(state, *, topology=None, strat=False, n_substeps=16,
+                 do_calcsize=True, do_wateruptake=True,
+                 do_gasaerexch=True, do_newnuc=True, do_coag=True,
+                 so2_to_h2so4_rate=1.0e-5,
+                 bug_compat_stale_dumfac=False,
+                 first_step=False,
+                 reseed_dgnwet_each_step=True):
+    """One CAM box-model step (mam_box_run_cam's loop body), compiled.
+
+    Per SUBSTEP of ``deltat / n_substeps`` — sub-stepping wraps the WHOLE
+    physics, so ``n_substeps = n`` is semantically identical to running
+    the box at ``deltat/n``, the exact quantity the Fortran
+    dt-convergence study varied.
+
+    **``n_substeps`` defaults to 16 (ADR-021)** — a deliberate deviation
+    from the defaults-reproduce-the-reference convention, owner-decided
+    (plan 025 A6): CAM's un-substepped sequential splitting does not
+    converge while nucleation is active, and n = 1 (CAM's own behaviour,
+    and the reference box's) is 26-78% from the converged answer at
+    dt = 30 s on the default scenario. The error is first-order (halves
+    per doubling); 16 lands at ~1.4-4.4% for 16x cost. **Pass
+    ``n_substeps=1`` to reproduce CAM / the Fortran reference exactly**
+    — every parity test does. The full measured table is in ADR-021 and
+    plan 025 §7.
+
+    The per-substep sequence:
+
+    1. SO2 → H2SO4 first-order conversion (the gas-chemistry stub,
+       sulfur-mole-conserving by MW ratio; default rate 1e-5 /s =
+       ``nl_so2_to_h2so4_rate``), producing ``del_h2so4_gasprod`` as a
+       vmr increment for nucleation;
+    2. calcsize (mmr, aitacc transfer on, the fixed per-mode ``dumfac``
+       by default — ``bug_compat_stale_dumfac=True`` reproduces upstream
+       CAM including the bug, matching the non-fixdumfac reference
+       builds);
+    3. ``sulfeq`` when ``strat``: per-mode equilibrium H2SO4 from the
+       Tabazadeh cluster at the pre-wateruptake wet diameter —
+       re-seeded from the current dry diameter per
+       ``reseed_dgnwet_each_step`` (True = the box reference's
+       behaviour, its ``is_first_step()`` shim being true every step;
+       False = production CAM's genuine lag, seeded on
+       ``first_step`` only);
+    4. wateruptake (mmr; ``qv`` passed explicitly; updates
+       ``dgncur_awet``/``qaerwat``/``wetdens``);
+    5. mmr → vmr over the gas window (``q·mwdry/adv_mass``, number
+       tracers included with their mechanism ``adv_mass``, exactly as
+       the box does), the microphysics chain, vmr → mmr back.
+
+    STATE (a dict; all tracers MASS mixing ratio over the gas window):
+    ``q`` (..., gas_pcnst); ``qv``, ``t``, ``pmid``, ``zm``, ``pblh``
+    (...,); ``dgncur_a``, ``dgncur_awet``, ``wetdens`` (..., nmodes);
+    ``deltat`` scalar. ``qqcw`` is identically zero in scope and not
+    carried. Returns the updated state dict (same keys, plus
+    ``qaerwat``).
+
+    **Compiled (plan 027).** This wrapper resolves ``topology=None`` to
+    the active topology OUTSIDE the trace and hands everything to a
+    jitted inner whose code-path selectors (topology, ``strat``,
+    ``n_substeps``, the ``do_*`` toggles, the two compat flags) are
+    STATIC — one compilation per combination — while
+    ``so2_to_h2so4_rate``, ``first_step`` and the state are traced
+    (sweeping the rate does not recompile; ADR-020's split).
+    """
+    if topology is None:
+        topology = get_topology()
+    return _cam_run_step_jit(
+        _prepare_state(state), so2_to_h2so4_rate, jnp.asarray(first_step),
+        topology=topology, strat=strat, n_substeps=n_substeps,
+        do_calcsize=do_calcsize, do_wateruptake=do_wateruptake,
+        do_gasaerexch=do_gasaerexch, do_newnuc=do_newnuc, do_coag=do_coag,
+        bug_compat_stale_dumfac=bug_compat_stale_dumfac,
+        reseed_dgnwet_each_step=reseed_dgnwet_each_step)
+
+
+def cam_run_timesteps(state, n_steps, *, topology=None, strat=False,
+                      n_substeps=16,
+                      do_calcsize=True, do_wateruptake=True,
+                      do_gasaerexch=True, do_newnuc=True, do_coag=True,
+                      so2_to_h2so4_rate=1.0e-5,
+                      bug_compat_stale_dumfac=False,
+                      reseed_dgnwet_each_step=True):
+    """Run ``n_steps`` CAM box steps; return ``(final_state, trajectory)``
+    with per-step post-step snapshots of ``q``, ``dgncur_a``,
+    ``dgncur_awet``, ``wetdens`` stacked on a leading axis (matching the
+    Fortran box's output rows).
+
+    **Compiled (plan 027)**: a jitted ``lax.scan`` over steps with
+    ``n_steps`` static (one cache entry per distinct count — the M6
+    PR-J2 pattern), the step body inlined once. The first step's
+    ``first_step`` flag rides the scan ``xs``, so both reseed modes
+    share the compilation. Keyword arguments as :func:`cam_run_step`.
+    """
+    if topology is None:
+        topology = get_topology()
+    return _cam_run_timesteps_jit(
+        _prepare_state(state), so2_to_h2so4_rate,
+        n_steps=n_steps, topology=topology, strat=strat,
+        n_substeps=n_substeps,
+        do_calcsize=do_calcsize, do_wateruptake=do_wateruptake,
+        do_gasaerexch=do_gasaerexch, do_newnuc=do_newnuc, do_coag=do_coag,
+        bug_compat_stale_dumfac=bug_compat_stale_dumfac,
+        reseed_dgnwet_each_step=reseed_dgnwet_each_step)

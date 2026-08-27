@@ -31,6 +31,15 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 - **Known limitation (deferred)**: the `qaer_del_cond` / `qaer_del_coag` budget-attribution split (F90:5169-5210) is not ported — write-only diagnostics, state evolution unaffected. See `docs/DEFERRED.md`.
 
 ---
+## 2026-08-26 — CAM driver phase-B: jit + lax.scan (branch `feat/cam-driver-jit`)
+
+- PR: stacked on `feat/cam-driver` (#74) while merges to `main` are held. Plan: `docs/plans/027-cam-driver-jit.md`.
+- `cam_run_step`/`cam_run_timesteps` become thin unjitted wrappers (resolving `topology=None` outside the trace) over jitted inners; the substep loop and the step loop are `lax.scan`, with the per-substep reseed flag and the per-step `first_step` flag as traced scan `xs` so both reseed modes share one compilation. Statics per ADR-020: topology, `strat`, `n_substeps`, `do_*`, the two compat flags; `so2_to_h2so4_rate` and the state are traced (rate sweeps don't recompile — locked by test).
+- Scan trajectory bit-identical to repeated single steps; all G5 parity bars unchanged.
+- **Measured** (120 steps × 16 substeps, strat): eager 81.6 s → ~1.0 s cold / **0.02 s warm** (~4000×).
+
+---
+
 
 ## 2026-07-08 — Configurable other-process gas production (`configure_gas_netprod`) (`main`)
 
@@ -42,6 +51,14 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 - **Tests**: `tests/test_amicphys.py::test_configure_gas_netprod_default_and_override` (defaults, per-rate override, `None` leaves unchanged, save/restore hygiene).
 
 ---
+## 2026-08-27 — Stratospheric RH scenario studies on the CAM driver (branch `feat/cam-driver-jit`)
+
+- First science exploration on the compiled CAM driver (plan 027 made it practical: each 12-h, 16-substep run is ~0.2 s warm). Script: `scripts/cam_rh_scenarios.py`; figures: `docs/figures/cam_strat_rh_{banana,snapshots,budgets}_{6h,12h}.png`. Exploratory, not validation.
+- **6-h strong-forcing sweep** (SO2 = 0.1 ppmv): classic nucleation–growth banana; RH-insensitive number/mass because the regime is production-limited.
+- **12-h weak-forcing experiments** (H2SO4 = 1e7 cm⁻³) isolate the RH → water uptake → wet diameter → condensation-sink chain: RH-ordered gas-depletion floors spanning 3.5 decades (burst, no SO2); ~12% number spread with MORE particles at LOW RH (background SO2 = 1e-10 vmr — the weaker sink leaves gas for nucleation); a 31.5→36.2 nm wet-diameter fan at identical dry size plus 35% lower steady gas at RH 50% (condensation-only). At 232 K, 1e7 cm⁻³ H2SO4 nucleates fully within one 30 s step at any RH — RH-sensitive *number* needs the sustained weak-production regime.
+
+---
+
 
 ## 2026-06-24 — Float32-safe coag + `JAX_ENABLE_X64=0` opt-out (`main`)
 
