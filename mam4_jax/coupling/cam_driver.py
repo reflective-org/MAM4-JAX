@@ -62,6 +62,7 @@ from mam4_jax.physics.strat_sulfate import h2so4_reversible_uptake
 
 __all__ = [
     "gas_aer_uptkrates_cam",
+    "mam_microphysics_cam",
     "modal_aero_coag_cam",
     "modal_aero_gasaerexch_cam",
     "modal_aero_newnuc_cam",
@@ -782,4 +783,59 @@ def modal_aero_coag_cam(q, t, pmid, deltat, dgncur_a, dgncur_awet,
     xferamt = q[..., tb.num_ptr[mpca]] * xferfrac_pcage
     q = q.at[..., tb.num_ptr[mpca]].add(-xferamt)
     q = q.at[..., tb.num_ptr[macc]].add(xferamt)
+    return q
+
+
+# ---------------------------------------------------------------------------
+# the sequence — mam_microphysics_cam (mam-box-fortran
+# src/coupling/cam/mam_coupling_cam.F90, itself the box transcription of
+# aero_model.F90:1202-1247)
+# ---------------------------------------------------------------------------
+
+def mam_microphysics_cam(q, t, pmid, deltat, qv, zm, pblh,
+                         dgncur_a, dgncur_awet, wetdens_a,
+                         del_h2so4_gasprod, *, topology=None, sulfeq=None,
+                         do_gasaerexch=True, do_newnuc=True, do_coag=True):
+    """CAM's microphysics sequence, one call over ``deltat``.
+
+    ``gasaerexch`` (rename inside) → ``newnuc`` → ``coag``, sequential on
+    grid-cell means, with the ``del_h2so4_aeruptk`` bookkeeping exactly as
+    CAM's ``aero_model_gasaerexch`` does it (aero_model.F90:1191-1214,
+    transcribed in the sibling repo's ``mam_coupling_cam.F90``): the
+    H2SO4 consumed by condensation is measured as the positive-down
+    difference across the gasaerexch call and handed to nucleation so the
+    vapour already condensed is not double-counted.
+
+    Sub-stepping (plan 025 A6) deliberately does NOT live here: this
+    function is the exact one-call port, and the driver's substep loop
+    wraps the WHOLE per-step physics (production stub included) so that
+    ``n_substeps = n`` is semantically identical to running the box at
+    ``deltat/n`` — the quantity the Fortran dt-convergence study varied.
+
+    ``del_h2so4_gasprod`` is the H2SO4 vmr increment produced by gas
+    chemistry over THIS call's ``deltat`` (the driver's SO2 stub); it is
+    input to nucleation only. ``sulfeq`` selects the stratospheric
+    reversible condensation exactly as in
+    :func:`modal_aero_gasaerexch_cam`.
+
+    Returns the updated ``q``.
+    """
+    tb = _cam_tables(topology)
+
+    g0 = q[..., tb.l_h2so4]
+    if do_gasaerexch:
+        q = modal_aero_gasaerexch_cam(
+            q, t, pmid, deltat, dgncur_a, dgncur_awet,
+            topology=topology, sulfeq=sulfeq)
+    del_h2so4_aeruptk = q[..., tb.l_h2so4] - g0
+
+    if do_newnuc:
+        q = modal_aero_newnuc_cam(
+            q, t, pmid, deltat, qv, zm, pblh,
+            del_h2so4_gasprod, del_h2so4_aeruptk, topology=topology)
+
+    if do_coag:
+        q = modal_aero_coag_cam(
+            q, t, pmid, deltat, dgncur_a, dgncur_awet, wetdens_a,
+            topology=topology)
     return q
