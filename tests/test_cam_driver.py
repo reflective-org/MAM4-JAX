@@ -12,14 +12,13 @@ at 2e-6. The one full-precision column, total sulfur ``totS_mol``
 (``es24.16``), is the machine-precision handle: measured 4.5e-15 on all
 four runs, gated at 1e-13.
 
-Reference-faithful settings baked into the driver defaults:
+Reference-parity settings (and where the defaults deviate):
 
-* ``n_substeps = 1`` — the reference box is CAM-faithful (no
-  sub-stepping). The A6 measurement (this file's convergence test, and
-  plan 025 §7) shows first-order splitting error: ~60-78% from converged
-  at dt=30 s, halving per doubling of substeps. Defaults reproduce the
-  reference (the #75-review convention); hosts should pass
-  ``n_substeps >= 8`` for accuracy.
+* ``n_substeps = 1`` is passed EXPLICITLY by the parity tests — the
+  reference box is CAM-faithful (no sub-stepping). The package default
+  is 16 (ADR-021): the A6 measurement (this file's convergence test,
+  and plan 025 §7) shows first-order splitting error, ~26-78% from
+  converged at dt=30 s at n=1, halving per doubling.
 * ``reseed_dgnwet_each_step = True`` — the box time-manager shim's
   ``is_first_step()`` is true EVERY step, so the reference recomputes
   sulfeq from fresh post-calcsize dry diameters each step; production
@@ -101,8 +100,11 @@ def test_box_trajectory_matches_fortran(tag, topo, strat) -> None:
     names = CAM_PARAMS[topo.name]["cnst_names"]
     adv = np.asarray(tb.adv_mass)
     ref = load_ref(tag)
+    # n_substeps=1: parity with the (un-substepped) reference. The
+    # package DEFAULT is 16 per ADR-021 — accuracy over reference-parity.
     _, traj = cd.cam_run_timesteps(build_ic(topo), NL["nstep"],
-                                   topology=topo, strat=strat)
+                                   topology=topo, strat=strat,
+                                   n_substeps=1)
     q = np.asarray(traj["q"])
     cols = [
         ("num_a1", q[:, tb.num_ptr[0]]), ("num_a2", q[:, tb.num_ptr[1]]),
@@ -151,11 +153,18 @@ def test_substepping_moves_toward_convergence() -> None:
     assert err[2] < 0.75 * err[1] and err[4] < 0.75 * err[2]
 
 
-def test_reference_defaults_are_reference_faithful() -> None:
-    """The #75-review convention: defaults reproduce the reference.
-    n_substeps defaults to 1 (the box is un-substepped CAM) and the
-    wateruptake reseed defaults to the box shim's every-step behaviour."""
+def test_documented_defaults() -> None:
+    """Two load-bearing defaults, each documented:
+
+    * ``n_substeps = 16`` — ADR-021, the owner-decided DEVIATION from
+      the defaults-reproduce-the-reference convention: CAM's own
+      splitting is 26-78% from converged at dt=30 s, and shipping that
+      as the default answer was judged worse than deviating from the
+      reference. Parity tests opt back into 1 explicitly.
+    * ``reseed_dgnwet_each_step = True`` — the box reference's
+      behaviour (its is_first_step() is true every step); False is
+      production CAM's genuinely lagged wet diameter."""
     import inspect
     sig = inspect.signature(cd.cam_run_step)
-    assert sig.parameters["n_substeps"].default == 1
+    assert sig.parameters["n_substeps"].default == 16
     assert sig.parameters["reseed_dgnwet_each_step"].default is True

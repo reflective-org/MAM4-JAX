@@ -928,7 +928,7 @@ def _cam_wateruptake_tables(tb: _CamTables):
     )
 
 
-def cam_run_step(state, *, topology=None, strat=False, n_substeps=1,
+def cam_run_step(state, *, topology=None, strat=False, n_substeps=16,
                  do_calcsize=True, do_wateruptake=True,
                  do_gasaerexch=True, do_newnuc=True, do_coag=True,
                  so2_to_h2so4_rate=1.0e-5,
@@ -938,9 +938,22 @@ def cam_run_step(state, *, topology=None, strat=False, n_substeps=1,
     """One CAM box-model step (mam_box_run_cam's loop body).
 
     Per SUBSTEP of ``deltat / n_substeps`` — sub-stepping wraps the WHOLE
-    physics (A6, owner-approved 2026-08-26), so ``n_substeps = n`` is
-    semantically identical to running the box at ``deltat/n``, the exact
-    quantity the Fortran dt-convergence study varied:
+    physics, so ``n_substeps = n`` is semantically identical to running
+    the box at ``deltat/n``, the exact quantity the Fortran
+    dt-convergence study varied.
+
+    **``n_substeps`` defaults to 16 (ADR-021)** — a deliberate deviation
+    from the defaults-reproduce-the-reference convention, owner-decided
+    (plan 025 A6): CAM's un-substepped sequential splitting does not
+    converge while nucleation is active, and n = 1 (CAM's own behaviour,
+    and the reference box's) is 26-78%% from the converged answer at
+    dt = 30 s on the default scenario. The error is first-order (halves
+    per doubling); 16 lands at ~1.4-4.4%% for 16x cost. **Pass
+    ``n_substeps=1`` to reproduce CAM / the Fortran reference exactly**
+    — every parity test does. The full measured table is in ADR-021 and
+    plan 025 §7.
+
+    The per-substep sequence:
 
     1. SO2 → H2SO4 first-order conversion (the gas-chemistry stub,
        sulfur-mole-conserving by MW ratio; default rate 1e-5 /s =

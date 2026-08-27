@@ -335,3 +335,32 @@ Status values: **Accepted**, **Proposed**, **Superseded by ADR-NNN**.
   - **Keep the static per-call argument.** Rejected: it is the recompile-per-value and non-differentiable path, and it made the config surface two-headed (global + static kwarg) for one number.
   - **Put everything, selectors included, in one struct.** Rejected: `backend` and `mdo_*` must be static to select traced code; mixing them in would either force `static_argnums` on the whole struct — undoing the traced-leaf benefit — or require a `flax.struct.field(pytree_node=False)` dependency the package does not carry.
   - **Drop the `configure_*` globals entirely in favour of `params`.** Rejected for this PR: it is a breaking change for existing hosts and unrelated to pcarbon aging. Worth revisiting once `params` has usage.
+
+---
+
+## ADR-021 — The CAM driver defaults to `n_substeps = 16`, deviating from reference-faithful defaults
+
+- **Status:** Accepted 2026-08-26 (owner: "I think 16 is the better number but we need to document it"). Plan 025 assumption A6, resolved. Introduced on `feat/cam-driver` (PR [#74](https://github.com/reflective-org/MAM4-JAX/pull/74)).
+- **Context:** CAM couples MAM microphysics as an UN-SUBSTEPPED sequential chain (gasaerexch → newnuc → coag once per Δt; `aero_model.F90:1202-1247`), and that splitting does not converge while nucleation is active — nucleation and condensation compete for the same H₂SO₄ within the step, and the sequential split resolves the competition wrongly at coarse Δt. The Fortran box study measured a **2.08×** spread in accumulation sulfate across dt 120 s → 1.875 s (vs 1.3 % with nucleation off). The JAX driver (`coupling/cam_driver.py:cam_run_step`) wraps the WHOLE per-step physics in a substep loop, so `n_substeps = n` is semantically identical to running the box at `Δt/n`.
+- **Measurement** (default scenario, dt = 30 s, error vs `n_substeps = 32`):
+
+  | n_substeps | num_a2 | num_a1 | so4_a1 | h2so4 | cost |
+  |---|---|---|---|---|---|
+  | 1 (= CAM itself) | 26 % | 60 % | 57 % | 78 % | 1× |
+  | 2 | 16 % | 34 % | 31 % | 51 % | 2× |
+  | 4 | 9 % | 17 % | 16 % | 27 % | 4× |
+  | 8 | 4 % | 8 % | 7 % | 13 % | 8× |
+  | **16 (default)** | **1.4 %** | **2.5 %** | **2.2 %** | **4.4 %** | 16× |
+
+  First-order convergence: the error halves per doubling; cost is linear.
+- **Decision:**
+  1. **`cam_run_step` / `cam_run_timesteps` default `n_substeps = 16`.** This is a deliberate deviation from the repo convention that defaults reproduce the reference (established in the PR #75 review): CAM's own behaviour (`n_substeps = 1`) is 26–78 % from the converged answer at a 30 s step, and shipping a known-O(50 %) configuration as the default answer was judged worse than deviating from the reference. 16 lands in the ~1.4–4.4 % band.
+  2. **Reference parity is opt-in and pinned:** every parity test passes `n_substeps = 1` explicitly, and `tests/test_cam_driver.py` locks both the default value and the convergence direction/rate.
+  3. The knob stays fully exposed; hosts trading accuracy for cost pick their own n with the table above.
+- **Consequences:**
+  - A plain `cam_run_step(state)` is ~16× the reference's cost and does NOT bit-match the Fortran box; `n_substeps = 1` does (to the reference output's own 7-significant-digit print floor; total sulfur at 4.5e-15).
+  - The E3SM driver (`mam4_jax/driver.py`) is untouched — its amicphys path has its own substepping story (diffrax / ADR-013).
+- **Alternatives considered:**
+  - **Default 1 (reference-faithful).** Rejected by the owner: this driver exists to produce usable answers, and the un-substepped splitting error dwarfs every other error source in the port by ~5 orders of magnitude.
+  - **Default 8.** Rejected: still 4–13 % from converged; 16's ~2 % is the first rung that is small against typical host-model uncertainty, at a cost that is still trivial for a box model.
+  - **Adaptive substepping.** Out of scope here (that is the diffrax branch's approach on the E3SM side); a fixed count keeps the CAM driver structurally faithful to "CAM at a finer dt".

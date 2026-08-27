@@ -345,13 +345,12 @@ step within ~1 % of the converged answer on the reference scenario).
    | 8 | 4% | 8% | 7% | 13% |
    | 16 | 1.4% | 2.5% | 2.2% | 4.4% |
 
-   First-order splitting, exactly the Fortran study's 2.08x finding. **The
-   shipped default is `n_substeps = 1`** — A6 said "default ON", but the
-   #75-review convention (defaults reproduce the reference) takes
-   precedence: the reference is un-substepped, and a default that makes
-   plain runs ~60% different from every parity fixture repeats the
-   n_so4_monolayers mistake. Hosts should pass `n_substeps >= 8`; the
-   docstring and this table say so. ⚠ OWNER CALL: if A6's
-   "default ON" should win instead, it is a one-line change plus an ADR.
+   First-order splitting, exactly the Fortran study's 2.08x finding.
+   **RESOLVED 2026-08-26 — owner picked `n_substeps = 16` as the default**
+   ("I think 16 is the better number but we need to document it"),
+   accepting the deliberate deviation from the defaults-reproduce-the-
+   reference convention. Documented as **ADR-021** (with this table);
+   every parity test opts back into `n_substeps = 1` explicitly, and
+   `test_documented_defaults` locks the value. A6 is closed.
 3. The E3SM path is bit-unchanged by the threading (the `tables=None`
    defaults are the same module constants; full suite green throughout).
