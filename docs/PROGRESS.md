@@ -5,6 +5,16 @@ A running, append-only log of project milestones. Most-recent entry on top. Upda
 Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
+## 2026-08-25/26 — CAM driver: sulfeq cluster + full CAM chain, end-to-end validated; MAM5's first physics (branch `feat/cam-driver`)
+
+- PR: [#74](https://github.com/reflective-org/MAM4-JAX/pull/74) (open — owner is holding merges to `main`). Plan: `docs/plans/025-cam-driver.md` §6–7 (G0–G5, all done). Merged `main`@v0.4.0 and PR #73's topology branch into the branch en route.
+- **What landed**: the complete CESM/CAM driver for the SO4-only box scope — see the new "CESM/CAM variant" section in `FEATURES.md` for the per-component table. Every component validated against fresh captures of the real Fortran (five new `tools/capture_*` in `mam-box-fortran`), both topologies, machine ε at each layer; end-to-end 120-step trajectories match the fixdumfac reference builds at the reference's own print floor with total sulfur at 4.5e-15. This is the first time `cam_mam5` (incl. `coarse_strat`) produced physics against an independent reference.
+- **ADR-021**: `n_substeps` defaults to 16 (owner decision) — CAM's own un-substepped splitting is 26–78% from converged at dt=30 s with nucleation active; a deliberate, documented deviation from the defaults-reproduce-the-reference convention. Parity tests pin `n_substeps=1`.
+- **Findings recorded**: the box reference's `is_first_step()` shim is true every step, so the lagged-wet-diameter sulfeq feedback does not exist in the reference (`reseed_dgnwet_each_step` exposes both behaviours); `shr_const_rgas` is the product 8314.467591 (the rounded 8314.46 cost 2e-6 in the coag number solves); upstream surf-tension interpolation bug in `calc_h2so4_equilib_mixrat` (written up in `mam-box-fortran/docs/bugs/`); CAM's `gas_aer_uptkrates` is a third variant, distinct from both E3SM ports.
+- Suite: **270 passed**.
+
+---
+
 
 ## 2026-08-25 — Primary-carbon aging + float32-safe coagulation mass transfer (`main`)
 
