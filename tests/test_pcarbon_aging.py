@@ -433,12 +433,15 @@ def test_run_step_params_is_traced_not_static(per_process) -> None:
     the whole point of params being a traced pytree (a calibration sweep
     must not recompile per value)."""
     from mam4_jax.coupling.amicphys import AmicphysParams
+    from mam4_jax.driver import _run_step_jit   # the jitted inner; run_step
+    # is an unjitted validation wrapper (clear-sky guard), so the cache
+    # bookkeeping lives one level down.
     ic = _build_state(per_process["calcsize_before"], step=0)
-    run_step.clear_cache()
+    _run_step_jit.clear_cache()
     out3 = run_step(ic, AmicphysParams(n_so4_monolayers=jnp.asarray(3.0)))
-    size_after_first = run_step._cache_size()
+    size_after_first = _run_step_jit._cache_size()
     out8 = run_step(ic, AmicphysParams(n_so4_monolayers=jnp.asarray(8.0)))
-    assert run_step._cache_size() == size_after_first, (
+    assert _run_step_jit._cache_size() == size_after_first, (
         "a new threshold VALUE triggered a recompile — params must be "
         "traced, not static")
     # And the values genuinely differ (the sweep measures something).

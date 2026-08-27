@@ -35,6 +35,22 @@ Status legend: **planned**, **in progress**, **ported (validated)**, **deferred*
 | Constants and species table | `e3sm_src/modal_aero_data.F90`, `e3sm_src/shr_const_mod.F90` | compile-time + runtime indices hard-coded in `mam4_jax/data.py` (0-based, with sentinel `-1` for unused slots); provenance at `tests/reference/indices/reference.npz` |
 | Error function / special functions | `box_model_utils/error_function.F90`, `e3sm_src/shr_spfn_mod.F90` | use `jax.scipy.special` if available; otherwise port closed-form |
 
+## CESM/CAM variant (plans 024/025, branch `feat/cam-driver`)
+
+The CAM code line shares leaf kernels with E3SM but none of the orchestration (`grep -rI amicphys` over CAM `src/` is empty). Reference: the sibling repo `mam-box-fortran` (CESM3 `cam6_4_187`), **fixdumfac** builds. All rows below are on `feat/cam-driver` (PR #74), not yet on `main`.
+
+| Feature | Fortran source | Status |
+| --- | --- | --- |
+| CAM topologies + parameters | read out of an initialised box model (not transcribable) | **landed** — `core/cam_topologies.py` (`cam_mam4`, `cam_mam5` incl. `coarse_strat`) + `core/cam_params.py` (per-type `specmw`, mechanism `adv_mass`, tracer names), both generated + sha-stamped; `tests/test_cam_{topology,params}.py` |
+| Stratospheric sulfate equilibrium (`sulfeq` cluster) | `modal_aero_wateruptake.F90:895-1171` | **ported (validated)** — `physics/strat_sulfate.py`: Tabazadeh wt%, Ayers/Kulmala vapor pressure, dual Kelvin factors, + the reversible H2SO4 uptake consumer (`modal_aero_gasaerexch.F90:523-566`). Machine ε vs `tools/capture_sulfeq` (wtpct 1.3e-15, qeq 3.5e-14); upstream surf-tension interp bug preserved + written up |
+| Mixed-phase table saturation (`estblf`/generic `qsat`) | `wv_saturation.F90` | **ported (validated)** — `physics/cam_saturation.py`; ~2× off the direct over-water formula at 200 K, which is why it exists separately |
+| gasaerexch (SO4-only) | `modal_aero_gasaerexch.F90` | **ported (validated)** — `coupling/cam_driver.py`: third-variant uptake rates, fgain/reversible condensation, the legacy **8.0-monolayer** aging block, rename A1, tendency application. 1.1e-15 vs `tools/capture_gasaerexch`, both topologies |
+| newnuc wrapper | `modal_aero_newnuc.F90:59-520` | **ported (validated)** — step-average H2SO4 reconstruction, table-qsat RH, cutoffs/floor/size constraints over the shared leafs. 2.0e-11 (ulp × J∝a¹⁰ amplification) vs `tools/capture_newnuc` |
+| coag (`pair_option_acoag = 3`) | `modal_aero_coag.F90:73-990` | **ported (validated)** — three pairs, sequential three-branch number solves, aged-through aitken transfer with shell accounting, coag-side 8-monolayer aging, over the byte-identical `getcoags`. 6e-16 vs `tools/capture_coag`. Found + fixed en route: `shr_const_rgas` is the product 8314.467591, not 8314.46 |
+| rename A1 (`no_acc_crs`) | `modal_aero_rename.F90:243-624` | **ported (validated)** — inside `cam_driver.py`; A2 (`acc_crs`) stays deferred (measured inert below `qso2` ~1e-5); references pinned `no_acc_crs` |
+| calcsize / wateruptake topology threading | shared kernels | **landed** — optional `tables` bundles (E3SM default bit-identical); wateruptake gains `qv=` and the `strat=` wt%-composition water branch |
+| CAM box driver | `mam_box_driver_cam.F90` | **ported (validated end-to-end)** — `cam_run_step`/`cam_run_timesteps`: SO2 stub → calcsize → sulfeq → wateruptake → mmr↔vmr → microphysics, substep loop wrapping the whole step (**default `n_substeps = 16`, ADR-021**; parity tests pin 1). 120 steps × {cam_mam4, cam_mam5} × {trop, strat}: every printed tracer at the reference's 7-digit print floor (~5e-7), total sulfur **4.5e-15**. `tests/test_cam_driver.py` |
+
 ## Modes and species
 
 The MAM4-MOM (with `RAIN_EVAP_TO_COARSE_AERO`) reference configuration has four modes in this Fortran order (from `modal_aero_data.F90:104-109, 121-123`):

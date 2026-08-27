@@ -84,6 +84,62 @@ from mam4_jax.core.data import (
 #   line 627 — tadj  = 86400 (1 day adjustment time scale)
 #   line 748 — frelaxadj = 27 (= 3^3; relaxed bounds = strict ÷ frelaxadj
 #              on the upper side and × frelaxadj on the lower)
+
+
+class CalcsizeTables:
+    """Every mode/species table calcsize reads, as one bundle.
+
+    The default instance (`_E3SM_TABLES`, built from the module constants
+    imported above) keeps the E3SM path bit-identical; the CAM driver
+    builds instances from a `Topology` + `cam_params` with indices in its
+    own state coordinate (the gas window). Plain numpy / Python scalars —
+    static under jit.
+    """
+
+    def __init__(self, *, nait, nacc, nspec_amode,
+                 lmassptr, lmassptrcw, numptr, numptrcw,
+                 slot_valid, per_slot_density,
+                 voltonumb, voltonumblo, voltonumbhi,
+                 dgnum, dgnumlo, dgnumhi, dumfac,
+                 csizxf_frma, csizxf_tooa, csizxf_frmc, csizxf_tooc,
+                 noxf_acc2ait, v2nzz):
+        self.nait, self.nacc = int(nait), int(nacc)
+        self.nspec_amode = np.asarray(nspec_amode)
+        self.lmassptr = np.asarray(lmassptr)
+        self.lmassptrcw = np.asarray(lmassptrcw)
+        self.numptr = np.asarray(numptr)
+        self.numptrcw = np.asarray(numptrcw)
+        self.slot_valid = np.asarray(slot_valid)
+        self.per_slot_density = np.asarray(per_slot_density)
+        self.voltonumb = np.asarray(voltonumb)
+        self.voltonumblo = np.asarray(voltonumblo)
+        self.voltonumbhi = np.asarray(voltonumbhi)
+        self.dgnum = np.asarray(dgnum)
+        self.dgnumlo = np.asarray(dgnumlo)
+        self.dgnumhi = np.asarray(dgnumhi)
+        self.dumfac = np.asarray(dumfac)
+        self.csizxf_frma = np.asarray(csizxf_frma)
+        self.csizxf_tooa = np.asarray(csizxf_tooa)
+        self.csizxf_frmc = np.asarray(csizxf_frmc)
+        self.csizxf_tooc = np.asarray(csizxf_tooc)
+        self.noxf_acc2ait = np.asarray(noxf_acc2ait)
+        self.v2nzz = float(v2nzz)
+
+
+_E3SM_TABLES = CalcsizeTables(
+    nait=AITKEN_MODE_IDX, nacc=ACCUM_MODE_IDX, nspec_amode=NSPEC_AMODE,
+    lmassptr=INDEX_TABLES.lmassptr_amode,
+    lmassptrcw=INDEX_TABLES.lmassptrcw_amode,
+    numptr=INDEX_TABLES.numptr_amode, numptrcw=INDEX_TABLES.numptrcw_amode,
+    slot_valid=SLOT_VALID, per_slot_density=PER_SLOT_DENSITY,
+    voltonumb=VOLTONUMB_AMODE, voltonumblo=VOLTONUMBLO_AMODE,
+    voltonumbhi=VOLTONUMBHI_AMODE,
+    dgnum=DGNUM_AMODE, dgnumlo=DGNUMLO_AMODE, dgnumhi=DGNUMHI_AMODE,
+    dumfac=DUMFAC_AMODE,
+    csizxf_frma=LSPECFRMA_CSIZXF, csizxf_tooa=LSPECTOOA_CSIZXF,
+    csizxf_frmc=LSPECFRMC_CSIZXF, csizxf_tooc=LSPECTOOC_CSIZXF,
+    noxf_acc2ait=NOXF_ACC2AIT, v2nzz=V2NZZ_AIT_ACC,
+)
 _THIRD     = 1.0 / 3.0
 _TADJ_S    = 86400.0
 _FRELAXADJ = 27.0
@@ -269,6 +325,7 @@ def _apply_aitacc_transfer(
     drv_a: jnp.ndarray, drv_c: jnp.ndarray,
     q: jnp.ndarray,    qqcw: jnp.ndarray,
     deltat: jnp.ndarray, tadj_inv: jnp.ndarray,
+    tb: CalcsizeTables,
 ):
     """Apply Fortran's Aitken ↔ accumulation transfer (lines 944–1294).
 
@@ -284,12 +341,12 @@ def _apply_aitacc_transfer(
     the caller needs them; they were previously discarded, which is why that
     block had no counterpart here.
     """
-    nait = AITKEN_MODE_IDX
-    nacc = ACCUM_MODE_IDX
-    v2nzz   = float(V2NZZ_AIT_ACC)
-    v2n_acc = float(VOLTONUMB_AMODE[nacc])
-    v2n_ait = float(VOLTONUMB_AMODE[nait])
-    v2nlo_acc = float(VOLTONUMBLO_AMODE[nacc])
+    nait = tb.nait
+    nacc = tb.nacc
+    v2nzz   = float(tb.v2nzz)
+    v2n_acc = float(tb.voltonumb[nacc])
+    v2n_ait = float(tb.voltonumb[nait])
+    v2nlo_acc = float(tb.voltonumblo[nacc])
 
     # --- aitken → accum rates (Fortran lines 1010-1045) -------------------
     num_a_ait = num_a[..., nait]
@@ -318,12 +375,12 @@ def _apply_aitacc_transfer(
     # No-transfer species mass: accum slots whose species type isn't in Aitken.
     drv_a_noxf = jnp.zeros_like(drv_a_acc)
     drv_c_noxf = jnp.zeros_like(drv_c_acc)
-    for s in range(int(NSPEC_AMODE[nacc])):
-        if not NOXF_ACC2AIT[s]:
+    for s in range(int(tb.nspec_amode[nacc])):
+        if not tb.noxf_acc2ait[s]:
             continue
-        idx_a = int(LMASSPTR_AMODE[nacc][s])
-        idx_c = int(LMASSPTRCW_AMODE[nacc][s])
-        density = float(PER_SLOT_DENSITY[nacc, s])
+        idx_a = int(tb.lmassptr[nacc][s])
+        idx_c = int(tb.lmassptrcw[nacc][s])
+        density = float(tb.per_slot_density[nacc, s])
         drv_a_noxf = drv_a_noxf + jnp.maximum(q[..., idx_a], 0.0) / density
         drv_c_noxf = drv_c_noxf + jnp.maximum(qqcw[..., idx_c], 0.0) / density
     drv_t_noxf = drv_a_noxf + drv_c_noxf
@@ -383,11 +440,11 @@ def _apply_aitacc_transfer(
     # at lsfrm (aitken) and lstoo (accum) with opposite signs.
     new_q    = q
     new_qqcw = qqcw
-    for iq in range(int(LSPECFRMA_CSIZXF.shape[0])):
-        lsfrm    = int(LSPECFRMA_CSIZXF[iq])   # aitken pcnst idx (interstitial)
-        lstoo    = int(LSPECTOOA_CSIZXF[iq])   # accum pcnst idx
-        lsfrm_c  = int(LSPECFRMC_CSIZXF[iq])
-        lstoo_c  = int(LSPECTOOC_CSIZXF[iq])
+    for iq in range(int(tb.csizxf_frma.shape[0])):
+        lsfrm    = int(tb.csizxf_frma[iq])   # aitken state idx (interstitial)
+        lstoo    = int(tb.csizxf_tooa[iq])   # accum state idx
+        lsfrm_c  = int(tb.csizxf_frmc[iq])
+        lstoo_c  = int(tb.csizxf_tooc[iq])
 
         if iq == 0:
             # Number tracer pair — total delta is computed by net of the
@@ -444,7 +501,8 @@ def _compute_dgn_v2n(num: jnp.ndarray, drv: jnp.ndarray,
 
 def calcsize(state: dict[str, Any], params=None, config=None,
              *, do_aitacc_transfer: bool = True,
-             bug_compat_stale_dumfac: bool = False) -> dict[str, Any]:
+             bug_compat_stale_dumfac: bool = False,
+             tables: CalcsizeTables | None = None) -> dict[str, Any]:
     """Apply size redistribution. ADR-009 entry point.
 
     Args:
@@ -457,8 +515,13 @@ def calcsize(state: dict[str, Any], params=None, config=None,
             stops after the per-mode adjustment — matches the Fortran
             ``do_aitacc_transfer_in=.false.`` reference at
             ``tests/reference/per_process_no_aitacc/``.
+        tables: mode/species tables, ``None`` (default) = the E3SM
+            MAM4-MOM constants — bit-identical to the pre-parameter
+            behaviour. The CAM driver passes topology-derived tables
+            with indices in ITS state coordinate (plan 025 G4b).
     """
     del params, config
+    tb = _E3SM_TABLES if tables is None else tables
 
     q        = jnp.asarray(state["q"],        dtype=jnp.float64)
     qqcw     = jnp.asarray(state["qqcw"],     dtype=jnp.float64)
@@ -467,16 +530,16 @@ def calcsize(state: dict[str, Any], params=None, config=None,
     # but calcsize derives its own new value below.
 
     # Index tables and per-(mode, slot) species properties.
-    lmass_idx        = jnp.asarray(INDEX_TABLES.lmassptr_amode,   dtype=jnp.int32)
-    lmass_idx_cw     = jnp.asarray(INDEX_TABLES.lmassptrcw_amode, dtype=jnp.int32)
-    numptr           = jnp.asarray(INDEX_TABLES.numptr_amode,     dtype=jnp.int32)
-    numptr_cw        = jnp.asarray(INDEX_TABLES.numptrcw_amode,   dtype=jnp.int32)
-    slot_mask        = jnp.asarray(SLOT_VALID, dtype=jnp.float64)
-    per_slot_density = jnp.asarray(PER_SLOT_DENSITY)
+    lmass_idx        = jnp.asarray(tb.lmassptr,   dtype=jnp.int32)
+    lmass_idx_cw     = jnp.asarray(tb.lmassptrcw, dtype=jnp.int32)
+    numptr           = jnp.asarray(tb.numptr,     dtype=jnp.int32)
+    numptr_cw        = jnp.asarray(tb.numptrcw,   dtype=jnp.int32)
+    slot_mask        = jnp.asarray(tb.slot_valid, dtype=jnp.float64)
+    per_slot_density = jnp.asarray(tb.per_slot_density)
 
     # Per-mode bound constants (broadcast as (m,)).
-    v2nxx = jnp.asarray(VOLTONUMBHI_AMODE)
-    v2nyy = jnp.asarray(VOLTONUMBLO_AMODE)
+    v2nxx = jnp.asarray(tb.voltonumbhi)
+    v2nyy = jnp.asarray(tb.voltonumblo)
     if do_aitacc_transfer:
         # The Fortran deliberately disables the size bounds on the two modes
         # taking part in the aitken<->accum transfer, so the transfer block --
@@ -491,18 +554,18 @@ def calcsize(state: dict[str, Any], params=None, config=None,
         # Omitting it clamped number where the reference does not.
         # do_aitacc_transfer is a Python bool, so this branch is static under
         # jit and costs nothing at trace time.
-        v2nxx = v2nxx.at[AITKEN_MODE_IDX].divide(1.0e6)
-        v2nyy = v2nyy.at[ACCUM_MODE_IDX].multiply(1.0e6)
+        v2nxx = v2nxx.at[tb.nait].divide(1.0e6)
+        v2nyy = v2nyy.at[tb.nacc].multiply(1.0e6)
     # Both trees recompute the relaxed bounds AFTER that adjustment (the "NEW"
     # comments at CAM :559-560 / E3SM :759-760), so the relaxed pair inherits
     # the turned-off bounds. With do_aitacc_transfer False these derive from
     # the untouched values, matching the Fortran's pre-branch assignment.
     v2nxxrl = v2nxx / _FRELAXADJ
     v2nyyrl = v2nyy * _FRELAXADJ
-    dgnxx = jnp.asarray(DGNUMHI_AMODE)
-    dgnyy = jnp.asarray(DGNUMLO_AMODE)
-    dumfac = jnp.asarray(DUMFAC_AMODE)
-    voltonumb_amode = jnp.asarray(VOLTONUMB_AMODE)
+    dgnxx = jnp.asarray(tb.dgnumhi)
+    dgnyy = jnp.asarray(tb.dgnumlo)
+    dumfac = jnp.asarray(tb.dumfac)
+    voltonumb_amode = jnp.asarray(tb.voltonumb)
 
     # Adjustment time scale (Fortran lines 626–631).
     tadj = jnp.maximum(_TADJ_S, deltat)
@@ -565,7 +628,7 @@ def calcsize(state: dict[str, Any], params=None, config=None,
          q_post_transfer, qqcw_post_transfer,
          ixfer_ait2acc, ixfer_acc2ait) = _apply_aitacc_transfer(
             num_a_final, num_c_final, drv_a, drv_c, q, qqcw,
-            deltat, tadj_inv,
+            deltat, tadj_inv, tb,
         )
         xfer_fired = ixfer_ait2acc | ixfer_acc2ait
     else:
@@ -577,7 +640,7 @@ def calcsize(state: dict[str, Any], params=None, config=None,
     # When drv <= 0 the Fortran loop keeps the per-mode defaults
     # (dgnum_amode, voltonumb_amode) that were set at the top of the loop.
     # We mirror that with a final jnp.where fallback.
-    dgnum_amode = jnp.asarray(DGNUM_AMODE)
+    dgnum_amode = jnp.asarray(tb.dgnum)
 
     dgncur_a_new, v2ncur_a_new = _compute_dgn_v2n(
         num_a_final, drv_a, v2nxx, v2nyy, dgnxx, dgnyy, dumfac,
@@ -619,21 +682,21 @@ def calcsize(state: dict[str, Any], params=None, config=None,
     # The Fortran comment "! currently inactive" at :933 describes a regime in
     # which no transfer fires, not a disabled code path.
     if do_aitacc_transfer:
-        v2nhi_raw = jnp.asarray(VOLTONUMBHI_AMODE)
-        v2nlo_raw = jnp.asarray(VOLTONUMBLO_AMODE)
-        dgnhi_raw = jnp.asarray(DGNUMHI_AMODE)
-        dgnlo_raw = jnp.asarray(DGNUMLO_AMODE)
+        v2nhi_raw = jnp.asarray(tb.voltonumbhi)
+        v2nlo_raw = jnp.asarray(tb.voltonumblo)
+        dgnhi_raw = jnp.asarray(tb.dgnumhi)
+        dgnlo_raw = jnp.asarray(tb.dgnumlo)
         if bug_compat_stale_dumfac:
             # The value CAM is left holding: the last mode's.
-            dumfac_post = jnp.full_like(jnp.asarray(DUMFAC_AMODE),
-                                        float(DUMFAC_AMODE[-1]))
+            dumfac_post = jnp.full_like(jnp.asarray(tb.dumfac),
+                                        float(tb.dumfac[-1]))
         else:
-            dumfac_post = jnp.asarray(DUMFAC_AMODE)
+            dumfac_post = jnp.asarray(tb.dumfac)
 
         # Only the two transfer lanes are rewritten.
-        lane = np.zeros(len(NSPEC_AMODE), dtype=bool)
-        lane[AITKEN_MODE_IDX] = True
-        lane[ACCUM_MODE_IDX] = True
+        lane = np.zeros(len(tb.nspec_amode), dtype=bool)
+        lane[tb.nait] = True
+        lane[tb.nacc] = True
         lane = jnp.asarray(lane)
         sel = jnp.asarray(xfer_fired)[..., None] & lane
 

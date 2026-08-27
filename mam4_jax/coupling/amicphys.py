@@ -1003,6 +1003,7 @@ def amicphys(state: dict[str, Any], params: AmicphysParams | None = None,
     differently-configured instances in one process must use ``params``.
     """
     del config
+    _check_clear_sky(state.get("cldn"))
     if params is None:
         params = AmicphysParams()
     return _mam_amicphys_1gridcell(
@@ -1011,6 +1012,45 @@ def amicphys(state: dict[str, Any], params: AmicphysParams | None = None,
         mdo_newnuc=mdo_newnuc,         mdo_coag=mdo_coag,
         mdo_pcarbonaging=mdo_pcarbonaging,
     )
+
+
+def _check_clear_sky(cldn) -> None:
+    """Refuse a non-zero cloud fraction, since the cloudy sub-area is not ported.
+
+    Only the clear-sky sub-area is implemented. With ``cldn > 0`` the Fortran
+    splits the cell and area-weights two different sub-area calculations; this
+    port would instead apply clear-sky physics to the whole cell and return an
+    answer that looks fine. That is silent wrong physics, so it is refused.
+
+    Checked here, at the public entry, rather than inside
+    ``_mam_amicphys_1gridcell``: under ``jax.jit`` the value is a tracer with no
+    readable magnitude, and a check that cannot fire is worse than no check
+    because it reads as protection. If ``cldn`` IS a tracer we say so instead of
+    pretending. An earlier version of this docstring claimed the error was
+    raised and no check existed at all.
+    """
+    if cldn is None:
+        return
+    try:
+        worst = float(np.max(np.abs(np.asarray(cldn))))
+    except (TypeError, ValueError, jax.errors.TracerArrayConversionError,
+            jax.errors.ConcretizationTypeError):
+        # Traced: no readable magnitude, so nothing can be checked here. Return
+        # SILENTLY rather than warning. driver.run_step is jitted, so the traced
+        # case is the normal one and a warning would fire on every single call --
+        # and a warning that always fires gets filtered, at which point it
+        # protects nothing while still reading as protection. The real guard for
+        # that path runs before the jit, in driver.run_step / run_timesteps.
+        return
+    if worst > 0.0:
+        raise NotImplementedError(
+            f"amicphys: cloud fraction cldn has magnitude up to {worst:.3e}, but "
+            "only the clear-sky sub-area is ported. The Fortran splits the cell "
+            "and area-weights clear and cloudy calculations; applying clear-sky "
+            "physics to a partly cloudy cell would return a plausible but wrong "
+            "answer. Pass cldn = 0, or implement "
+            "_mam_amicphys_1subarea_cloudy."
+        )
 
 
 def _mam_amicphys_1gridcell(state: dict[str, Any],
@@ -1023,15 +1063,12 @@ def _mam_amicphys_1gridcell(state: dict[str, Any],
     The Fortran routine splits each grid cell into clear and cloudy
     sub-areas weighted by ``cldn``. For the canonical box-model setup
     ``cldn = 0`` everywhere (``driver.F90:591``), so only the clear-sky
-    path is exercised. The cloudy path is not implemented; calling this
-    with a non-zero cloud fraction in any cell raises a clear error so
-    future workflows don't silently get wrong physics.
+    path is exercised. The cloudy path is not implemented.
+
+    The ``cldn`` guard lives in the public :func:`amicphys` entry, not here,
+    because by this point the value may be a tracer with no readable magnitude.
+    See :func:`_check_clear_sky`.
     """
-    cldn = state.get("cldn")
-    # We don't enforce the cldn==0 check here because the value is a
-    # JAX array (could be traced); the box-model driver guarantees zero
-    # and our tests pass that explicitly. Cloudy support would land as a
-    # later PR alongside `_mam_amicphys_1subarea_cloudy`.
     return _mam_amicphys_1subarea_clear(
         state, params,
         mdo_gasaerexch=mdo_gasaerexch, mdo_rename=mdo_rename,
@@ -1290,7 +1327,7 @@ _RENAME_METHOD_OPTAA = 40   # Fortran default (modal_aero_amicphys.F90:120).
 
 
 def _mam_rename_1subarea(qnum_cur, qaer_cur, qaer_delsub_grow4rnam,
-                         qwtr_cur, fac_m2v_aer):
+                         qwtr_cur, fac_m2v_aer, *, method="e3sm"):
     """Port of ``mam_rename_1subarea`` (``modal_aero_amicphys.F90:3923–4246``).
 
     Operates on the amicphys-local single-(col, level, sub-area) view of
@@ -1392,20 +1429,48 @@ def _mam_rename_1subarea(qnum_cur, qaer_cur, qaer_delsub_grow4rnam,
     tailfr_numnew = 0.5 * erfc(yn_tail_new)
     tailfr_volnew = 0.5 * erfc(yv_tail_new)
 
-    # Old tail fractions — with the optaa==40 dryvol/dgn adjustment.
-    # (Fortran lines 4135-4141.)
+    # Old tail fractions. THIS IS WHERE THE TWO ALGORITHMS DIVERGE.
+    #
+    # E3SM production runs rename_method_optaa = 40; CAM's default path
+    # (modal_aero_rename_no_acc_crs_sub) implements what that code calls the
+    # optaa /= 40 branch. They differ in exactly three decisions -- see
+    # mam-box-fortran/docs/reference/discrepancies/rename.md section 4:
+    #
+    #   (1) whether the growth increment is gated BEFORE anything else,
+    #   (2) what triggers the old-diameter clamp, and
+    #   (3) whether the old VOLUME is rescaled along with the clamped diameter.
     dgn_t_old_raw = (dryvol_t_oldbnd / (num_t_oldbnd * factoraa_mfrm)) ** _ONETHIRD
-    above_cut = dgn_t_old_raw > dp_belowcut_mfrm
-    dryvol_t_old_used = jnp.where(
-        above_cut,
-        dryvol_t_old * (dp_belowcut_mfrm / dgn_t_old_raw) ** 3,
-        dryvol_t_old,
-    )
-    dgn_t_old = jnp.where(above_cut, dp_belowcut_mfrm, dgn_t_old_raw)
 
-    # Guard 3 (Fortran line 4141, optaa==40 branch):
-    #   (dryvol_t_new - dryvol_t_old_used) <= 1e-6 * dryvol_t_oldbnd.
-    guard_voldel = (dryvol_t_new - dryvol_t_old_used) > 1.0e-6 * dryvol_t_oldbnd
+    if method == "cam":
+        # CAM / E3SM-legacy. A1:479, 502-518 (identical to B:317, 340-356).
+        #   (1) gate on the growth increment itself, up front
+        guard_voldel = dryvol_t_del > 1.0e-6 * dryvol_t_oldbnd
+        #   (2) clamp fires on the NEW diameter reaching dp_cut, and clamps the
+        #       diameter only -- via min(), so it never increases dgn_t_old
+        clamp = dgn_t_new >= dp_cut_mfrm
+        dgn_t_old = jnp.where(clamp,
+                              jnp.minimum(dgn_t_old_raw, dp_belowcut_mfrm),
+                              dgn_t_old_raw)
+        #   (3) the old volume is NOT rescaled
+        dryvol_t_old_used = dryvol_t_old
+    elif method == "e3sm":
+        # optaa == 40. C:4108-4110, 4135-4141, 4156.
+        above_cut = dgn_t_old_raw > dp_belowcut_mfrm
+        dryvol_t_old_used = jnp.where(
+            above_cut,
+            dryvol_t_old * (dp_belowcut_mfrm / dgn_t_old_raw) ** 3,
+            dryvol_t_old,
+        )
+        dgn_t_old = jnp.where(above_cut, dp_belowcut_mfrm, dgn_t_old_raw)
+        # The up-front growth gate is SKIPPED when optaa == 40; a different one
+        # is applied after the rescale instead (C:4141).
+        guard_voldel = (dryvol_t_new - dryvol_t_old_used) > 1.0e-6 * dryvol_t_oldbnd
+    else:
+        raise ValueError(
+            f"rename method must be 'cam' or 'e3sm', got {method!r}. "
+            "'cam' is modal_aero_rename_no_acc_crs_sub, which E3SM's code "
+            "calls its optaa /= 40 branch; 'e3sm' is optaa == 40."
+        )
 
     lndgn_old = jnp.log(dgn_t_old)
     lndgv_old = lndgn_old + tmp_alnsg2_mfrm

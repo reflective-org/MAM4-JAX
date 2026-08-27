@@ -62,7 +62,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
-from .coupling.amicphys import amicphys
+from .coupling.amicphys import _check_clear_sky, amicphys
 from .physics.calcsize import calcsize
 from .physics.wateruptake import wateruptake
 
@@ -80,8 +80,8 @@ def cloud_chem_simple_sub(state: dict[str, Any]) -> dict[str, Any]:
 
 
 @functools.partial(jax.jit, static_argnames=("mdo_pcarbonaging",))
-def run_step(state: dict[str, Any], params=None, *,
-             mdo_pcarbonaging: int = 1) -> dict[str, Any]:
+def _run_step_jit(state: dict[str, Any], params=None, *,
+                  mdo_pcarbonaging: int = 1) -> dict[str, Any]:
     """One operator-splitting timestep.
 
     Sequence mirrors ``driver.F90:1080-1367`` (``main_time_loop``):
@@ -127,8 +127,8 @@ _TRAJ_KEYS = ("q", "qqcw", "dgncur_a", "dgncur_awet",
 
 @functools.partial(jax.jit,
                    static_argnames=("n_steps", "mdo_pcarbonaging"))
-def run_timesteps(state: dict[str, Any], n_steps: int, params=None, *,
-                  mdo_pcarbonaging: int = 1) -> dict[str, Any]:
+def _run_timesteps_jit(state: dict[str, Any], n_steps: int, params=None, *,
+                       mdo_pcarbonaging: int = 1) -> dict[str, Any]:
     """Run ``n_steps`` operator-splitting timesteps and return a
     stacked trajectory.
 
@@ -170,9 +170,9 @@ def run_timesteps(state: dict[str, Any], n_steps: int, params=None, *,
     paid ~1 s of Python overhead, which dominated benchmarks that
     invoke ``run_timesteps`` many times (e.g. 1000-sim wall-time
     studies). Inside the JIT'd ``run_timesteps``, scan calls
-    ``run_step`` with the 16-key augmented carry; direct callers of
-    ``run_step`` (e.g. ``tests/test_driver.py``) pass a 13-key state
-    and get their own ``run_step`` cache entry. Both compiles are
+    ``_run_step_jit`` with the 16-key augmented carry; direct callers
+    of ``run_step`` (e.g. ``tests/test_driver.py``) pass a 13-key state
+    and get their own ``_run_step_jit`` cache entry. Both compiles are
     ~1-2 s each on this hardware.
     """
     if n_steps < 1:
@@ -200,8 +200,8 @@ def run_timesteps(state: dict[str, Any], n_steps: int, params=None, *,
     def _scan_body(carry_state: dict[str, Any], _) -> tuple[
         dict[str, Any], dict[str, Any]
     ]:
-        new_state = run_step(carry_state, params,
-                             mdo_pcarbonaging=mdo_pcarbonaging)
+        new_state = _run_step_jit(carry_state, params,
+                                  mdo_pcarbonaging=mdo_pcarbonaging)
         output = {k: new_state[k] for k in _TRAJ_KEYS}
         return new_state, output
 
@@ -209,3 +209,35 @@ def run_timesteps(state: dict[str, Any], n_steps: int, params=None, *,
         _scan_body, augmented, xs=None, length=n_steps,
     )
     return trajectory
+
+
+# ---------------------------------------------------------------------------
+# Public entries. Thin, UNJITTED wrappers whose only job is to validate before
+# tracing begins.
+#
+# The jitted implementations above cannot do this themselves: inside a trace
+# `cldn` is a tracer with no readable magnitude, so a check there can never fire
+# on the normal path. Only the clear-sky sub-area of amicphys is ported, and a
+# non-zero cloud fraction would otherwise get clear-sky physics applied to the
+# whole cell -- a plausible-looking wrong answer.
+#
+# The wrappers add one Python-level call per step and no tracing overhead; the
+# jit cache still lives on the inner functions.
+# ---------------------------------------------------------------------------
+
+def run_step(state: dict[str, Any], params=None, *,
+             mdo_pcarbonaging: int = 1) -> dict[str, Any]:
+    """One operator-splitting timestep. See :func:`_run_step_jit`."""
+    _check_clear_sky(state.get("cldn"))
+    return _run_step_jit(state, params, mdo_pcarbonaging=mdo_pcarbonaging)
+
+
+def run_timesteps(state: dict[str, Any], n_steps: int, params=None, *,
+                  mdo_pcarbonaging: int = 1) -> dict[str, Any]:
+    """Run ``n_steps`` timesteps, returning a stacked trajectory.
+
+    See :func:`_run_timesteps_jit`.
+    """
+    _check_clear_sky(state.get("cldn"))
+    return _run_timesteps_jit(state, n_steps, params,
+                              mdo_pcarbonaging=mdo_pcarbonaging)

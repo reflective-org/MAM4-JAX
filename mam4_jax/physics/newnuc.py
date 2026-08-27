@@ -244,7 +244,8 @@ def pbl_nuc_wang2008(so4vol, flagaa,
 def mer07_veh02_nuc_mosaic_1box(dtnuc, temp, rh, press, zm, pblh,
                                  qh2so4_cur, qh2so4_avg, h2so4_uptkrate,
                                  dplom_sect, dphim_sect,
-                                 newnuc_method_flagaa=11):
+                                 newnuc_method_flagaa=11,
+                                 mw_so4a_host=None):
     """Port of ``mer07_veh02_nuc_mosaic_1box`` (``modal_aero_newnuc.F90:598-1173``).
 
     Dispatcher that wraps the PR-F1 leaf parameterizations
@@ -285,6 +286,12 @@ def mer07_veh02_nuc_mosaic_1box(dtnuc, temp, rh, press, zm, pblh,
         1 in MAM4-MOM — Aitken-mode lo/hi from ``data.DGNUMLO_AMODE``).
     newnuc_method_flagaa : int
         Static (Python int). 11 = first-order PBL (Fortran default).
+    mw_so4a_host : float, optional
+        Molecular weight of sulfate aerosol in the HOST code (g/mol) —
+        the Fortran passes this as an argument for the same reason.
+        ``None`` (default) resolves to ``data.MW_SO4A_HOST`` (115.0, the
+        E3SM box value), leaving the E3SM path bit-unchanged; the CAM
+        driver passes its topology's 115.10734.
 
     Returns
     -------
@@ -306,6 +313,8 @@ def mer07_veh02_nuc_mosaic_1box(dtnuc, temp, rh, press, zm, pblh,
         Cluster nucleation rate (#/m³/s).
     """
     # Local constants from Fortran scope.
+    if mw_so4a_host is None:
+        mw_so4a_host = data.MW_SO4A_HOST
     rgas_local = _RGAS_J_PER_K_PER_KMOL / 1.0e3   # J/K/mol (vs J/K/kmol)
     avogad     = 6.02214e26 / 1.0e3  # 1/mol (vs 1/kmol)
     pi = jnp.pi
@@ -372,7 +381,7 @@ def mer07_veh02_nuc_mosaic_1box(dtnuc, temp, rh, press, zm, pblh,
     voldry_clus = (jnp.maximum(cnum_h2so4, 1.0) * _MW_SO4A + cnum_nh3 * _MW_NH4A) / (
         1.0e3 * _DENS_SULFACID * avogad
     )
-    voldry_clus = voldry_clus * (data.MW_SO4A_HOST / _MW_SO4A)
+    voldry_clus = voldry_clus * (mw_so4a_host / _MW_SO4A)
     dpdry_clus = (voldry_clus * 6.0 / pi) ** onethird
 
     isize_nuc = jnp.ones_like(jnp.asarray(so4vol_in), dtype=jnp.int32)
@@ -394,7 +403,7 @@ def mer07_veh02_nuc_mosaic_1box(dtnuc, temp, rh, press, zm, pblh,
     dens_nh4so4a = jnp.full_like(rateloge, dens_part)
     mass_part = voldry_part * dens_part
     molenh4a_per_moleso4a = 0.0
-    kgaero_per_moleso4a = 1.0e-3 * _MW_SULFACID * (data.MW_SO4A_HOST / _MW_SO4A)
+    kgaero_per_moleso4a = 1.0e-3 * _MW_SULFACID * (mw_so4a_host / _MW_SO4A)
 
     # Stage 8: wet volume fraction.
     tmpb_wvf = 1.0 + molenh4a_per_moleso4a * 17.0 / 98.0
