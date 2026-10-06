@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Per-call CAM6 SOA uptake membership and equilibrium molecular weight via
+  `AmicphysParams`, preserving captured MOM defaults. CAM6 hosts select
+  fine modes plus transient primary-carbon coating and 250 g/mol to obtain
+  C*=1.02 µg/m³ at 298 K. Uptake kinetics and shared volume conversions
+  remain unchanged.
+
 ## v0.4.0 — 2026-08-25
 
 Completes the amicphys port: primary-carbon aging was the last sub-process out

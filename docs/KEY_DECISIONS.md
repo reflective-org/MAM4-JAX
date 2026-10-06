@@ -353,3 +353,17 @@ Status values: **Accepted**, **Proposed**, **Superseded by ADR-NNN**.
   parity is retained, coarse SOA can be excluded while sulfate uptake remains
   unchanged, and successive differently configured instances do not interfere.
   The same mask acts before all condensation backends.
+
+### CAM6 equilibrium molecular weight (2026-10-06)
+
+The original [CAM6 single-bin solver](https://github.com/ESCOMP/CAM/blob/cam6_0_000/src/chemistry/modal_aero/modal_aero_gasaerexch.F90)
+uses 250 g/mol, p0=10⁻¹⁰ atm and ΔHvap=156 kJ/mol, giving C*=1.02 µg/m³
+at 298 K. The captured MOM local conversion instead uses 150 g/mol.
+`AmicphysParams.soa_equilibrium_molecular_weight` selects the mass saturation
+concentration without changing shared conversion or volume tables. All three
+exchange backends multiply equilibrium gas by requested MW / 150 on the
+existing local basis. The absorbing POA fraction stays 10% except in primary
+carbon. `None` preserves captured reference results. Independent ideal-gas
+and partitioning-equilibrium tests cover 260/298/310 K, with and without POA,
+and verify gas-plus-aerosol conservation. This choice does not specify an
+inventory's emission molecular weight or implement CAM6.3 chemistry.
