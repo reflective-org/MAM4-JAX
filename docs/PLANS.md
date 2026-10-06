@@ -355,3 +355,8 @@ Requested as part of the coupled-model SOA release investigation:
    and absence of configuration leakage between successive calls.
 3. Use the mask in the coupled model's prescribed CAM6 source tests; submit this
    dependency change for review alongside its coupled-model validation.
+
+CAM6 equilibrium follow-up completed in PR #81: optional per-call molecular
+weight reproduces the published saturation mass concentration while preserving
+captured MOM defaults. Validated against independent equilibrium/conservation
+checks and all 189 existing and new tests; the coupled host uses 250 g/mol.

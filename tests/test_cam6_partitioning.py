@@ -32,9 +32,9 @@ def test_cam6_saturation_and_organic_conservation(temperature, poa):
         b = poa * 0.1 + 1e-7 + g0
         return 2 * g0 * 1e-7 / (b + np.sqrt(b*b - 4*g0*1e-7))
     np.testing.assert_allclose(cam_gas[0], equilibrium(vapor_pressure * 250 / 150),
-                               rtol=1e-5, atol=1e-22)
+                               rtol=1e-6, atol=1e-22)
     np.testing.assert_allclose(mom_gas[0], equilibrium(vapor_pressure),
-                               rtol=1e-5, atol=1e-22)
+                               rtol=1e-6, atol=1e-22)
     for new_gas, new_aer in [(cam_gas, cam_aer), (mom_gas, mom_aer)]:
         np.testing.assert_allclose(new_gas[0] + new_aer[0].sum(), 1e-7,
                                    rtol=1e-13)
