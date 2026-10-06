@@ -8,6 +8,11 @@ Status legend: **planned**, **in progress**, **ported (validated)**, **deferred*
 
 ## Microphysical processes
 
+Gas–aerosol exchange supports the optional per-call
+`AmicphysParams.soa_uptake_mask`. It restricts SOAG uptake without changing
+sulfate uptake, geometry or reference tables. The default retains MOM
+coarse SOA; CAM6 hosts exclude it (ADR-021).
+
 | Process | Fortran module | JAX status |
 | --- | --- | --- |
 | Size redistribution (`calcsize`) | `box_model_utils/modal_aero_calcsize.F90` | **ported (validated)** end-to-end in `mam4_jax/processes/calcsize.py` (M3.5 PR-A + PR-B). Per-mode bounds-adjustment + Aitken↔accum transfer both implemented; dgncur_a matches Fortran at machine ε. Transfer code paths are dead in the canonical box-model fixture (`docs/DEFERRED.md`) but the port is structurally faithful. |

@@ -345,3 +345,13 @@ These don't warrant their own milestones but are tracked as GitHub Issues so a f
 ---
 
 *Whenever a milestone moves from "proposed" to "in progress", flesh out its subtasks here in the same PR.*
+
+## Coupled CAM6 SOA uptake membership — 2026-10-06
+
+Requested as part of the coupled-model SOA release investigation:
+
+1. Add an optional per-call SOAG uptake mask, preserving MOM reference defaults.
+2. Verify default reference parity, excluded coarse SOA, unchanged sulfate uptake
+   and absence of configuration leakage between successive calls.
+3. Use the mask in the coupled model's prescribed CAM6 source tests; submit this
+   dependency change for review alongside its coupled-model validation.

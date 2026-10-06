@@ -156,6 +156,46 @@ GASAEREXCH_AND_NEWNUC_REF_DIR = (
 )
 
 
+@pytest.mark.parametrize("backend", ["substep", "astem"])
+def test_cam6_soa_uptake_mask_is_per_call_and_leaves_sulfate_unchanged(
+    gasaerexch_captured, backend,
+):
+    """CAM6 excludes coarse SOA; MOM remains the unchanged default."""
+    import jax
+    from mam4_jax.core import data
+    from mam4_jax.coupling.amicphys import AmicphysParams, configure_condensation
+
+    before, _ = gasaerexch_captured
+    state = _build_state(before)
+    state = {k: (v[0, 0, 0] if v.ndim else v) for k, v in state.items()}
+    gas = int(data.LMAP_GAS[0])
+    # Captured MOM mode order: accumulation, Aitken, coarse, primary carbon.
+    soa_coarse = int(data.LMAP_AER[2, data.AMICPHYS_IAER_SOA])
+    sulfate_coarse = int(data.LMAP_AER[2, data.AMICPHYS_IAER_SO4])
+    state["q"] = state["q"].at[gas].set(1e-8)
+    mask = jnp.asarray([True, True, False, True])
+    kwargs = dict(mdo_rename=0, mdo_newnuc=0, mdo_coag=0)
+    try:
+        configure_condensation(backend=backend)
+        baseline = amicphys(state, **kwargs)
+        all_modes = amicphys(state, AmicphysParams(
+            soa_uptake_mask=jnp.ones(data.NTOT_AMODE, dtype=bool)), **kwargs)
+        np.testing.assert_array_equal(all_modes["q"], baseline["q"])
+        masked = jax.jit(lambda s, m: amicphys(s, AmicphysParams(
+            soa_uptake_mask=m), **kwargs))(state, mask)
+        np.testing.assert_allclose(masked["q"][soa_coarse],
+                                   state["q"][soa_coarse], rtol=1e-6)
+        assert baseline["q"][soa_coarse] > state["q"][soa_coarse]
+        np.testing.assert_allclose(masked["q"][sulfate_coarse],
+                                   baseline["q"][sulfate_coarse], rtol=1e-6)
+        after = amicphys(state, **kwargs)
+        np.testing.assert_array_equal(after["q"], baseline["q"])
+        with pytest.raises(ValueError, match="shape"):
+            amicphys(state, AmicphysParams(soa_uptake_mask=jnp.ones(2)), **kwargs)
+    finally:
+        configure_condensation(backend="diffrax")
+
+
 @pytest.fixture(scope="module")
 def gasaerexch_and_newnuc_captured() -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
     """Single-toggle Fortran capture: `mdo_gasaerexch=1, mdo_newnuc=1,
