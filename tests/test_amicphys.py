@@ -188,6 +188,13 @@ def test_cam6_soa_uptake_mask_is_per_call_and_leaves_sulfate_unchanged(
         assert baseline["q"][soa_coarse] > state["q"][soa_coarse]
         np.testing.assert_allclose(masked["q"][sulfate_coarse],
                                    baseline["q"][sulfate_coarse], rtol=1e-6)
+        cam6 = jax.jit(lambda s, mw: amicphys(s, AmicphysParams(
+            soa_uptake_mask=mask,
+            soa_equilibrium_molecular_weight=mw), **kwargs))(state, 250.0)
+        fine_soa = int(data.LMAP_AER[0, data.AMICPHYS_IAER_SOA])
+        assert cam6["q"][fine_soa] < masked["q"][fine_soa]
+        np.testing.assert_allclose(cam6["q"][sulfate_coarse],
+                                   baseline["q"][sulfate_coarse], rtol=1e-6)
         after = amicphys(state, **kwargs)
         np.testing.assert_array_equal(after["q"], baseline["q"])
         with pytest.raises(ValueError, match="shape"):
