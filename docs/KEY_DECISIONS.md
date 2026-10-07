@@ -335,3 +335,35 @@ Status values: **Accepted**, **Proposed**, **Superseded by ADR-NNN**.
   - **Keep the static per-call argument.** Rejected: it is the recompile-per-value and non-differentiable path, and it made the config surface two-headed (global + static kwarg) for one number.
   - **Put everything, selectors included, in one struct.** Rejected: `backend` and `mdo_*` must be static to select traced code; mixing them in would either force `static_argnums` on the whole struct — undoing the traced-leaf benefit — or require a `flax.struct.field(pytree_node=False)` dependency the package does not carry.
   - **Drop the `configure_*` globals entirely in favour of `params`.** Rejected for this PR: it is a breaking change for existing hosts and unrelated to pcarbon aging. Worth revisiting once `params` has usage.
+
+## ADR-021 — Hosts select SOAG uptake modes per call
+
+- **Status:** Implemented for review, 2026-10-06, in response to the coupled
+  model's requested CAM6 SOA implementation.
+- **Reference:** [Jo et al. (2023), section 2.2](https://gmd.copernicus.org/articles/16/3893/2023/)
+  describes CAM6 SOA gas plus Aitken/accumulation reservoirs. The captured
+  MAM4-MOM topology additionally carries coarse SOA; it remains the default.
+- **Decision:** Add `soa_uptake_mask` to `AmicphysParams`, restricting only
+  the SOAG uptake coefficients. `None` leaves the reference path unchanged.
+  A boolean array is consumed by JAX arithmetic per call, avoiding mutations
+  of species tables or a global setting that another model could inherit.
+  The mask does not make unsupported species/modes available. Primary-carbon
+  coating can remain enabled because aging transfers that shell to accumulation.
+- **Validation:** Default and all-enabled calls are identical, default Fortran
+  parity is retained, coarse SOA can be excluded while sulfate uptake remains
+  unchanged, and successive differently configured instances do not interfere.
+  The same mask acts before all condensation backends.
+
+### CAM6 equilibrium molecular weight (2026-10-06)
+
+The original [CAM6 single-bin solver](https://github.com/ESCOMP/CAM/blob/cam6_0_000/src/chemistry/modal_aero/modal_aero_gasaerexch.F90)
+uses 250 g/mol, p0=10⁻¹⁰ atm and ΔHvap=156 kJ/mol, giving C*=1.02 µg/m³
+at 298 K. The captured MOM local conversion instead uses 150 g/mol.
+`AmicphysParams.soa_equilibrium_molecular_weight` selects the mass saturation
+concentration without changing shared conversion or volume tables. All three
+exchange backends multiply equilibrium gas by requested MW / 150 on the
+existing local basis. The absorbing POA fraction stays 10% except in primary
+carbon. `None` preserves captured reference results. Independent ideal-gas
+and partitioning-equilibrium tests cover 260/298/310 K, with and without POA,
+and verify gas-plus-aerosol conservation. This choice does not specify an
+inventory's emission molecular weight or implement CAM6.3 chemistry.

@@ -8,6 +8,11 @@ Status legend: **planned**, **in progress**, **ported (validated)**, **deferred*
 
 ## Microphysical processes
 
+Gas–aerosol exchange supports the optional per-call
+`AmicphysParams.soa_uptake_mask`. It restricts SOAG uptake without changing
+sulfate uptake, geometry or reference tables. The default retains MOM
+coarse SOA; CAM6 hosts exclude it (ADR-021).
+
 | Process | Fortran module | JAX status |
 | --- | --- | --- |
 | Size redistribution (`calcsize`) | `box_model_utils/modal_aero_calcsize.F90` | **ported (validated)** end-to-end in `mam4_jax/processes/calcsize.py` (M3.5 PR-A + PR-B). Per-mode bounds-adjustment + Aitken↔accum transfer both implemented; dgncur_a matches Fortran at machine ε. Transfer code paths are dead in the canonical box-model fixture (`docs/DEFERRED.md`) but the port is structurally faithful. |
@@ -78,3 +83,8 @@ Explicitly **not planned** at this time:
 - Coupling to a host atmosphere model (E3SM, CESM). The port targets the *box model* configuration only.
 - Sulfur chemistry beyond the placeholder `gaschem_simple` / `cloudchem_simple` stubs.
 - Sea-salt emissions, aerosol deposition, convective processing — the Fortran modules `seasalt_model.F90`, `modal_aero_deposition.F90`, `modal_aero_convproc.F90`, and `aerodep_flx.F90` are stubs in the box model and will remain stubs in the JAX port.
+
+CAM6 hosts additionally select `soa_equilibrium_molecular_weight=250.0` to
+match the original single-bin C*=1.02 µg/m³ at 298 K. The default retains the
+captured MOM 150-g/mol convention. All three condensation backends support
+the per-call value; kinetics and shared volume tables remain unchanged.

@@ -8,6 +8,17 @@ The goal is a modern, readable, reproducible implementation of MAM4's microphysi
 
 ## Repository layout
 
+Hosts implementing CAM6 SOA can pass
+`AmicphysParams(soa_uptake_mask=[True, True, False, True],
+soa_equilibrium_molecular_weight=250.0)` to `run_step`
+or `amicphys`: accumulation/Aitken exchange and primary-carbon coating
+remain enabled, while coarse SOA uptake is excluded. `None` retains the
+MAM4-MOM reference configuration. The mask is per call and does not change
+sulfate uptake or shared species tables. The equilibrium molecular weight
+sets CAM6's 1.02 µg/m³ saturation concentration at 298 K; `None` preserves
+the MOM 150-g/mol default. Source inventories must still use their host
+tracer units, independently of this equilibrium convention. See ADR-021 in `docs/KEY_DECISIONS.md`.
+
 ```
 mam4-jax/
 ├── CLAUDE.md                 # Working rules, architecture, validation workflow

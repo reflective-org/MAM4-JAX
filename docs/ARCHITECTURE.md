@@ -13,6 +13,19 @@ This document describes the architecture of the MAM4 aerosol-microphysics model 
 
 ## Fortran reference: operator-splitting time loop
 
+`AmicphysParams.soa_uptake_mask` optionally restricts SOAG exchange per
+mode. CAM6 carries SOA in accumulation/Aitken with transient primary-carbon
+coating, while the MOM reference also includes coarse SOA. The mask changes
+only the SOAG uptake coefficients; `None` preserves the captured MOM
+topology. The shared index and species tables remain unchanged (ADR-021).
+`soa_equilibrium_molecular_weight=250.0` separately selects CAM6's saturation
+mass concentration (1.02 µg/m³ at 298 K). Exchange stays in the captured
+150-g/mol local units, with equilibrium gas multiplied by 250/150; this is
+equivalent to converting gas, SOA and absorbing POA to 250 for exchange and
+back afterwards. Other microphysical volume conversions and uptake kinetics
+are unchanged. Both choices are per-call traced leaves, with unchanged MOM
+defaults.
+
 The driver applies the following processes in order on each `mam_dt` step:
 
 1. **`modal_aero_calcsize`** — recompute dry diameters from number + mass; enforce per-mode size bounds; transfer particles between modes when bounds are violated.

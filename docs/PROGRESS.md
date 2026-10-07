@@ -6,6 +6,16 @@ Each entry: date, short title, links to commits / PRs, one-paragraph summary.
 
 ---
 
+## 2026-10-06 — CAM6 saturation mass convention ([PR #81](https://github.com/reflective-org/MAM4-JAX/pull/81))
+
+- Added per-call `soa_equilibrium_molecular_weight`, preserving the MOM default of 150 g/mol while CAM6 hosts select 250 and C*=1.02 µg/m³ at 298 K. Equilibrium gas is rescaled on the unchanged local molecular basis; uptake kinetics and shared volume tables are unchanged.
+- Validation: 189 tests pass, including independent temperature-dependent equilibrium and organic conservation with and without absorbing POA, JIT per-call selection, sulfate isolation, and the existing Fortran comparisons.
+
+## 2026-10-06 — Per-call SOA uptake mode selection
+
+- Added `AmicphysParams.soa_uptake_mask` so a coupled CAM6 host can exclude coarse-mode SOA condensation while retaining the captured MAM4-MOM default. Sulfate uptake and the reference tables are unchanged. See ADR-021 and `ARCHITECTURE.md` for the topology distinction.
+- Validation: all 183 tests pass, including the captured Fortran comparisons, both supported condensation backends, JIT mode selection, and isolation between calls with different masks.
+
 ## 2026-08-25 — Primary-carbon aging + float32-safe coagulation mass transfer (`main`)
 
 - PR: [#75](https://github.com/reflective-org/MAM4-JAX/pull/75) (`feat/pcarbon-aging` → `main`). External contribution by @duncanwp, motivated by jax-gcm BC lifetime ~21 d vs observed 5–8 d ([jax-gcm#721](https://github.com/climate-analytics-lab/jax-gcm/issues/721)).

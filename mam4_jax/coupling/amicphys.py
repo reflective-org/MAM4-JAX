@@ -186,11 +186,24 @@ class AmicphysParams(NamedTuple):
         Stored for forward compatibility; NOT yet consumed by the
         physics (the SOA exchange ODE has no source term — see
         ``configure_gas_netprod``).
+    soa_uptake_mask : boolean array (NTOT_AMODE,), optional
+        Modes eligible for SOAG exchange in this call. None preserves the
+        captured MAM4-MOM membership. CAM6 hosts disable coarse-mode SOA
+        uptake while retaining the primary-carbon coating/aging path.
+    soa_equilibrium_molecular_weight : scalar, optional
+        Molecular weight (g/mol) defining the mass saturation concentration.
+        None retains the captured MOM value, 150. CAM6 single-bin SOA uses
+        250, hence C*=1.02 ug/m3 at 298 K for p0=1e-10 atm. Internal
+        exchange remains on the captured 150-g/mol basis; equilibrium gas
+        is rescaled equivalently. Uptake kinetics and volume conversions
+        are unchanged, including the reference 0.81 H2SO4 uptake ratio.
     """
 
     n_so4_monolayers: Any = None
     qgas_netprod_h2so4: Any = None
     qgas_netprod_soa: Any = None
+    soa_uptake_mask: Any = None
+    soa_equilibrium_molecular_weight: Any = None
 
 
 # ``n_so4_monolayers`` — the number of so4(+nh4) monolayers of hygroscopic
@@ -416,7 +429,8 @@ def _soaexch_rhs(t, y, args):
 
 
 def _mam_soaexch_1subarea(qgas_cur, qgas_avg, qaer_cur,
-                          dtsubstep, temp, pmid, uptkaer):
+                          dtsubstep, temp, pmid, uptkaer,
+                          soa_equilibrium_molecular_weight=None):
     """Port of ``mam_soaexch_1subarea`` (``modal_aero_amicphys.F90:3589-3918``).
 
     Integrates the SOA gas/aerosol exchange ODE adaptively via diffrax
@@ -456,6 +470,11 @@ def _mam_soaexch_1subarea(qgas_cur, qgas_avg, qaer_cur,
         (1.0 / temp - 1.0 / 298.0)
     )
     g0_soa = _PSTD * p0_soa / pmid           # (...,)
+    if soa_equilibrium_molecular_weight is not None:
+        # Equivalent to converting gas, SOA and absorbing POA to the
+        # requested molecular basis before exchange and back afterwards.
+        # Keep the local 150-g/mol basis used by all other microphysics.
+        g0_soa = g0_soa * (soa_equilibrium_molecular_weight / data.MW_GAS[0])
 
     # qxxx_prv saved before solver.
     qgas_prv = qgas_cur[..., ll]             # (...,)
@@ -525,7 +544,8 @@ def _mam_soaexch_1subarea(qgas_cur, qgas_avg, qaer_cur,
 
 
 def _mam_soaexch_1subarea_substep(qgas_cur, qgas_avg, qaer_cur,
-                                  dtsubstep, temp, pmid, uptkaer, n_substeps):
+                                  dtsubstep, temp, pmid, uptkaer, n_substeps,
+                                  soa_equilibrium_molecular_weight=None):
     """N-substep semi-implicit SOA exchange (operator-split, ASTEM-style).
 
     Same physics, inputs and return signature as
@@ -569,6 +589,11 @@ def _mam_soaexch_1subarea_substep(qgas_cur, qgas_avg, qaer_cur,
         (1.0 / temp - 1.0 / 298.0)
     )
     g0_soa = _PSTD * p0_soa / pmid           # (...,)
+    if soa_equilibrium_molecular_weight is not None:
+        # Equivalent to converting gas, SOA and absorbing POA to the
+        # requested molecular basis before exchange and back afterwards.
+        # Keep the local 150-g/mol basis used by all other microphysics.
+        g0_soa = g0_soa * (soa_equilibrium_molecular_weight / data.MW_GAS[0])
 
     qgas_prv = qgas_cur[..., ll]             # (...,)
     qaer_prv = qaer_cur[..., iaer_soa, :]    # (..., NTOT_AMODE)
@@ -636,7 +661,8 @@ def _mam_soaexch_1subarea_substep(qgas_cur, qgas_avg, qaer_cur,
 
 
 def _mam_soaexch_1subarea_astem(qgas_cur, qgas_avg, qaer_cur,
-                                dtsubstep, temp, pmid, uptkaer):
+                                dtsubstep, temp, pmid, uptkaer,
+                          soa_equilibrium_molecular_weight=None):
     """Fortran-faithful adaptive ASTEM SOA exchange.
 
     A direct port of the ``mam_soaexch_1subarea`` time loop
@@ -686,6 +712,11 @@ def _mam_soaexch_1subarea_astem(qgas_cur, qgas_avg, qaer_cur,
         (1.0 / temp - 1.0 / 298.0)
     )
     g0_soa = _PSTD * p0_soa / pmid           # (...,)
+    if soa_equilibrium_molecular_weight is not None:
+        # Equivalent to converting gas, SOA and absorbing POA to the
+        # requested molecular basis before exchange and back afterwards.
+        # Keep the local 150-g/mol basis used by all other microphysics.
+        g0_soa = g0_soa * (soa_equilibrium_molecular_weight / data.MW_GAS[0])
 
     qgas_prv0 = qgas_cur[..., ll]            # (...,)
     qaer_prv0 = qaer_cur[..., iaer_soa, :]   # (..., NTOT_AMODE)
@@ -1084,6 +1115,8 @@ def _mam_amicphys_1subarea_clear(state: dict[str, Any],
             state["t"], state["pmid"], state["deltat"],
             jnp.asarray(data.FAC_M2V_AER),
             qgas_netprod_h2so4=params.qgas_netprod_h2so4,
+            soa_uptake_mask=params.soa_uptake_mask,
+            soa_equilibrium_molecular_weight=params.soa_equilibrium_molecular_weight,
         )
 
     # qaer_delsub_grow4rnam = change made by gasaerexch in this sub-area.
@@ -1133,7 +1166,8 @@ def _mam_amicphys_1subarea_clear(state: dict[str, Any],
 def _mam_gasaerexch_1subarea(qgas, qaer, qnum, qwtr,
                              dgn_a, dgn_awet, wetdens,
                              temp, pmid, deltat, fac_m2v_aer,
-                             qgas_netprod_h2so4=None):
+                             qgas_netprod_h2so4=None, soa_uptake_mask=None,
+                             soa_equilibrium_molecular_weight=None):
     """Port of ``mam_gasaerexch_1subarea`` (``modal_aero_amicphys.F90:3279-3584``).
 
     H₂SO₄ analytical-solver path only — SOA exchange (separate sub-call
@@ -1192,6 +1226,15 @@ def _mam_gasaerexch_1subarea(qgas, qaer, qnum, qwtr,
     uptkaer_h2so4 = uptkrate_per_mode * (qnum * aircon[..., None])  # (..., NTOT_AMODE)
     # SOA scales as 0.81 × H2SO4 (cam5.1.00 convention, Fortran line 3407).
     uptkaer_soa = uptkaer_h2so4 * 0.81
+    if soa_uptake_mask is not None:
+        # CAM6 has SOA only in accumulation/Aitken, plus transient primary
+        # carbon coating. The reference MOM topology also carries coarse
+        # SOA. Restrict only SOAG exchange; sulfate uptake is unchanged.
+        # This per-call leaf avoids instance-order-dependent global tables.
+        mask = jnp.asarray(soa_uptake_mask, dtype=bool)
+        if mask.shape != (data.NTOT_AMODE,):
+            raise ValueError("soa_uptake_mask must have shape (NTOT_AMODE,)")
+        uptkaer_soa = jnp.where(mask, uptkaer_soa, 0.0)
 
     # SOA exchange — runs *before* the H2SO4 analytical solver, matching
     # Fortran's `call mam_soaexch_1subarea(...)` at line 3430. Single
@@ -1207,14 +1250,17 @@ def _mam_gasaerexch_1subarea(qgas, qaer, qnum, qwtr,
         qgas, qgas_avg, qaer = _mam_soaexch_1subarea_substep(
             qgas, qgas_avg, qaer, deltat, temp, pmid, uptkaer_stacked,
             _COND["n_substeps"],
+            soa_equilibrium_molecular_weight,
         )
     elif _COND["backend"] == "astem":
         qgas, qgas_avg, qaer = _mam_soaexch_1subarea_astem(
             qgas, qgas_avg, qaer, deltat, temp, pmid, uptkaer_stacked,
+            soa_equilibrium_molecular_weight,
         )
     else:
         qgas, qgas_avg, qaer = _mam_soaexch_1subarea(
             qgas, qgas_avg, qaer, deltat, temp, pmid, uptkaer_stacked,
+            soa_equilibrium_molecular_weight,
         )
 
     # Stage B: H2SO4 uptake ODE. This ODE is LINEAR in the gas, so it has
