@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.5.1 — 2026-10-07
 
 - Per-call CAM6 SOA uptake membership and equilibrium molecular weight via
   `AmicphysParams`, preserving captured MOM defaults. CAM6 hosts select
