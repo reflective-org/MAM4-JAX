@@ -574,6 +574,19 @@ def _mam_soaexch_1subarea_substep(qgas_cur, qgas_avg, qaer_cur,
 
     ``g_avg`` is the exact time-mean of ``g`` accumulated across substeps
     (sum of per-substep ``int_g`` divided by the full ``dtsubstep``).
+
+    Bounded corrector (jax-gcm#1064). The closed form above conserves
+    ``g + sum(a)`` exactly, but it assumes every mode's reservoir can go
+    negative; a warm, gas-poor cell can compute an evaporative flux larger
+    than a mode's ``a_i``, which the physical floor ``max(a_i_new, 0)``
+    then clips. Clipping alone breaks the conservation identity above: the
+    gas update already collected the mass of the full (unrealizable) flux.
+    Each substep therefore floors the per-mode flux at ``-a_i`` (CAM's
+    ``min(flux*dt, reservoir)``, applied here to the integrated per-substep
+    flux rather than the instantaneous rate) and returns the shortfall to
+    the gas, mirroring the self-consistent implicit solve
+    :func:`_mam_soaexch_1subarea_astem` already gets right via its step-2
+    corrector. See the comment inside ``_step`` for the per-mode algebra.
     """
     ll = 0
     iaer_soa = data.AMICPHYS_IAER_SOA
@@ -634,10 +647,36 @@ def _mam_soaexch_1subarea_substep(qgas_cur, qgas_avg, qaer_cur,
             g * (1.0 - e) / Gsafe + (S / Gsafe) * (dts - (1.0 - e) / Gsafe),
             g * dts + 0.5 * S * dts * dts,
         )
-        a_new = jnp.maximum(
-            0.0, a + uptkaer_soag * (int_g[..., None] - g_star * dts),
-        )
-        g_new = jnp.maximum(0.0, g_new)
+
+        # Bounded corrector (jax-gcm#1064 / CAM's ASTEM "step 2" corrector,
+        # modal_aero_amicphys.F90::mam_soaexch_1subarea). `g_new` above is
+        # the EXACT closed-form solution of the *unconstrained* linear ODE
+        # pair (dg/dt = -G*g+S, da_i/dt = uptk_i*(g-g_star_i)), so, by
+        # construction, `g_new + sum_i(a_i + uptk_i*(int_g-g_star_i*dts))`
+        # equals the pre-substep total `g + sum(a)` to machine precision.
+        # But a mode evaporating faster than its reservoir holds (small
+        # `a_i`, large `g_star_i` at warm `temp`) drives its raw update
+        # negative; physically the aerosol can only be fully depleted, so
+        # we floor it at zero (`a_new`, unchanged from before). Simply
+        # flooring `a` without touching `g` breaks that conservation
+        # identity: `g_new` was computed assuming the mode delivered its
+        # full (negative, unrealizable) flux to the gas, so it collects
+        # mass that the floored aerosol never actually gave up. The fix is
+        # CAM's own corrector (ASTEM already gets this right via its
+        # self-consistent implicit solve, step 2, and is faithfully ported
+        # in `_mam_soaexch_1subarea_astem`): give back to the gas exactly
+        # the per-mode shortfall between the unconstrained and the
+        # realizable aerosol update, `deficit_i = max(0, -a_raw_i)`, which
+        # is the amount of evaporation the (now-empty) reservoir could not
+        # supply. `a_new = a_raw + deficit == max(a_raw, 0)` — the same
+        # floor as before — so this changes `g_new` only, and only when a
+        # mode actually bottoms out; `jnp.maximum`/`jnp.where` keep the
+        # whole substep statically shaped and differentiable (subgradient
+        # 0 or 1 at the kink, same class as the floor it replaces).
+        a_raw = a + uptkaer_soag * (int_g[..., None] - g_star * dts)
+        deficit = jnp.maximum(0.0, -a_raw)                  # (..., NTOT_AMODE)
+        a_new = a_raw + deficit
+        g_new = jnp.maximum(0.0, g_new - jnp.sum(deficit, axis=-1))
         return (g_new, a_new, int_g_total + int_g), None
 
     (g_soa_end, a_soa_end, int_g_total), _ = jax.lax.scan(
