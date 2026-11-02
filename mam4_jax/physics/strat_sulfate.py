@@ -34,8 +34,11 @@ Faithfulness notes (upstream oddities preserved, not fixed):
   pairs ``sig1`` (the ``i-1`` knot's ordinate) with the ``i`` knot's
   abscissa, so ``surf_tens`` is offset by ``-(sig2-sig1)`` relative to a
   correct linear interpolation. The second lookup (F90:1032-1036, ``frac``
-  form) is correct. Ported as-is; recorded in mam-box-fortran
-  ``docs/bugs/``.
+  form) is correct. Ported as-is by default; recorded in mam-box-fortran
+  ``docs/bugs/BUG-cam-wateruptake-surftens-interp.md``.
+  ``fix_surftens_interp=True`` (opt-in, on :func:`calc_h2so4_equilib_mixrat`
+  and the CAM driver) applies the one-line upstream fix, measuring the
+  offset from ``stwtp(i-1)``.
 * The Kelvin factor MULTIPLIES the equilibrium ratio by ``exp(+akelvin/r)``
   (> 1); the upstream comment says "reduce". The arithmetic is what is
   ported.
@@ -217,17 +220,21 @@ def _knot_index(knots, w, start):
     return jnp.clip(idx, start, len(knots) - 1)
 
 
-def _surf_tension_flat(wtpct_flat, t):
+def _surf_tension_flat(wtpct_flat, t, fix_interp=False):
     """First surface-tension lookup (F90:995-1005): value at ``wtpct_flat``
-    plus the d(sigma)/d(wt%) slope. Preserves the upstream abscissa
-    mismatch — see the module docstring."""
+    plus the d(sigma)/d(wt%) slope. By default preserves the upstream
+    abscissa mismatch (see the module docstring); ``fix_interp=True``
+    measures the offset from knot ``i-1``, the knot ``sig1`` belongs to
+    (the fix in BUG-cam-wateruptake-surftens-interp.md §3)."""
     i = _knot_index(_STWTP, wtpct_flat, 1)
     sig1 = jnp.asarray(_STC0)[i - 1] + jnp.asarray(_STC1)[i - 1] * t
     sig2 = jnp.asarray(_STC0)[i] + jnp.asarray(_STC1)[i] * t
     dsigma_dwt = (sig2 - sig1) / (jnp.asarray(_STWTP)[i]
                                   - jnp.asarray(_STWTP)[i - 1])
-    # Faithful: sig1 belongs to knot i-1 but the offset is from knot i.
-    surf_tens = sig1 + dsigma_dwt * (wtpct_flat - jnp.asarray(_STWTP)[i])
+    # Faithful (default): sig1 belongs to knot i-1 but the offset is from
+    # knot i. ``fix_interp`` is a Python bool, static under jit.
+    origin = jnp.asarray(_STWTP)[i - 1] if fix_interp else jnp.asarray(_STWTP)[i]
+    surf_tens = sig1 + dsigma_dwt * (wtpct_flat - origin)
     return surf_tens, dsigma_dwt
 
 
@@ -262,7 +269,8 @@ def _density_mode(wtpct, t):
     return den1 * frac + den2 * (1.0 - frac)
 
 
-def calc_h2so4_equilib_mixrat(temp, pres, qh2o, dmean):
+def calc_h2so4_equilib_mixrat(temp, pres, qh2o, dmean, *,
+                              fix_surftens_interp=False):
     """Equilibrium H2SO4 mixing ratio over sulfate particles.
 
     Port of ``calc_h2so4_equilib_mixrat``
@@ -289,6 +297,10 @@ def calc_h2so4_equilib_mixrat(temp, pres, qh2o, dmean):
         ``dgncur_awet * exp(1.5*alnsg**2)``, the wet surface-mode mean
         diameter of the PREVIOUS step (the lagged carried state, plan 024
         §6).
+    fix_surftens_interp : bool, keyword-only, default False. False
+        reproduces CAM (the first surface-tension lookup's mismatched
+        abscissa, F90:1005); True applies the one-line upstream fix
+        (``stwtp(i-1)``). Static: pass a Python bool.
 
     Returns
     -------
@@ -300,7 +312,8 @@ def calc_h2so4_equilib_mixrat(temp, pres, qh2o, dmean):
 
     wtpct_flat = calc_h2so4_wtpct(t, pres, qh2o)
 
-    surf_tens, dsigma_dwt = _surf_tension_flat(wtpct_flat, t)
+    surf_tens, dsigma_dwt = _surf_tension_flat(wtpct_flat, t,
+                                               fix_interp=fix_surftens_interp)
     sulfate_density, drho_dwt = _density_flat(wtpct_flat, t)
 
     r = dmean * 100.0 / 2.0   # mode radius (cm) from diameter (m)

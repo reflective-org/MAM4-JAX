@@ -237,3 +237,46 @@ def test_reversible_uptake_branch_continuity_and_grads() -> None:
     for s in (0.5e-5, 2e-5, 1e-1):
         g = jax.grad(lambda x: total_at(x))(jnp.asarray(s))
         assert np.isfinite(float(g)), f"grad non-finite at uptk scale {s}"
+
+
+# ---------------------------------------------------------------------------
+# fix_surftens_interp: the opt-in fix for the first surface-tension lookup's
+# mismatched abscissa (modal_aero_wateruptake.F90:1005;
+# mam-box-fortran/docs/bugs/BUG-cam-wateruptake-surftens-interp.md).
+# ---------------------------------------------------------------------------
+
+def test_surftens_flat_default_is_upstream_and_fix_is_linear_interp() -> None:
+    """Default: the literal CAM line, sig1 + slope*(w - stwtp(i)), offset by
+    -(sig2-sig1) from a linear interpolation. Fix: the linear interpolation
+    itself, which agrees with the module's correct second lookup
+    (_surf_tension_mode, the F90:1032-1036 ``frac`` form) at every point."""
+    from mam4_jax.physics.strat_sulfate import (
+        _STC0, _STC1, _STWTP, _surf_tension_flat, _surf_tension_mode)
+    t = jnp.asarray(215.0)
+    w = jnp.linspace(25.5, 99.5, 297)   # wtpct is clipped to [25, 100]
+    buggy, slope_b = _surf_tension_flat(w, t)
+    fixed, slope_f = _surf_tension_flat(w, t, fix_interp=True)
+    np.testing.assert_array_equal(np.asarray(slope_b), np.asarray(slope_f))
+    np.testing.assert_allclose(np.asarray(fixed),
+                               np.asarray(_surf_tension_mode(w, t)),
+                               rtol=1e-13, atol=0.0)
+    i = np.searchsorted(_STWTP, np.asarray(w), side="left")
+    sig = _STC0 + _STC1 * 215.0
+    np.testing.assert_allclose(np.asarray(fixed - buggy), sig[i] - sig[i - 1],
+                               rtol=1e-12, atol=1e-12)
+
+
+def test_equilib_fix_surftens_default_unchanged_and_fix_differs() -> None:
+    """The flag is neutral when off (bit-identical to the default call that
+    the Fortran-captured fixture validates) and changes the result when on,
+    through the Kelvin-adjusted water only (wtpct, hence qeq and sulden)."""
+    t, p = 220.0, 5.0e3
+    qh2o = 0.05 * float(_qsat_water_cam(jnp.asarray(t), jnp.asarray(p)))
+    d = jnp.asarray([2.0e-8, 6.0e-8, 2.0e-7])
+    base = calc_h2so4_equilib_mixrat(t, p, qh2o, d)
+    off = calc_h2so4_equilib_mixrat(t, p, qh2o, d, fix_surftens_interp=False)
+    on = calc_h2so4_equilib_mixrat(t, p, qh2o, d, fix_surftens_interp=True)
+    for a, b in zip(base, off):
+        np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
+    assert np.all(np.asarray(on[1]) != np.asarray(base[1]))
+    assert np.all(np.asarray(on[0]) != np.asarray(base[0]))

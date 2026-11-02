@@ -930,7 +930,8 @@ def _cam_wateruptake_tables(tb: _CamTables):
 
 _STEP_STATICS = ("topology", "strat", "n_substeps", "do_calcsize",
                  "do_wateruptake", "do_gasaerexch", "do_newnuc", "do_coag",
-                 "bug_compat_stale_dumfac", "reseed_dgnwet_each_step")
+                 "bug_compat_stale_dumfac", "reseed_dgnwet_each_step",
+                 "fix_surftens_interp")
 
 #: evolving per-step state; everything else in the state dict is constant
 #: forcing echoed through the scan carry untouched.
@@ -942,7 +943,8 @@ def _cam_run_step_jit(state, so2_to_h2so4_rate, first_step, *,
                       topology, strat, n_substeps,
                       do_calcsize, do_wateruptake,
                       do_gasaerexch, do_newnuc, do_coag,
-                      bug_compat_stale_dumfac, reseed_dgnwet_each_step):
+                      bug_compat_stale_dumfac, reseed_dgnwet_each_step,
+                      fix_surftens_interp=False):
     """Jitted one-step body — plan 027. See :func:`cam_run_step`.
 
     Code-path selectors are STATIC (each combination compiles once, per
@@ -1021,7 +1023,8 @@ def _cam_run_step_jit(state, so2_to_h2so4_rate, first_step, *,
                 1.5 * jnp.asarray(tb.alnsg) ** 2)
             sulfeq, wtpct, sulden = calc_h2so4_equilib_mixrat(
                 jnp.asarray(t)[..., None], jnp.asarray(pmid)[..., None],
-                jnp.asarray(qv)[..., None], dmean)
+                jnp.asarray(qv)[..., None], dmean,
+                fix_surftens_interp=fix_surftens_interp)
             strat_wu = {"so4_slot": so4_slot, "so4specdens": dens_so4,
                         "wtpct": wtpct, "sulden": sulden}
         else:
@@ -1062,7 +1065,8 @@ def _cam_run_timesteps_jit(state, so2_to_h2so4_rate, *,
                            do_calcsize, do_wateruptake,
                            do_gasaerexch, do_newnuc, do_coag,
                            bug_compat_stale_dumfac,
-                           reseed_dgnwet_each_step):
+                           reseed_dgnwet_each_step,
+                           fix_surftens_interp=False):
     """Jitted trajectory — ``lax.scan`` over steps (static ``n_steps``),
     each step the jitted step body (inlined by the outer trace). The
     per-step ``first_step`` flag is the scan ``xs``."""
@@ -1071,7 +1075,8 @@ def _cam_run_timesteps_jit(state, so2_to_h2so4_rate, *,
         do_calcsize=do_calcsize, do_wateruptake=do_wateruptake,
         do_gasaerexch=do_gasaerexch, do_newnuc=do_newnuc,
         do_coag=do_coag, bug_compat_stale_dumfac=bug_compat_stale_dumfac,
-        reseed_dgnwet_each_step=reseed_dgnwet_each_step)
+        reseed_dgnwet_each_step=reseed_dgnwet_each_step,
+        fix_surftens_interp=fix_surftens_interp)
 
     def _body(carry_state, first):
         new = _cam_run_step_jit(carry_state, so2_to_h2so4_rate, first,
@@ -1101,7 +1106,8 @@ def cam_run_step(state, *, topology=None, strat=False, n_substeps=16,
                  so2_to_h2so4_rate=1.0e-5,
                  bug_compat_stale_dumfac=False,
                  first_step=False,
-                 reseed_dgnwet_each_step=True):
+                 reseed_dgnwet_each_step=True,
+                 fix_surftens_interp=False):
     """One CAM box-model step (mam_box_run_cam's loop body), compiled.
 
     Per SUBSTEP of ``deltat / n_substeps`` — sub-stepping wraps the WHOLE
@@ -1136,7 +1142,10 @@ def cam_run_step(state, *, topology=None, strat=False, n_substeps=16,
        ``reseed_dgnwet_each_step`` (True = the box reference's
        behaviour, its ``is_first_step()`` shim being true every step;
        False = production CAM's genuine lag, seeded on
-       ``first_step`` only);
+       ``first_step`` only). ``fix_surftens_interp=True`` (opt-in)
+       corrects the first surface-tension lookup's abscissa
+       (modal_aero_wateruptake.F90:1005, ``stwtp(i)`` -> ``stwtp(i-1)``);
+       the default reproduces CAM;
     4. wateruptake (mmr; ``qv`` passed explicitly; updates
        ``dgncur_awet``/``qaerwat``/``wetdens``);
     5. mmr → vmr over the gas window (``q·mwdry/adv_mass``, number
@@ -1166,7 +1175,8 @@ def cam_run_step(state, *, topology=None, strat=False, n_substeps=16,
         do_calcsize=do_calcsize, do_wateruptake=do_wateruptake,
         do_gasaerexch=do_gasaerexch, do_newnuc=do_newnuc, do_coag=do_coag,
         bug_compat_stale_dumfac=bug_compat_stale_dumfac,
-        reseed_dgnwet_each_step=reseed_dgnwet_each_step)
+        reseed_dgnwet_each_step=reseed_dgnwet_each_step,
+        fix_surftens_interp=fix_surftens_interp)
 
 
 def cam_run_timesteps(state, n_steps, *, topology=None, strat=False,
@@ -1175,7 +1185,8 @@ def cam_run_timesteps(state, n_steps, *, topology=None, strat=False,
                       do_gasaerexch=True, do_newnuc=True, do_coag=True,
                       so2_to_h2so4_rate=1.0e-5,
                       bug_compat_stale_dumfac=False,
-                      reseed_dgnwet_each_step=True):
+                      reseed_dgnwet_each_step=True,
+                      fix_surftens_interp=False):
     """Run ``n_steps`` CAM box steps; return ``(final_state, trajectory)``
     with per-step post-step snapshots of ``q``, ``dgncur_a``,
     ``dgncur_awet``, ``wetdens`` stacked on a leading axis (matching the
@@ -1196,4 +1207,5 @@ def cam_run_timesteps(state, n_steps, *, topology=None, strat=False,
         do_calcsize=do_calcsize, do_wateruptake=do_wateruptake,
         do_gasaerexch=do_gasaerexch, do_newnuc=do_newnuc, do_coag=do_coag,
         bug_compat_stale_dumfac=bug_compat_stale_dumfac,
-        reseed_dgnwet_each_step=reseed_dgnwet_each_step)
+        reseed_dgnwet_each_step=reseed_dgnwet_each_step,
+        fix_surftens_interp=fix_surftens_interp)
