@@ -7,6 +7,8 @@ name = "mam4-jax"
 dynamic = ["version"]
 description = "JAX port of the MAM4 aerosol-microphysics box model"
 readme = "README.md"
+license = "GPL-3.0-only"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10"
 dependencies = [
     "jax>=0.4.20",

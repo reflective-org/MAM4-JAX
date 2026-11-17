@@ -17,5 +17,5 @@ authors:
 repository-code: 'https://github.com/reflective-org/MAM4-JAX'
 keywords:
   - Aerosol Microphysics
-license: Apache-2.0
+license: GPL-3.0-only
 date-released: '2026-05-26'

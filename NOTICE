@@ -1,0 +1,20 @@
+MAM4-JAX
+Licensed under the GNU General Public License v3.0 only (GPL-3.0-only);
+see LICENSE.
+
+MAM4-JAX is a JAX port derived from the following upstream work:
+
+1. PNNL MAM_box_model (Kai Zhang et al.), GPL-3.0
+   The Fortran box model vendored under mam4-original-src-code/ is copied
+   from this code, and MAM4-JAX follows its test driver.
+
+2. E3SM MAM4 (E3SM-Project), BSD-3-Clause
+   The MAM4 aerosol code in the box model derives from the E3SM
+   atmosphere model.
+
+3. CAM / CESM (UCAR/NCAR), CESM Copyright and Terms of Use (BSD-style)
+   E3SM's MAM4 code in turn derives from CAM, copyright UCAR.
+
+Vendored parent sources under mam4-original-src-code/ retain their own
+license and copyright notices (see mam4-original-src-code/LICENSE) and are
+not relicensed by this file.
