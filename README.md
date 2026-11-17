@@ -39,6 +39,6 @@ The vendored snapshot is **read-only** within this repo — do not modify the fi
 
 ## License
 
-This project is released under the GPL v3 License - see the [LICENSE](./LICENSE) file for details.
+This project is released under the GPL v3 License (SPDX: GPL-3.0-only) - see the [LICENSE](./LICENSE) file for details.
 > [!IMPORTANT]
 > Note that the vendored Fortran reference under `mam4-original-src-code/` retains its [upstream license](mam4-original-src-code/LICENSE).
